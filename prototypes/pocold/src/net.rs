@@ -272,6 +272,14 @@ pub fn dial(addr:SocketAddr,events:SyncSender<NetEvent>,connected:Arc<Mutex<std:
     }).expect("spawn dialer");
 }
 
+/// Unit tests only: a peer on a loopback pair whose outbox has no writer thread, so its queue only fills.
+/// The other end of the pair is returned to keep the connection open.
+#[cfg(test)]
+pub(crate) fn test_peer(id:PeerId,max:usize)->(Peer,TcpStream){
+    let l=TcpListener::bind("127.0.0.1:0").unwrap();let s=TcpStream::connect(l.local_addr().unwrap()).unwrap();let (r,_)=l.accept().unwrap();
+    let out=Arc::new(Outbox{q:Mutex::new((VecDeque::new(),0)),cv:Condvar::new(),closed:AtomicBool::new(false),max});
+    (Peer{id,addr:"test".into(),outbound:false,out,sock:Arc::new(s),counters:Arc::new(Counters::default())},r)
+}
 #[cfg(test)]
 mod tests{
     use super::*;

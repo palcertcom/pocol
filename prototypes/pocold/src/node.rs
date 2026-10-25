@@ -1240,3 +1240,34 @@ impl Node{
     }
 }
 
+#[cfg(test)]
+mod relay_tests{
+    use super::*;
+    use pocol_lp4_execution::{devnet::{self,DevnetConfig},txsign::Tx};
+    fn pay(nonce:u64)->Vec<u8>{let alice=devnet::account_key("alice");
+        Tx{chain_id:777910,nonce,max_priority:U256::from(1_000_000_000u64),max_fee:U256::from(100_000_000_000u64),gas:21000,to:Some(devnet::account_key("bob").address()),value:U256::from(1u64),data:Default::default()}.sign_1559(&alice)}
+    /// D-7 re-insertion (mutant R5 of evidence/d7-bound/mutants-relay.log): a returned transaction goes to a peer
+    /// through `Peer::offer`, never `send`. With the peer's queue empty it is queued. With the queue past half and
+    /// not full, it is not, although gossip of it would still fit; the peer stays connected (a later frame is
+    /// queued) and `reinserted_unoffered` counts the refusal.
+    #[test] fn a_returned_transaction_is_not_queued_to_a_peer_past_half_its_queue(){
+        let mut c=DevnetConfig::new(777910,1_700_000_000,&["a","b","c"]);c.hash_rate=1024;c.d_att=73;c.tau=40;c.c=8;
+        let spec=Spec::new(devnet::build(&c).unwrap().admit(&crate::single_host_local()).unwrap().0);
+        let dir=std::env::temp_dir().join(format!("pocold-relay-unit-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);
+        let cfg=Config{dir:dir.clone(),name:"relay".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits::default()};
+        let mut n=Node::open(cfg,spec).unwrap();
+        let (p,_other)=net::test_peer(7,4096);n.peers.insert(7,p.clone());
+        // Room: the returned transaction is queued.
+        n.admit_tx(pay(0),Relay::Offer,None).unwrap();
+        let q0=p.queued_bytes();assert!(q0>0&&(n.stats.reinserted_offered,n.stats.reinserted_unoffered)==(1,0),"queued with room: {q0} bytes");
+        // Past half of 4096 and below the whole queue.
+        let filler=Msg::Tx{raw:vec![7u8;400]};while p.queued_bytes()<=2048{assert!(p.send(&filler));}
+        let q1=p.queued_bytes();let f=Msg::Tx{raw:pay(1)}.encode().len()+4;assert!(q1+f<=4096,"gossip of it would still fit: {q1}+{f}");
+        n.admit_tx(pay(1),Relay::Offer,None).unwrap();
+        assert_eq!(p.queued_bytes(),q1,"not queued past half the queue");
+        assert_eq!((n.stats.reinserted_offered,n.stats.reinserted_unoffered),(1,1));
+        assert!(p.send(&Msg::Tx{raw:vec![1u8;8]}),"the peer is kept");
+        assert_eq!(n.pool.txs.len(),2,"both are pooled");
+        drop(n);let _=std::fs::remove_dir_all(&dir);
+    }
+}
