@@ -182,6 +182,19 @@ Measured on 9bd9bc0, not bounds (evidence/d7-bound/README.md):
 - **R14/R19:** the admission timing does not include store mode's commit and fsync. A GAS_LIMIT compute
   block imports in 64 ms in store mode against 29 ms whole-state, and state-heavy blocks took up to 4.8 s.
   Calibrating in the booting mode is open.
+- **R14/R19 in the booting mode, done after this (A13-DERIVATION §3).**
+  - A node that boots in store mode is now admitted on a timing that includes the calibration blocks applied
+    through a scratch state store on its own disk, each committed durably. The gate takes the larger time per
+    phase.
+  - On this host: 10–26 ms per phase through the store, against 8–18 ms in memory (15 runs); t_exec is 1,000 ms.
+- **Decision for you (not normative, and not adopted): the calibration workload.**
+  - The calibration is a GAS_LIMIT compute loop, which writes little state.
+  - State-heavy blocks are slower than t_exec on this host in both modes:
+    - large state: up to 1,068.5 ms whole-state and 1,045.1 ms store;
+    - small store: one outlier at 4,841.8 ms (disk-impact-final.md).
+  - With a state-heavy calibration this host would refuse both modes at t_exec = 1 s. The alternatives are a
+    larger local t_exec, which is the P11 value of option (a) above, or keeping the condition
+    `timing-not-a-bound` as it is.
 
 No combination of local, non-normative options reaches 5.25 GiB. The remaining terms are the redb
 allocator over the adversarial file (1.81), the execution's code set (1.125), the EVM execution at 30M gas

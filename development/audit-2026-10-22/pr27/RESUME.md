@@ -1,7 +1,9 @@
 # PR #27: resume point for the GitHub steps
 
 [BODY.md](BODY.md) is the description to post on PR #27, verbatim. Post it as the whole body and keep
-the PR a **draft**. It was written on 2026-10-25 for head `733a52d`.
+the PR a **draft**. It was written on 2026-10-25 for head `733a52d`, and updated for the local commits that
+followed: `78fe971` (this file), `90c4185` (relay test), `24cc167` (R14/R19 store-mode boot) and the evidence
+commit after them.
 
 ## Why it is here
 
@@ -31,8 +33,9 @@ nothing below can be done from it.
    - its check runs on that head;
    - any review comments since 2026-10-25 15:44 UTC.
 2. If a check failed, investigate it before anything else.
-3. Post BODY.md as the description, with any newer commits added to its "Commit roles" table. Do not
+3. Push the commits made locally since `733a52d` (`git push -u origin claude/audit-repair-a01-a14`), so the
+   body's commit references resolve.
+4. Post BODY.md as the description, with any newer commits added to its "Commit roles" table. Do not
    mark the PR ready.
-4. Push any commits made locally since `733a52d` (`git push -u origin claude/audit-repair-a01-a14`).
 5. Record the Windows run of the new head in FINDING-STATUS.json `windowsVerification.runs` and in
    evidence/d7-bound/README.md.

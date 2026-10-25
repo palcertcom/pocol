@@ -561,6 +561,28 @@ audit"). No bound was lowered to reach the budget.
   it the gas facts are absent and R18 fails.
 - Timing: measured per profile on the admitting machine (blocks with a GAS_LIMIT compute loop through
   closing and the final block). Representative, not adversarial worst case.
+- **Timing of a store-mode node (2026-10-25).** Until then a node that boots in store mode was admitted on the
+  in-memory timing. That timing does not include the path such a node runs: each block applied to a version
+  read in place from state.redb, its trie updated, and its nodes committed and fsynced.
+  - `load_spec_for` now runs the same calibration blocks also through a scratch state store at
+    `<data>/calibration.store`, on the node's own disk, before the node opens:
+    `admission::measure_on_store`, which uses `apply_block_on`, the trie update, the root and a durable
+    commit, all inside each block's timed span.
+  - R14/R19 then see, per phase class, the larger of the two times (`Timing::with_store`).
+  - The admission condition `timing-not-a-bound` says that the store was included.
+  - The scratch store is removed before the node opens. One a crash left behind is removed first.
+  - Whole-state mode is unchanged.
+  - The memory it uses is transient, before the node allocates its own, and within the store terms the
+    node itself is counted for (the node cache and redb's page cache).
+  - **On this host** (`jm_r14_boot_timing_by_mode`, five runs, default devnet profile):
+    - in memory, 8–18 ms per phase (15 runs, five on the working tree and ten in acceptance on 24cc167);
+    - through the store, 10–26 ms;
+    - t_exec is 1,000 ms.
+  - **What it still does not cover.** The workload is compute-only and writes little state. State-heavy
+    blocks are slower than t_exec on this host in both modes (evidence/c1-e4/disk-impact-final.md, large
+    state: max 1,068.5 ms whole-state and 1,045.1 ms store; small store: one outlier at 4,841.8 ms).
+    Whether the calibration should include a state-heavy workload is a decision. If it did, this host
+    would refuse both modes at t_exec = 1 s.
 
 ### 3a. EVM execution memory (`resources::memory::execution`, round 2, corrected)
 

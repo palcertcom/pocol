@@ -221,6 +221,64 @@ symlinks; no tracked file differed.
   - Freed pages are reused, so the file does not grow under steady churn. **This is a measured factor on a
     10 MB store, not a bound** for the adversarial file (condition `store-file-factor`); A13 counts 12.
 
+## After the GitHub break (2026-10-25, local commits 78fe971, 90c4185, 24cc167; not pushed yet)
+
+GitHub refused this session's credentials from 15:46 UTC. These commits are local until access returns (see
+../../pr27/RESUME.md).
+
+**Relay mutant R5 killed (90c4185).**
+- `node::relay_tests::a_returned_transaction_is_not_queued_to_a_peer_past_half_its_queue` gives the node a
+  test peer whose outbox has no writer thread.
+- With the queue empty the returned transaction is queued. Past half the queue and below the whole of it,
+  it is not, although gossip of it would still fit. The peer stays connected.
+- Relay mutants rerun (mutants-relay-2.log): **7 of 7 killed**.
+
+**R14/R19 for a store-mode boot (24cc167; r14-store-boot/).**
+- A store-mode node was admitted on the in-memory timing.
+- Now `load_spec_for` also runs the calibration blocks through a scratch state store at
+  `<data>/calibration.store`, on the node's own disk, and the gate takes the larger time per phase:
+  - `apply_block_on`, the trie update, the root and a durable commit fall inside each block's timed span;
+  - the scratch store is removed before the node opens.
+- Suites on its prototypes tree (`c73e863f`): **lp4 196 passed, 0 failed; pocold 233 passed, 0 failed, 23
+  ignored** (the new measurement is the 23rd).
+- **Mutation controls (r14-store-boot/mutants.log): 11 of 12 killed.**
+  - C12 (the leftover scratch store of a crash is not cleared first) survives.
+  - Without the pre-clear, `StateStore::open` moves an unreadable leftover aside or reuses a readable one.
+    The directory is removed afterwards either way, so the only difference is that the measurement may run
+    on a store that is not fresh. No test observes that. It is not classed as equivalent.
+- **Measured on this host** (jm-boot-timing in accept-24cc167/, default devnet profile, ms per phase:
+  ordinary, closing, final): in memory 8–18 ms, through the store 10–20 ms, so the gate sees 10–20 ms, over 10 runs; t_exec is 1,000 ms. An
+  earlier 5-run measurement on the working tree gave 9–14 ms and 11–26 ms.
+- **Not covered:** the calibration writes little state. State-heavy blocks exceed t_exec = 1 s in both modes
+  on this host (../c1-e4/disk-impact-final.md: up to 1,068.5 ms whole-state, 1,045.1 ms store, one outlier
+  at 4,841.8 ms). Calibrating on them is a decision, presented in DECISION-PACKAGE.md and not adopted.
+
+**Acceptance on 24cc167 (accept-24cc167/).** Prototypes tree `c73e863f` (`HEAD` records the two usual symlinks).
+
+| step | result |
+|---|---|
+| pocold-bins, ext-build | built |
+| jm-boot-timing (10 runs) | as above |
+| e2e, whole-state mode | devnet **PASS 44**; site **PASS 21**; browser **PASS 80**; integrated **PASS 20, two runs of two** |
+| e2e, store mode | devnet **PASS 44**; site **PASS 21**; browser **PASS 80**; integrated **PASS 20, two runs of two** |
+| witnesses (witnesses-24cc167.log, rust and live parts) | A01, A02 (R9, R13, SYS_SLOT_MAX), A03, A04, A05, A10, A11 **NOT_REPRODUCED, controls OK** |
+
+- e2e_devnet's 44th check is new: each node's R14/R19 timing covers the mode it runs. It reads `True` for
+  the three store-mode nodes and `False` in whole-state mode.
+- In each integrated run node c offered every transaction it returned after the heal: 7 in three runs, and
+  21 in one where its abandoned branch was longer. None was left unoffered.
+- The extension witnesses (A06–A09, A12, A14) were not rerun. The extension is unchanged since 8584283, where
+  they ran.
+- **Not run on 24cc167:**
+  - lp1-node;
+  - the crash, kill and damage steps;
+  - the spec-depth and deep-reorg tests;
+  - the A13 models;
+  - RSS and churn.
+
+  Their last runs are above; the change does not touch them.
+- **Not run on GitHub:** Windows CI cannot run on these commits until they are pushed.
+
 ## Windows
 
 Run 64 on 9bd9bc0 (audit-r2-windows-verify.yml) passed every step: lp1 store journal, lp1-node, lp4, pocold

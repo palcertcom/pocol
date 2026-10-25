@@ -1085,11 +1085,17 @@ The section above is kept as recorded.
   - state-heavy blocks took up to 4.8 s.
 
   Calibrating R14/R19 in the mode the node boots is open.
+  - **Done after this:** a store-mode boot is timed through a scratch state store on its own disk, each
+    calibration block committed durably, and the gate takes the larger time per phase (A13-DERIVATION §3):
+    10–26 ms against 8–18 ms in memory on this host (15 runs). On 24cc167 the e2e suites pass in both modes
+    (devnet 44, site 21, browser 80, integrated 20 twice).
+  - **Still open:** the calibration is a compute workload. State-heavy blocks exceed t_exec in both modes on
+    this host, so whether to calibrate on them is a decision.
 - **Open:**
   - flipping the default;
   - the network target (D-1): 7.61 GiB against the 5.25 GiB cap;
   - the file factor at the adversarial scale;
-  - R14/R19 in store mode.
+  - the R14/R19 calibration workload (state-heavy blocks).
 
 ## S4: per-block metadata off the heap
 

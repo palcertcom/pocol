@@ -19,7 +19,7 @@
 >   - No combination of local, non-normative options reaches it. The options, with their numbers, are in the decision package.
 >   - The earlier projection of ≈ 5.3 GiB is **withdrawn**. Its gas-derived bound on the code an execution reads does not hold: revm loads an account, and in store mode its code, before it charges for it.
 > - Windows:
->   - runs 64 (`9bd9bc0`), 65 (`919a50c`) and 66 (`8584283`) **passed every check**;
+>   - runs 64 (`9bd9bc0`), 65 (`919a50c`) and 66 (`8584283`) **passed every check**; the commits after `733a52d` have no Windows run yet;
 >   - the CI does not run the e2e or Chrome suites, the crash-step feature or the `#[ignore]` tests. **A Windows pass is not acceptance.**
 > - Per-finding status is on five axes in [FINDING-STATUS.json](development/audit-2026-10-22/FINDING-STATUS.json). The disposition is the weakest axis.
 
@@ -35,7 +35,7 @@
   - **Found by e2e_integrated on `919a50c`**, which failed 2 of 4 runs: node c held 7 returned transactions that no other node had.
   - c had left the active set during a partition longer than W_act = 32 heights (consensus.md §2). It was not drawn at any of the 215–224 heights after the heal, so it built no block.
   - That membership behaviour is the specified one and is unchanged. The defect was the missing relay.
-  - Mutation controls: **6 of 7 killed**. R5 (the offer arm calling `send`) survives; telling the two apart needs a half-full peer queue, which a loopback test does not produce deterministically.
+  - Mutation controls: **7 of 7 killed** after `90c4185`, whose node-level test gives a peer a queue past half full (6 of 7 on `8584283`, where R5, the offer arm calling `send`, survived).
   - Open: a returned transaction that no peer took stays with this node until it is drawn.
 - **Counters:** checked against the contents through 160 mixed steps.
 - **Consensus:** under `Node::run`, with the pool at its bound, a block is imported while revalidation is pending.
@@ -99,7 +99,19 @@ Not rerun on `8584283`, because the change does not touch them: lp4, lp1-node, t
 **Measured** on this host; these are not bounds:
 - **RSS under load:** 13 MB whole-state, 15.7 MB store mode.
 - **state.redb under churn:** stable at 67.9 MB, at most 7.95 times what it stores. A13 counts 12.
-- **R14/R19:** the admission timing does not include store mode's commit and fsync. A GAS_LIMIT compute block imports in 64 ms (whole-state 29 ms); state-heavy blocks took up to 4.8 s. Calibration in the booting mode is **open**.
+- **R14/R19:** the admission timing did not include store mode's commit and fsync. A GAS_LIMIT compute block imports in 64 ms (whole-state 29 ms); state-heavy blocks took up to 4.8 s.
+
+**R14/R19 in the booting mode (`24cc167`).**
+- A store-mode node is now admitted on a timing that includes the calibration blocks applied through a scratch state store on its own disk, each committed durably. The gate takes the larger time per phase.
+- Measured on this host: 10–26 ms per phase through the store against 8–18 ms in memory (15 runs); t_exec is 1,000 ms.
+- Mutation controls: **11 of 12 killed**. C12 (not clearing a crash's leftover scratch store first) survives: the directory is removed afterwards either way, so no test can observe it.
+- **Decision for you, not adopted:** the calibration is a compute workload. State-heavy blocks exceed t_exec = 1 s on this host in both modes (up to 1,068.5 ms), so calibrating on them would refuse both modes there.
+
+**Acceptance on `24cc167`** ([accept-24cc167](development/audit-2026-10-22/evidence/d7-bound/accept-24cc167/)):
+- lp4 196/0 and pocold 233/0 with 23 ignored, on its prototypes tree;
+- e2e in both modes: devnet 44/44 (the new check: each node's timing covers its mode), site 21/21, browser 80/80, integrated 20/20 in two runs of two;
+- witnesses (rust and live): all NOT_REPRODUCED, controls OK;
+- **Windows not run yet:** these commits were made while GitHub refused the session's credentials, and are pushed with this description.
 
 **Not run, not counted:** the debug-mode suites; the private adversarial EVM measurements; the other `jm_*` measurements; RSS at the network scale.
 
@@ -193,9 +205,9 @@ This PR repairs the 14 findings of the adversarial audit of `090eae4` (REPORT.md
 | role | commit |
 |---|---|
 | Audited snapshot | `090eae4` |
-| Last implementation commit | `8584283` (D-7 re-insertion relay); after it, tests only: `d939d1a`, `0833b6c`. Before it: `ee14458` (D-7, the A13 audit terms, `--state-store`), `fc24969` (C-1 E5 part 3), `53a80e9`, `5722c23`, `90ba824`, `3c0fe15`, `314de11`, `45d540f`, `1a5b792`, `b91c490`, `8f4b473`, `6c6e192`, `f8a58bb`, `7606a31` (E4), `4ad4e83` (E3), `1774b90` (E2), `28594cc` (E1), `ddb0de2` (S4), `4b49d03` and `bef6c4f` (S3a), `b517b0f` (S1), `d1604d0` (D-7), `d567ce1` (S2), and the earlier rounds |
-| Suites, acceptance and mutation controls | `8584283` and `0833b6c` for what the relay fix touches; `9bd9bc0` for the rest (above); `fc24969` before |
-| Mutation-controlled | D-REORG-REDB `3342af3`; round 3: caps `e985ce1`, RpcGuard `dd7d1ec`, e2e test `ad84942`; C-1 S1 `b517b0f`; S3a `4b49d03`; S4 `13aeba7`; E1 `28594cc`; E2 `1774b90`; E3 `4ad4e83`; E4.2/E4.3 `b91c490`; E4.4 `1a5b792` and `22942c7` (that is `3c0fe15` before the rebase onto `45d540f`); final E4/E5 `fc24969`; D-7 `ee14458` (18/18); relay `8584283` (6/7) |
+| Last implementation commit | `24cc167` (R14/R19 for a store-mode boot). Before it: `90c4185` (a relay test), `78fe971` (this resume point, documents only), `733a52d` (evidence), `8584283` (D-7 re-insertion relay; after it, tests only: `d939d1a`, `0833b6c`). Before them: `ee14458` (D-7, the A13 audit terms, `--state-store`), `fc24969` (C-1 E5 part 3), `53a80e9`, `5722c23`, `90ba824`, `3c0fe15`, `314de11`, `45d540f`, `1a5b792`, `b91c490`, `8f4b473`, `6c6e192`, `f8a58bb`, `7606a31` (E4), `4ad4e83` (E3), `1774b90` (E2), `28594cc` (E1), `ddb0de2` (S4), `4b49d03` and `bef6c4f` (S3a), `b517b0f` (S1), `d1604d0` (D-7), `d567ce1` (S2), and the earlier rounds |
+| Suites, acceptance and mutation controls | `24cc167` for the boot timing and the e2e suites; `8584283` and `0833b6c` for what the relay fix touches; `9bd9bc0` for the rest (above); `fc24969` before |
+| Mutation-controlled | D-REORG-REDB `3342af3`; round 3: caps `e985ce1`, RpcGuard `dd7d1ec`, e2e test `ad84942`; C-1 S1 `b517b0f`; S3a `4b49d03`; S4 `13aeba7`; E1 `28594cc`; E2 `1774b90`; E3 `4ad4e83`; E4.2/E4.3 `b91c490`; E4.4 `1a5b792` and `22942c7` (that is `3c0fe15` before the rebase onto `45d540f`); final E4/E5 `fc24969`; D-7 `ee14458` (18/18); relay `90c4185` (7/7); R14/R19 store boot `24cc167` (11/12) |
 
 The exploit-shaped witness, adversarial and mutation-runner programs are **not** in this public repository. Only their logs and hashes are committed.
 
