@@ -102,3 +102,21 @@ fn base()->DevnetConfig{DevnetConfig::new(777930,1_700_000_000,&["a","b","c"])}
     assert!(e.missing.contains(&"specification:rpc-absent".to_string()),"{e}");
     let _=std::fs::remove_dir_all(&d);
 }
+/// R14/R19 in store mode (C-1): a node about to open a data directory in store mode is admitted on a timing that
+/// includes the calibration blocks applied through a scratch state store in that directory (each block's nodes
+/// committed and fsynced), and its timing condition says so. The scratch store is removed before the node opens,
+/// one a crash left there is replaced, and the node then opens in store mode on that spec. Whole-state
+/// admission is unchanged.
+#[test] fn a_store_mode_boot_is_timed_through_a_scratch_state_store_in_its_data_directory(){
+    use pocold::node::{Config,Limits,Node};
+    let d=tmp("store-timing");let dir=d.join("net");publish(&base(),&dir,true);let data=d.join("data");
+    let scratch=data.join(pocold::CALIBRATION_STORE);std::fs::create_dir_all(&scratch).unwrap();std::fs::write(scratch.join("state.redb"),b"left by a crash").unwrap();
+    let detail=|s:&pocold::chain::Spec|s.admission().report().conditions.iter().find(|c|c.id=="timing-not-a-bound").map(|c|c.detail.clone()).expect("the timing condition");
+    let spec=pocold::load_spec_for(&dir,&pocold::single_host_local(),Some(&data)).unwrap();
+    assert!(detail(&spec).contains("through a scratch node store"),"{}",detail(&spec));
+    assert!(!scratch.exists(),"the scratch store is removed before the node opens");
+    let whole=pocold::load_spec(&dir,&pocold::single_host_local()).unwrap();assert!(!detail(&whole).contains("node store"),"{}",detail(&whole));
+    let n=Node::open(Config{dir:data.clone(),name:"st".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:true,..Default::default()}},spec).unwrap();
+    assert!(n.state_store().is_some()&&n.status_json()["stateStore"]==true);
+    drop(n);let _=std::fs::remove_dir_all(&d);
+}

@@ -226,6 +226,9 @@ def main():
         # The state mode every node reports (POCOLD_RUN_ARGS=--state-store runs the suite in store mode).
         modes = [dn.rpc(8540 + i, "pocol_status")["stateStore"] for i in range(3)]
         ok("every node runs in the requested state mode", modes == ["--state-store" in dn.EXTRA] * 3, f"stateStore={modes}")
+        # R14/R19: a store-mode node's admission timing includes the calibration through a scratch state store.
+        timed = [any("node store" in c["detail"] for c in dn.rpc(8540 + i, "pocol_status")["admission"]["conditions"] if c["id"] == "timing-not-a-bound") for i in range(3)]
+        ok("each node's R14/R19 timing covers the state mode it runs", timed == ["--state-store" in dn.EXTRA] * 3, f"store timing={timed}")
         # Transactions over RPC (alice -> bob), via node a.
         alice = next(x for x in info["accounts"] if x["label"] == "alice"); bob = next(x for x in info["accounts"] if x["label"] == "bob")
         txs = []

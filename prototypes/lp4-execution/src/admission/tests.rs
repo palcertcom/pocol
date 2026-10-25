@@ -51,6 +51,60 @@ fn sh()->NodeLocal{NodeLocal::single_host()}
     let gl=n.profile.cp().GAS_LIMIT;
     assert!(gas.len()>=30&&gas.iter().all(|g|*g>=gl),"every sample used GAS_LIMIT ({gl}): {gas:?}");
 }
+/// R14/R19 for a store-mode node (C-1): the calibration through a node store runs the same blocks as the one in
+/// memory (the same state root and gas at every height, every phase class reached), commits each block, and
+/// releases every version it pinned. The timing marked stored is reported as such by the admission.
+#[test] fn the_store_calibration_runs_the_same_blocks_through_the_node_store_and_releases_its_pins(){
+    use crate::node_trie::{Batch,Id,Node,NodeStore,SharedMem,TrieStore};
+    /// The test store: SharedMem, counting commits.
+    #[derive(Default)] struct Counting(SharedMem,std::sync::atomic::AtomicU64);
+    impl NodeStore for Counting{fn node(&self,id:&Id)->Option<std::sync::Arc<Node>>{self.0.node(id)}fn code(&self,h:&B256)->Option<Bytecode>{self.0.code(h)}}
+    impl TrieStore for Counting{
+        fn commit(&self,b:&Batch,root:Option<Id>)->Result<(),String>{self.1.fetch_add(1,std::sync::atomic::Ordering::SeqCst);self.0.commit(b,root)}
+        fn unpin(&self,root:&Id)->Result<(),String>{self.0.unpin(root)}
+        fn pinned(&self)->Result<u64,String>{self.0.pinned()}}
+    let n=net(&cfg());let store=Counting::default();
+    let (tm,gm,rm)=measure_run(&n.spec_bytes,&n.alloc,1,None).unwrap_or_else(|e|panic!("{e}"));
+    let (ts,gs_,rs)=measure_run(&n.spec_bytes,&n.alloc,1,Some(&store)).unwrap_or_else(|e|panic!("{e}"));
+    assert!(rm.len()>=3&&rm==rs,"the same state root at every height: {} vs {}",rm.len(),rs.len());
+    assert_eq!(gm,gs_,"the same gas at every height");assert_eq!(tm.samples,ts.samples);
+    assert!(!tm.stored&&ts.stored&&ts.genesis_hash==tm.genesis_hash);
+    assert_eq!(store.1.load(std::sync::atomic::Ordering::SeqCst),rs.len() as u64+1,"the genesis and every block committed once");
+    assert_eq!(store.pinned().unwrap(),0,"every version the calibration pinned is released");
+    let a=admit(&n.request(&sh(),Some(&tm.with_store(&ts).unwrap()))).unwrap_or_else(|e|panic!("{e}"));
+    let c=a.report().conditions.iter().find(|c|c.id=="timing-not-a-bound").unwrap();
+    assert!(c.detail.contains("through a scratch node store"),"{}",c.detail);
+    let a=admit(&n.request(&sh(),Some(&tm))).unwrap();
+    assert!(!a.report().conditions.iter().any(|c|c.detail.contains("node store")),"an in-memory timing is not reported as stored");
+}
+/// A block's durable commit is inside its timed span: with a store whose commit takes at least 25 ms, every phase
+/// of the store measurement is at least that, and the in-memory one (no commit) is not affected.
+#[test] fn the_store_calibration_times_each_block_commit(){
+    use crate::node_trie::{Batch,Id,Node,NodeStore,SharedMem,TrieStore};
+    #[derive(Default)] struct Slow(SharedMem);
+    impl NodeStore for Slow{fn node(&self,id:&Id)->Option<std::sync::Arc<Node>>{self.0.node(id)}fn code(&self,h:&B256)->Option<Bytecode>{self.0.code(h)}}
+    impl TrieStore for Slow{
+        fn commit(&self,b:&Batch,root:Option<Id>)->Result<(),String>{std::thread::sleep(std::time::Duration::from_millis(25));self.0.commit(b,root)}
+        fn unpin(&self,root:&Id)->Result<(),String>{self.0.unpin(root)}
+        fn pinned(&self)->Result<u64,String>{self.0.pinned()}}
+    let n=net(&cfg());let t=measure_on_store(&n.spec_bytes,&n.alloc,1,&Slow::default()).unwrap_or_else(|e|panic!("{e}"));
+    assert!(t.phase_ms.iter().all(|p|*p>=25),"every phase includes its commit: {:?}",t.phase_ms);
+}
+/// A store-mode node's timing takes, per phase class, the larger of its in-memory and store measurements, so a
+/// store path slower than t_exec is refused by R14/R19 even when memory is fast; a store measurement for another
+/// genesis is refused.
+#[test] fn a_store_mode_timing_takes_the_larger_phase_and_gates_r14_r19(){
+    let (n,t)=base();
+    let slow=Timing{phase_ms:[3,4,1001],samples:5,stored:true,..t.clone()};
+    let c=t.with_store(&slow).unwrap();
+    assert_eq!(c.phase_ms,[t.phase_ms[0].max(3),t.phase_ms[1].max(4),1001]);assert!(c.stored);assert_eq!(c.samples,t.samples+5);
+    assert_eq!(rules(admit(&n.request(&sh(),Some(&c)))),v(&["R14","R19"]),"a store path above t_exec is refused");
+    let fast=Timing{phase_ms:[1,1,1],..slow.clone()};let c=t.with_store(&fast).unwrap();assert_eq!(c.phase_ms,t.phase_ms,"memory slower: memory's times");
+    assert!(admit(&n.request(&sh(),Some(&c))).is_ok());
+    assert!(t.with_store(&Timing{genesis_hash:[7;32],..fast}).is_err(),"another genesis");
+    let j=c.to_json();assert_eq!(Timing::from_json(&j).unwrap().stored,true);
+    let mut old=t.to_json();old.as_object_mut().unwrap().remove("stored");assert!(!Timing::from_json(&old).unwrap().stored,"a record without the field is in memory");
+}
 #[test] fn audit_reproductions_are_rejected_with_their_rules(){
     let (_,t)=base();
     let mut c=cfg();c.s_max=1;assert_eq!(rules(run(&net(&c),&t,&sh())),v(&["R9"]),"A02-R9 S_max=1");

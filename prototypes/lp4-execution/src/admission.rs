@@ -113,14 +113,26 @@ fn phase_gas(cp:&ConsensusParams,class:u8)->Option<Vec<u64>>{
 
 /// Timing of this profile's blocks on this machine (`measure`). Bound to one genesis.
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct Timing{pub genesis_hash:[u8;32],/** Largest apply time per phase class (ordinary, closing, final), ms. */pub phase_ms:[u64;3],pub samples:u32}
+pub struct Timing{pub genesis_hash:[u8;32],/** Largest apply time per phase class (ordinary, closing, final), ms. */pub phase_ms:[u64;3],pub samples:u32,
+    /// The blocks also went through a node store (`measure_on_store`), each committed durably: the timing of a
+    /// node that keeps its states there (C-1 store mode).
+    pub stored:bool}
 impl Timing{
-    pub fn to_json(&self)->serde_json::Value{serde_json::json!({"genesisHash":crate::hex::encode(&self.genesis_hash),"phaseMs":self.phase_ms,"samples":self.samples,
-        "method":"apply_block on a scratch copy of the genesis; every block carries a GAS_LIMIT compute loop; closing and final reached by timestamps"})}
+    pub fn to_json(&self)->serde_json::Value{serde_json::json!({"genesisHash":crate::hex::encode(&self.genesis_hash),"phaseMs":self.phase_ms,"samples":self.samples,"stored":self.stored,
+        "method":if self.stored{"apply_block on a scratch copy of the genesis, and apply_block_on through a scratch node store with each block's nodes committed durably; the larger time per phase; every block carries a GAS_LIMIT compute loop; closing and final reached by timestamps"}
+            else{"apply_block on a scratch copy of the genesis; every block carries a GAS_LIMIT compute loop; closing and final reached by timestamps"}})}
     pub fn from_json(v:&serde_json::Value)->Option<Self>{
         let h=crate::hex::decode(v["genesisHash"].as_str()?)?;let p=v["phaseMs"].as_array()?;
         if p.len()!=3{return None}
-        Some(Self{genesis_hash:h.try_into().ok()?,phase_ms:[p[0].as_u64()?,p[1].as_u64()?,p[2].as_u64()?],samples:u32::try_from(v["samples"].as_u64()?).ok()?})
+        Some(Self{genesis_hash:h.try_into().ok()?,phase_ms:[p[0].as_u64()?,p[1].as_u64()?,p[2].as_u64()?],samples:u32::try_from(v["samples"].as_u64()?).ok()?,
+            stored:v["stored"].as_bool().unwrap_or(false)})
+    }
+    /// The timing of a store-mode node: per phase class the larger of the in-memory measurement and the one
+    /// through its node store (both for this genesis).
+    pub fn with_store(&self,store:&Timing)->Result<Timing,String>{
+        if store.genesis_hash!=self.genesis_hash{return Err("timing: the store measurement is for another genesis".into())}
+        let mut phase_ms=self.phase_ms;for (m,s) in phase_ms.iter_mut().zip(store.phase_ms){*m=(*m).max(s);}
+        Ok(Timing{genesis_hash:self.genesis_hash,phase_ms,samples:self.samples.saturating_add(store.samples),stored:true})
     }
 }
 
@@ -305,7 +317,8 @@ fn conditions(cp:&ConsensusParams,r:&Request<'_>,l:&NodeLocal,timing:Option<&Tim
     if l.rpc.is_fixture(){add("rpc-fixture",&["R26"],"RpcGuard: the values are a fixture, not limits this node enforces".into())}
     if !l.rpc.absent().is_empty(){add("rpc-absent",&["R26"],format!("RpcGuard: mechanisms this node does not enforce: {}",l.rpc.absent().join(", ")))}
     if matches!(r.calibration,Some((_,FactClass::SyntheticFixture))){add("calibration-synthetic",&["R25"],"calibration: H_cal is a synthetic fixture (devnet --work-bits), not a measured hash rate".into())}
-    if let Some(t)=timing{add("timing-not-a-bound",&["R14","R19"],format!("timing: {} apply samples of the synthetic GAS_LIMIT compute workload on this host; not a p99 or worst-case bound (A13-DERIVATION §4)",t.samples))}
+    if let Some(t)=timing{add("timing-not-a-bound",&["R14","R19"],format!("timing: {} apply samples of the synthetic GAS_LIMIT compute workload on this host{}; not a p99 or worst-case bound (A13-DERIVATION §4)",t.samples,
+        if t.stored{", in memory and through a scratch node store committed durably per block (store mode), the larger per phase"}else{""}))}
     if in_gas_domain(cp){add("gas-monotonicity-assumed",&["R18"],"SYS gas: GAS_ENVELOPE holds at the fixture's maxima; monotonicity in the domain fields is assumed (A13-DERIVATION §4)".into())}
     for d in deferred{add(match *d{"LP4:general-R21"=>"gate-deferred-general-R21","LP4:general-R18"=>"gate-deferred-general-R18",_=>"gate-deferred-caps64"},
         if d.ends_with("R21"){&["R21"]}else{&["R18"]},format!("gate: deferred LP3 obligation {d}"))}
@@ -323,10 +336,19 @@ fn scratch_address(tag:&str)->Address{Address::from_slice(&keccak256(tag.as_byte
 /// timestamps at T_END drive closing (RET records per block) and the final block.
 /// Every block is applied `repeats` times; the largest time per phase class is recorded.
 pub fn measure(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32)->Result<Timing,String>{measure_with_gas(spec_bytes,alloc,repeats).map(|(t,_)|t)}
+/// `measure` for a node that keeps its states in a node store (C-1 store mode): the same blocks, each applied
+/// with `apply_block_on` to the parent version read in place, its trie updated, its root computed and its nodes
+/// committed to `store` (durably for pocold's state.redb), all inside the timed span. `store` should be a
+/// scratch store on the node's own disk; every version the measurement pins is released at the end.
+pub fn measure_on_store(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32,store:&dyn crate::node_trie::TrieStore)->Result<Timing,String>{
+    measure_run(spec_bytes,alloc,repeats,Some(store)).map(|(t,_,_)|t)}
 /// `measure`, also returning the gas each sampled block used (in height order), so tests can check
 /// the workload of every sample independently of measure's own guard (PR #27 review R5-2).
-pub(crate) fn measure_with_gas(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32)->Result<(Timing,Vec<u64>),String>{
-    let mut gas_log=Vec::new();
+pub(crate) fn measure_with_gas(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32)->Result<(Timing,Vec<u64>),String>{measure_run(spec_bytes,alloc,repeats,None).map(|(t,g,_)|(t,g))}
+/// The measurement in memory (`store` None) or through a node store; also the state root of each block, so
+/// tests can check that both paths ran the same blocks.
+pub(crate) fn measure_run(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32,store:Option<&dyn crate::node_trie::TrieStore>)->Result<(Timing,Vec<u64>,Vec<B256>),String>{
+    let mut gas_log=Vec::new();let mut roots=Vec::new();
     let hash=gs::genesis_hash(spec_bytes);let spec=gs::verify_hash(spec_bytes,&hash).map_err(|e|format!("{e:?}"))?;
     let profile=fact_identity(spec_bytes,&hash,spec.chain_id)?;let cp=profile.cp().clone();
     let genesis=Genesis::build(alloc,&profile,&SystemPrograms::v1()).map_err(|e|format!("{e:?}"))?;
@@ -349,31 +371,55 @@ pub(crate) fn measure_with_gas(spec_bytes:&[u8],alloc:&InMemoryDB,repeats:u32)->
     let members:Vec<Address>=spec.m0_list.iter().map(|m|Address::from(m.id)).collect();
     if members.is_empty(){return Err("calibration: empty M_0".into())}
     let mut prev:Option<ParentResult>=None;let mut nonce=0u64;let mut phase_ms=[0u64;3];let mut samples=0u32;let mut seen=[false;3];
+    // Store mode: the prepared genesis as the first stored version, read in place from then on.
+    let hashes:std::collections::HashMap<U256,B256>=[(U256::ZERO,B256::from(hash))].into_iter().collect();
+    let mut stored=match store{
+        Some(s)=>{let mut b=crate::node_trie::Batch::default();let t=crate::node_trie::NodeTrie::build(&state,s,&mut b);s.commit(&b,t.world)?;
+            Some((s,t,crate::state_summary::Summary::scan(&state,cp.B_code_max)))}
+        None=>None};
     for h in 1..=blocks.min(cp.H_END){
         let ts=if h<=2{spec_ts(&cp,h)}else{cp.T_END.max(cp.T_CLOSE).saturating_add(h)};
         let tx=crate::txsign::Tx{chain_id:spec.chain_id,nonce,max_priority:U256::ZERO,max_fee,gas:cp.GAS_LIMIT,to:Some(spin),value:U256::ZERO,data:Bytes::new()};nonce+=1;
         let txs=vec![tx.sign_1559(&key)];
         let input=BlockInput{height:h,timestamp:ts,base_fee:base,gas_limit:cp.GAS_LIMIT,prevrandao:B256::ZERO,proposer:Proposer::Fallback,parent_result:prev.clone(),
             evidence:vec![],evidence_raw:&[],transactions:&txs,ancestors:vec![(0,B256::from(hash))],cum_log_bytes:0};
-        let mut out=None;let mut worst=0u64;
-        for _ in 0..repeats.max(1){
-            let t0=std::time::Instant::now();let o=apply::apply_block(&state,&genesis,&profile,&input).map_err(|e|format!("calibration h={h}: {e:?}"))?;
-            worst=worst.max(u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX).max(1));samples+=1;out=Some(o);
-        }
-        let o=out.unwrap();gas_log.push(o.gas_used);
-        if o.gas_used<cp.GAS_LIMIT{return Err(format!("calibration h={h}: the block used {} gas, not the GAS_LIMIT workload",o.gas_used))}
-        let class=if o.is_final{2}else if o.facts.closing{1}else{0};
+        let ms=|t0:std::time::Instant|u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX).max(1);
+        let mut worst=0u64;
+        let (gas_used,is_final,closing)=if let Some((s,trie,sum))=&mut stored{
+            let view=crate::node_trie::TrieState{store:*s,trie:*trie,block_hashes:&hashes};let mut out=None;
+            for _ in 0..repeats.max(1){
+                let t0=std::time::Instant::now();
+                let mut run=apply::apply_block_on(&view,sum,&genesis,&profile,&input).map_err(|e|format!("calibration h={h}: {e:?}"))?;
+                let child=crate::view::Overlay::from_layer(&view,std::mem::take(&mut run.layer));
+                let mut b=crate::node_trie::Batch::default();let next=trie.update(*s,&mut b,&child,&run.writes);let root=next.root(*s,&b);
+                worst=worst.max(ms(t0));samples+=1;out=Some((run,next,b,root));
+            }
+            // The block's nodes are committed once, durably, inside its timed span.
+            let (run,next,b,root)=out.unwrap();let t0=std::time::Instant::now();s.commit(&b,next.world)?;worst=worst.saturating_add(ms(t0));
+            if let Some(old)=trie.world{s.unpin(&old)?;}
+            *trie=next;*sum=run.summary;roots.push(root);(run.gas_used,run.is_final,run.facts.closing)
+        }else{
+            let mut out=None;
+            for _ in 0..repeats.max(1){
+                let t0=std::time::Instant::now();let o=apply::apply_block(&state,&genesis,&profile,&input).map_err(|e|format!("calibration h={h}: {e:?}"))?;
+                worst=worst.max(ms(t0));samples+=1;out=Some(o);
+            }
+            let o=out.unwrap();roots.push(o.state_root);let r=(o.gas_used,o.is_final,o.facts.closing);state=o.state;r
+        };
+        gas_log.push(gas_used);
+        if gas_used<cp.GAS_LIMIT{return Err(format!("calibration h={h}: the block used {gas_used} gas, not the GAS_LIMIT workload"))}
+        let class=if is_final{2}else if closing{1}else{0};
         phase_ms[class]=phase_ms[class].max(worst);seen[class]=true;
         let shares:Vec<(u64,Address)>=(0..u64::from(cp.S_max)).map(|i|(i+1,members[(i as usize+h as usize)%members.len()])).collect();
         prev=Some(ParentResult{block_hash:B256::from(U256::from(h)),winner:members[h as usize%members.len()],shares});
-        state=o.state;
-        if o.is_final{break}
+        if is_final{break}
     }
+    if let Some((s,trie,_))=&stored{if let Some(r)=trie.world{s.unpin(&r)?;}}
     // H_CLOSE <= 1: no ordinary block can exist in this profile; its fact takes the larger
     // measured phase (conservative), so R14/R19 still cover every reachable block.
     if !seen[0]&&cp.H_CLOSE<=1{phase_ms[0]=phase_ms[1].max(phase_ms[2]);seen[0]=true;}
     if !seen.iter().all(|s|*s){return Err(format!("calibration: phase classes reached {seen:?}"))}
-    Ok((Timing{genesis_hash:hash,phase_ms,samples},gas_log))
+    Ok((Timing{genesis_hash:hash,phase_ms,samples,stored:store.is_some()},gas_log,roots))
 }
 fn spec_ts(cp:&ConsensusParams,h:u64)->u64{cp.g_ts.saturating_add(h.saturating_mul(u64::from(cp.T_blk)))}
 

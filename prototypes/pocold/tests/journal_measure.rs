@@ -1038,3 +1038,22 @@ fn jm_r14_import_by_mode(){
         drop(n);let _=std::fs::remove_dir_all(&dir);
     }
 }
+/// R14/R19 at boot by state mode (measurement, asserts only the workload): the admission calibration on this host
+/// in memory (`admission::measure`) and through a scratch state store on the temp directory's disk
+/// (`admission::measure_on_store`, the timing a store-mode boot adds), for a default devnet profile, `JM_BT_RUNS`
+/// times each. Prints each run's per-phase times (ordinary, closing, final) beside t_exec.
+#[test] #[ignore] fn jm_r14_boot_timing_by_mode(){
+    use pocol_lp4_execution::admission;
+    let runs=std::env::var("JM_BT_RUNS").ok().and_then(|s|s.parse().ok()).unwrap_or(5u32);
+    let n=devnet::build(&DevnetConfig::new(777950,pocold::node::now_s(),&["a","b","c"])).unwrap();
+    let t_exec_ms=u64::from(pocold::single_host_local().t_exec)*1000;
+    for r in 0..runs{
+        let m=admission::measure(&n.spec_bytes,&n.alloc,1).unwrap();
+        let dir=tmp(&format!("boot-timing-{r}"));std::fs::create_dir_all(&dir).unwrap();
+        let st=pocold::state_store::StateStore::open(&dir).unwrap();let s=admission::measure_on_store(&n.spec_bytes,&n.alloc,1,&st).unwrap();
+        let file=std::fs::metadata(st.path()).map(|m|m.len()).unwrap_or(0);drop(st);let _=std::fs::remove_dir_all(&dir);
+        let c=m.with_store(&s).unwrap();
+        println!("JM-BOOT-TIMING {}",serde_json::json!({"run":r,"memoryPhaseMs":m.phase_ms,"storePhaseMs":s.phase_ms,"bootPhaseMs":c.phase_ms,"samples":[m.samples,s.samples],"storeFileBytes":file,"tExecMs":t_exec_ms}));
+        assert!(c.phase_ms.iter().zip(m.phase_ms).all(|(c,m)|*c>=m));
+    }
+}

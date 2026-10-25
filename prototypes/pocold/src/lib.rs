@@ -122,14 +122,30 @@ pub fn admission_json(a:&admission::Admitted)->serde_json::Value{
 /// this machine and this node's local parameters. Boot is refused with every violated rule.
 /// The timing recorded by init-devnet is informational only (review finding: a recorded value
 /// could come from another machine or be edited).
-pub fn load_spec(dir:&std::path::Path,local:&NodeLocal)->Result<chain::Spec,String>{
+pub fn load_spec(dir:&std::path::Path,local:&NodeLocal)->Result<chain::Spec,String>{load_spec_for(dir,local,None)}
+/// The scratch state store of a store-mode boot's R14/R19 measurement, in the node's data directory.
+pub const CALIBRATION_STORE:&str="calibration.store";
+/// `load_spec` for a node about to open `store_data` in store mode (C-1 E4; `None`: whole-state mode). R14/R19 are
+/// measured on the path that node runs: the calibration blocks are also applied through a scratch state store in
+/// `store_data` (each block's nodes committed and fsynced to its state.redb, on the node's own disk), and each phase
+/// class takes the larger of the two times. The scratch store is removed before the node opens.
+pub fn load_spec_for(dir:&std::path::Path,local:&NodeLocal,store_data:Option<&std::path::Path>)->Result<chain::Spec,String>{
     let hexs=std::fs::read_to_string(dir.join("genesis.spec.hex")).map_err(|e|format!("genesis.spec.hex: {e}"))?;
     let spec_bytes=types::unhex(hexs.trim())?;
     let alloc:serde_json::Value=serde_json::from_str(&std::fs::read_to_string(dir.join("alloc.json")).map_err(|e|format!("alloc.json: {e}"))?).map_err(|e|e.to_string())?;
     let alloc=devnet::alloc_from_json(&alloc)?;
     let info:serde_json::Value=std::fs::read_to_string(dir.join("devnet.json")).ok().and_then(|t|serde_json::from_str(&t).ok()).unwrap_or_default();
     let calibration=info["calibration"]["hashesPerSecond"].as_u64().map(|r|(r,FactClass::SyntheticFixture));
-    let measured=admission::measure(&spec_bytes,&alloc,1);
+    let mut measured=admission::measure(&spec_bytes,&alloc,1);
+    if let (Some(data),Ok(mem))=(store_data,&measured){measured=store_timing(data,&spec_bytes,&alloc).and_then(|s|mem.with_store(&s));}
     let req=Request{spec_bytes:&spec_bytes,alloc:&alloc,forks:&[(1,0)],kind:ProfileKind::Simnet,node:NodeKind::Simnet,local,calibration,timing:measured.as_ref().ok(),scope:admission::Scope::ExperimentalDevnet};
     admission::admit(&req).map(chain::Spec::new).map_err(|e|match &measured{Err(why)=>format!("{e}; timing: {why}"),Ok(_)=>e.to_string()})
+}
+/// The calibration through a scratch state store at `data/CALIBRATION_STORE`, removed afterwards (also when the
+/// measurement fails; one a crash left is removed first).
+fn store_timing(data:&std::path::Path,spec_bytes:&[u8],alloc:&revm::InMemoryDB)->Result<admission::Timing,String>{
+    let scratch=data.join(CALIBRATION_STORE);let _=std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).map_err(|e|format!("calibration store {}: {e}",scratch.display()))?;
+    let r=state_store::StateStore::open(&scratch).map_err(|e|format!("calibration store: {}",e.0)).and_then(|st|admission::measure_on_store(spec_bytes,alloc,1,&st));
+    let _=std::fs::remove_dir_all(&scratch);r
 }

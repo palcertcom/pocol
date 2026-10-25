@@ -1,5 +1,5 @@
 //! pocold — PoCol local development node (simnet devnets only).
-use pocold::{node,types,load_spec,single_host_local};
+use pocold::{node,types,load_spec_for,single_host_local};
 use pocol_lp4_execution::admission::NodeLocal;
 use std::path::PathBuf;
 use pocol_lp4_execution::devnet;
@@ -77,11 +77,12 @@ fn init(args:&[String])->Result<(),String>{
 }
 fn run(args:&[String])->Result<(),String>{
     let limits=limits(args)?;let net=PathBuf::from(arg(args,"--network").ok_or("--network")?);
-    let spec=load_spec(&net,&local(args))?;
+    let data=PathBuf::from(arg(args,"--data").ok_or("--data")?);
+    let spec=load_spec_for(&net,&local(args),limits.state_store.then_some(data.as_path()))?;
     let name=arg(args,"--name").unwrap_or_else(||"node".into());
     let miner=arg(args,"--miner").map(|l|devnet::miner_identity(&l).key);
     let parse=|s:&str|s.parse::<std::net::SocketAddr>().map_err(|e|format!("{s}: {e}"));
-    let cfg=node::Config{dir:PathBuf::from(arg(args,"--data").ok_or("--data")?),name,miner,
+    let cfg=node::Config{dir:data,name,miner,
         listen:arg(args,"--listen").map(|s|parse(&s)).transpose()?,peers:args_all(args,"--peer").iter().map(|s|parse(s)).collect::<Result<_,_>>()?,
         rpc:arg(args,"--rpc").map(|s|parse(&s)).transpose()?,
         stop_at:arg(args,"--stop-at").and_then(|s|s.parse().ok()),log:args.iter().any(|a|a=="--log"),limits};
@@ -94,7 +95,8 @@ fn run(args:&[String])->Result<(),String>{
     println!("{}",n.status_json());Ok(())
 }
 fn status(args:&[String])->Result<(),String>{
-    let limits=limits(args)?;let net=PathBuf::from(arg(args,"--network").ok_or("--network")?);let spec=load_spec(&net,&local(args))?;
-    let cfg=node::Config{dir:PathBuf::from(arg(args,"--data").ok_or("--data")?),name:"status".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits};
+    let limits=limits(args)?;let net=PathBuf::from(arg(args,"--network").ok_or("--network")?);let data=PathBuf::from(arg(args,"--data").ok_or("--data")?);
+    let spec=load_spec_for(&net,&local(args),limits.state_store.then_some(data.as_path()))?;
+    let cfg=node::Config{dir:data,name:"status".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits};
     let n=node::Node::open(cfg,spec)?;println!("{}",n.status_json());Ok(())
 }
