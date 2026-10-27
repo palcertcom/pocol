@@ -391,6 +391,8 @@ Their artifacts are not copied.
 | 40575426466 | fbe6062 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 721 ms against an honest reader's 721 ms, pacer lateness 1 ms; evidence/windows-fbe6062/ |
 | 40578404549 | 71eb650 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 737 ms against an honest reader's 795 ms, pacer lateness 1 ms; evidence/windows-71eb650/ |
 | 40583789163 | 206eaa4 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 751 ms against an honest reader's 784 ms, pacer lateness 3 ms; evidence/windows-206eaa4/ |
+| 40585164582 | 93a40d0 (node code: the deferred checkpoint release) | PASS on every step (lp4 211/0, pocold 240/0); client window 0.506 s, pacer lateness 3 ms; evidence/windows-93a40d0/ |
+| 40589342452 | 22a82c2 (node code: release steps fsynced) | **FAIL, one test:** pocold 239/1, `e4_checkpoint_damage_falls_back_to_a_verified_state`. Open panicked on a store the release at open had marked damaged: a defect of `93a40d0`, reproduced on Linux and fixed after `ad301e7` (evidence/windows-22a82c2/RUN.md). lp4 211/0, extension 234/0 |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the

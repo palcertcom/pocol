@@ -79,6 +79,23 @@ An independent review of `93a40d0` and `22a82c2` found nothing critical or high
    - rows, not references, in the docs and stats (`released_rows`, `rowsReleased`; the earlier logs'
      `refsReleased` counts rows).
 
+## A defect found on Windows (run 40589342452, `22a82c2`)
+
+`e4_checkpoint_damage_falls_back_to_a_verified_state` failed on Windows in its case "a missing node only a middle
+version names" (evidence/windows-22a82c2/RUN.md).
+- **Cause:** a defect of `93a40d0`. When the node the case removes is also owed, the release at open marks the
+  store damaged. Open then went on to pin genesis's version in that store and panicked, instead of rebuilding.
+- **Why it was intermittent:** the case picks its node from a `HashSet`.
+- **Reproduced on Linux** with a sweep over every candidate node (an uncommitted change to the test, run as a
+  scratch binary):
+  - 14 of the first 363 candidates panicked on `ad301e7` (`damage-sweep-before-fix.log`, the panic lines);
+  - after the fix, the same sweep over all 587 candidates is recorded in `damage-sweep-after-fix.log`, committed
+    when it finishes.
+- **The fix:** `Node::open` sets aside a store found damaged before genesis is pinned, as `StateStore::open`
+  sets aside one marked damaged, and replays from genesis.
+- **The test:** `e4_checkpoint_open_rebuilds_a_store_its_release_finds_damaged` removes an owed node
+  deterministically. It fails without the fix (the same panic) and passes with it.
+
 ## Seeded faults
 
 - **`mutants-deferred-release-dd85cc0.log`:** 16 faults on the code before the review fixes, **all killed**.

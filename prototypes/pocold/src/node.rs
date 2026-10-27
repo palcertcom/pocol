@@ -344,20 +344,29 @@ impl Node{
         let ckpt_every=if cfg.limits.state_store&&cfg.limits.r_keep==rk_replay{cfg.limits.checkpoint_every}else{0};
         let (mut start,mut refused,mut released,mut state_store,mut versions_read)=(0usize,0u64,0u64,None,crate::checkpoint::Read::default());let mut opened_release=0u64;
         if cfg.limits.state_store{
-            let st=Arc::new(crate::state_store::StateStore::open(&cfg.dir).map_err(|e|format!("state store: {}",e.0))?);
-            let dyn_st:Arc<dyn pocol_lp4_execution::node_trie::TrieStore>=st.clone();
+            let mut st=Arc::new(crate::state_store::StateStore::open(&cfg.dir).map_err(|e|format!("state store: {}",e.0))?);
+            let mut dyn_st:Arc<dyn pocol_lp4_execution::node_trie::TrieStore>=st.clone();
             let mut resumed=None;
             // D-6: what a checkpoint's write left owed is worked off before anything is read (a store owes at
             // most one dropped checkpoint). A count that contradicts what is owed marks the store damaged
             // (`release_all`), so its checkpoints are not used and it is rebuilt. A storage error leaves the
             // work owed (the counts include it): the release steps, or the next checkpoint's write, finish it.
-            let released_at_open=if st.rebuilt||ckpt_every==0{0}else{st.release_all().unwrap_or(0)};
+            let mut released_at_open=if st.rebuilt||ckpt_every==0{0}else{st.release_all().unwrap_or(0)};
             // The pins are reset to the checkpoints' before genesis's version is pinned for its entry.
             let snaps:Result<Vec<(u64,crate::checkpoint::Snapshot)>,String>=if ckpt_every>0&&!st.rebuilt&&!history.rebuilt&&history_kept{
                 st.checkpoints().map_err(|e|e.0).and_then(|c|c.iter().map(|(q,b,roots)|{
                     let s=crate::checkpoint::decode(b).map_err(|e|format!("checkpoint {q}: {e}"))?;
                     if *roots!=crate::checkpoint::roots(&s){return Err(format!("checkpoint {q}: its roots record is not its snapshot's"))}Ok((*q,s))}).collect())
                     .and_then(|s:Vec<(u64,crate::checkpoint::Snapshot)>|if s.is_empty(){Ok(s)}else{st.reset_pins().map(|n|{released=n;s}).map_err(|e|e.0)})}else{Ok(vec![])};
+            // A store found damaged so far (the release at open met a row naming a node that is not stored,
+            // say) is set aside now and started empty, as `StateStore::open` sets aside one marked damaged:
+            // nothing more is read from it, and replay refills the new one (I1). Before, open went on to pin
+            // genesis's version in the damaged store and panicked (Windows CI run 40589342452, 2026-10-27).
+            let snaps=if st.is_damaged(){
+                drop(dyn_st);drop(st);
+                st=Arc::new(crate::state_store::StateStore::open(&cfg.dir).map_err(|e|format!("state store: {}",e.0))?);dyn_st=st.clone();
+                (released_at_open,released)=(0,0);Err("the store was found damaged at open".to_string())
+            }else{snaps};
             chain.enable_store(dyn_st.clone()).map_err(|e|format!("state store: {e:?}"))?;
             {
                 match snaps{

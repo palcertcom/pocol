@@ -2551,6 +2551,24 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     drop(n);let _=std::fs::remove_dir_all(&dir);
 }
 
+/// D-6 (Windows CI run 40589342452, 2026-10-27): a store the release at open finds damaged is set aside, and
+/// the node replays from genesis. A node stops owing a dropped checkpoint's nodes, and a node it owes is then
+/// removed from state.redb, so the release at open meets a row naming a node that is not stored and marks
+/// the store damaged. Before the fix, open went on to pin genesis's version in that store and panicked (in
+/// the damage test, whenever the node it removed was also owed).
+#[test] fn e4_checkpoint_open_rebuilds_a_store_its_release_finds_damaged(){
+    let blocks=e44_blocks();let a=e44_dir("release-damaged");let every=7u64;
+    {let mut n=reopen(&e44_conf(&a,every));for b in blocks{n.import(b.clone(),None).unwrap();}assert!(n.release_pending(),"positive control: the node stops owing");}
+    let (mut g,gd)=e44_reference(&a,"release-damaged-ref");
+    let owed=pocold::state_store::StateStore::open(&a).unwrap().owed_refs().unwrap();assert!(!owed.is_empty(),"positive control: the store owes work");
+    {let nodes:redb::TableDefinition<&[u8;32],&[u8]>=redb::TableDefinition::new("node");let db=redb::Database::open(a.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
+     {let mut t=w.open_table(nodes).unwrap();assert!(t.remove(&owed[0].0).unwrap().is_some(),"positive control: the owed node was stored");}w.commit().unwrap();}
+    let mut n=reopen(&e44_conf(&a,every));
+    assert_eq!(n.stats.resumed_from,None,"replayed from genesis");assert!(!n.state_store().unwrap().is_damaged(),"the new store is whole");
+    e44_same(&mut n,&mut g,"after the release at open found the store damaged");
+    drop(n);drop(g);for d in [a,gd]{let _=std::fs::remove_dir_all(&d);}
+}
+
 /// The child of `e4_checkpoint_survives_kills`: imports the blocks of `POCOLD_E44_BLOCKS` into the node
 /// at `POCOLD_E44_CHILD`, a checkpoint after every record, until it is killed. Not a test on its own.
 #[test] #[ignore="the child process of e4_checkpoint_survives_kills"]
