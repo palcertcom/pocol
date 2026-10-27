@@ -535,24 +535,39 @@ fn pacer_batch()->String{
     // an honest reader is far above R (the pacer waits for writability, then writes the next chunk).
     let mut l=small();l.rpc.min_send_rate=1<<20;l.rpc.grace=Duration::from_millis(500);l.rpc.enforce_slack=Duration::from_millis(200);
     l.rpc.work_deadline=Duration::from_secs(60);l.rpc.write_deadline=Duration::from_secs(60);
-    let r=start("pacer",l);let c=&pocold::rpc::COUNTERS;let (p0,w0)=(counter(&c.pacer_closed),counter(&c.pacer_waits));c.pacer_late_max_ms.store(0,Ordering::SeqCst);
+    let r=start("pacer",l);let c=&pocold::rpc::COUNTERS;
     let body=pacer_batch();
+    // Review 2026-10-27: the time to the answer's first byte, which the pacer's own figures do not cover. An
+    // honest client reads the same batch first: its first byte comes after the batch is executed, which this
+    // host's load sets. The slow reader's first byte must come about as soon (below).
+    let honest_first={let mut h=TcpStream::connect(("127.0.0.1",r.rpc)).unwrap();h.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        let t=Instant::now();write!(h,"POST / HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
+        let mut b=[0u8;1];assert_eq!(h.read(&mut b).unwrap(),1,"an honest reader gets the answer");let first=t.elapsed();let mut rest=Vec::new();let _=h.read_to_end(&mut rest);first};
+    let (p0,w0)=(counter(&c.pacer_closed),counter(&c.pacer_waits));c.pacer_late_max_ms.store(0,Ordering::SeqCst);
     let mut s=unread_client(r.rpc);
     write!(s,"POST / HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
     // Do not read. Poll pacer_closed and record when the pacer fires. The time from the request includes
     // executing the batch before its answer is sent (0.6-0.9 s on Linux): Windows run 40522024488
     // (palcertcom/pocol) saw no close within the 5 s this wait had. So it runs to 20 s, and the bounds below
     // are on the send time, from the first byte sent: the violation instant is s_v = max(GRACE, A/R), with A
-    // what the kernel accepted for this client.
-    let t=Instant::now();while counter(&c.pacer_closed)==p0&&t.elapsed()<Duration::from_secs(20){std::thread::sleep(Duration::from_millis(10));}
-    let closed_at=t.elapsed();let (late,waits)=(counter(&c.pacer_late_max_ms),counter(&c.pacer_waits)-w0);
+    // what the kernel accepted for this client. The client also peeks (reads nothing, so its receive window
+    // stays closed) to see when the first byte reached it, for the bounds the client sees for itself.
+    let t=Instant::now();let mut first=None;s.set_nonblocking(true).unwrap();
+    while counter(&c.pacer_closed)==p0&&t.elapsed()<Duration::from_secs(20){
+        if first.is_none(){let mut b=[0u8;1];if matches!(s.peek(&mut b),Ok(n) if n>0){first=Some(t.elapsed());}}
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let closed_at=t.elapsed();s.set_nonblocking(false).unwrap();let (late,waits)=(counter(&c.pacer_late_max_ms),counter(&c.pacer_waits)-w0);
     let st=rpc_json(r.rpc,r#"{"jsonrpc":"2.0","id":2,"method":"pocol_getRpcStats","params":[]}"#)["result"].clone();
     assert!(counter(&c.pacer_closed)>p0,"the pacer closed the non-reading client (after {closed_at:?}; stats {st})");
     let (send_time,accepted)=(st["lastPacerClose"]["sendTime"].as_f64().unwrap(),st["lastPacerClose"]["accepted"].as_u64().unwrap());
     let s_v=(accepted as f64/(1u64<<20) as f64).max(0.5);
     // Written to stdout directly, as ABSORB is, so A and s_v reach the log of a passing run too.
+    let first=first.expect("the answer's first byte reached the slow reader before the close");
+    let window=closed_at.saturating_sub(first).as_secs_f64();
     let line=format!("PACER {}\n",serde_json::json!({"os":std::env::consts::OS,"closedMs":closed_at.as_millis() as u64,"sendTimeS":send_time,
-        "acceptedBytes":accepted,"violationS":s_v,"pacerWaits":waits,"pacerLateMaxMs":late}));
+        "acceptedBytes":accepted,"violationS":s_v,"pacerWaits":waits,"pacerLateMaxMs":late,"firstByteMs":first.as_millis() as u64,
+        "honestFirstByteMs":honest_first.as_millis() as u64,"clientWindowS":window}));
     let _=std::io::Write::write_all(&mut std::io::stdout(),line.as_bytes());
     // Review 2 (RG2-M2): a blocked write waits for writability, waking only at the backstop and at the
     // violation instant: about one wait per PACER_BACKSTOP of send time, not one per millisecond.
@@ -563,7 +578,13 @@ fn pacer_batch()->String{
     // GRACE, not only at the timer: at least half of GRACE/PACER_BACKSTOP waits.
     let floor=500/backstop/2;
     assert!(waits>=floor,"the pacer waited {waits} times before GRACE: the backstop check is missing (floor {floor})");
-    assert!(closed_at>=Duration::from_millis(400),"not before GRACE: {closed_at:?}");
+    // Seen from the client, independently of the pacer's own figures: the close came GRACE or more after the
+    // first byte, and within ENFORCE_SLACK of s_v (0.3 s more for the 5 ms polls and the scheduling of this
+    // thread). And the first byte came about as soon as an honest reader's of the same batch: a delay before
+    // the pacer starts its clock would not show in sendTime (review 2026-10-27, a 4 s sleep before t0).
+    assert!(window>=0.45,"not before GRACE, seen from the client: {window} s from the first byte to the close");
+    assert!(window<=s_v+0.2+0.3,"within ENFORCE_SLACK of s_v, seen from the client: {window} s from the first byte, s_v = {s_v} s");
+    assert!(first<=honest_first*2+Duration::from_secs(1),"the slow reader's first byte came {first:?} after its request, an honest reader's {honest_first:?}");
     assert!(send_time<s_v+1.0,"after the violation instant, promptly: send time {send_time} s, s_v = {s_v} s");
     // ENFORCE_SLACK: the close came within 200 ms of the violation instant s_v (TIMER_EPS + scheduling).
     assert!(late<=200,"pacer lateness {late} ms > ENFORCE_SLACK");

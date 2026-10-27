@@ -36,6 +36,8 @@ function fetchCli(i, s) {
   return { version: m.version, digest: sha(Buffer.concat(m.files.map((f) => Buffer.concat([Buffer.from(f.path), readFileSync(join(out, f.path.slice(1)))])))) };
 }
 let isolated = null;
+// The partition's a and b, started outside devnet's pids.json: stopped in `main`'s finally if a wait fails first.
+const partition = [];
 const startIsolatedC = () => { isolated = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', 'c'), '--name', 'c', '--miner', 'c', '--rpc', '127.0.0.1:8542', '--log'], { stdio: 'ignore', detached: true }); };
 const stopIsolatedC = async () => { if (isolated) { process.kill(-isolated.pid, 'SIGTERM'); await new Promise((r) => isolated.once('exit', r)); isolated = null; } };
 const pids = () => JSON.parse(readFileSync(join(work, 'pids.json'), 'utf8'));
@@ -80,7 +82,7 @@ async function main() {
     // ---- partition: c isolated, v2 published on the minority branch through c ----
     devnet(['stop', work]); await sleep(1500); // stop all, then restart a+b meshed and c alone
     const ab = (l, i) => spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--miner', l, '--listen', `127.0.0.1:${30300 + i}`, '--rpc', `127.0.0.1:${8540 + i}`, '--peer', `127.0.0.1:${30300 + (1 - i)}`, '--log'], { stdio: 'ignore', detached: true });
-    const pa = ab('a', 0), pb = ab('b', 1); startIsolatedC();
+    const pa = ab('a', 0), pb = ab('b', 1); partition.push(pa, pb); startIsolatedC();
     const base = Math.min(...await wait(async () => { try { return await heights(); } catch { return null; } }, 60000, 'partitioned nodes up'));
     const d2 = join(work, 's2'); writeSite(d2, site(2)); publish(d2, 8542, cid, S);
     await wait(async () => (await currentVersion(2, S)) === 1, 240000, 'v2 on isolated c');
@@ -94,7 +96,7 @@ async function main() {
     const cTip = (await rpc(8542, 'pocol_status')).head, aTip = (await rpc(8540, 'pocol_status')).head;
     ok('partition: branches diverged', cTip.hash !== aTip.hash, `c=${cTip.height} ab=${aTip.height} base=${base}`);
     // ---- heal ----
-    await stopIsolatedC(); for (const p of [pa, pb]) process.kill(-p.pid, 'SIGTERM'); await sleep(1500);
+    await stopIsolatedC(); for (const p of partition.splice(0)) process.kill(-p.pid, 'SIGTERM'); await sleep(1500);
     devnet(['start', work, '--log']);
     await wait(async () => { const s = await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); return s[2].head.height >= s[0].head.height - 1 && s[2].stats.reorgs >= 1; }, 240000, 'c reorganized');
     const stC = await rpc(8542, 'pocol_status');
@@ -161,6 +163,7 @@ async function main() {
     writeFileSync(join(work, 'resources.json'), JSON.stringify(res, null, 1));
   } finally {
     await stopIsolatedC().catch(() => {}); try { devnet(['stop', work]); } catch {}
+    for (const p of partition.splice(0)) { try { process.kill(-p.pid, 'SIGTERM'); } catch {} }
   }
 }
 
