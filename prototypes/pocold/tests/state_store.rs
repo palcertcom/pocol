@@ -170,3 +170,18 @@ fn dir(tag:&str)->std::path::PathBuf{let d=std::env::temp_dir().join(format!("po
     drop(s);assert!(StateStore::open(&d).unwrap().rebuilt,"the next open rebuilds it");
     let _=std::fs::remove_dir_all(&d);
 }
+
+/// A13 counts a stored node as `node_trie::ROW` plus its encoding: checked against the rows state.redb
+/// really keeps (its own `stored_bytes`), so the constant is not checked against a copy of itself.
+#[test] fn a13_row_is_what_state_redb_keeps_per_node(){
+    let c=codes();let mut r=Rng(0x13);let d=dir("row");let db=state(&mut r,150,&c);
+    let s=StateStore::open(&d).unwrap();let mut b=Batch::default();let t=NodeTrie::build(&db,&s,&mut b);
+    let root=t.world.unwrap();s.commit(&b,Some(root),true).unwrap();
+    let mut seen=std::collections::HashSet::new();let mut stack=vec![root];let mut nodes=0u128;
+    while let Some(id)=stack.pop(){if !seen.insert(id){continue}let n=&b.nodes[&id];nodes+=pocol_lp4_execution::node_trie::ROW+n.encode().len() as u128;stack.extend(n.children());}
+    let code:u128=b.code.values().map(|x|32+x.original_bytes().len() as u128).sum();
+    assert!(seen.len()>300,"positive control: a trie of {} nodes",seen.len());
+    assert_eq!(s.node_count().unwrap(),seen.len() as u64);
+    assert_eq!(u128::from(s.stored_bytes().unwrap()),nodes+code+36,"nodes, code and the one pin row");
+    drop(s);let _=std::fs::remove_dir_all(&d);
+}

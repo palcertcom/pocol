@@ -148,8 +148,9 @@ fn raw_clustered_keys_build_and_update_give_p1_roots(){
 }
 
 // ---------------- A13 (C-1 E4.5): what a store keeps of versions ----------------
-/// Bytes a store keeps: every row's id, count and serialization.
-fn stored(s:&MemStore)->u128{s.nodes.values().map(|(n,_)|ROW+n.encode().len() as u128).sum()}
+/// Bytes a store keeps: every row's 32-byte id, 4-byte count and serialization (as pocold's state_store
+/// keeps them; counted here independently of `ROW`).
+fn stored(s:&MemStore)->u128{s.nodes.values().map(|(n,_)|32+4+n.encode().len() as u128).sum()}
 /// Every stored node within its kind's serialization bound, and every branch with two children or more.
 fn kinds_within(s:&MemStore,ctx:&str){
     for (n,_) in s.nodes.values(){
