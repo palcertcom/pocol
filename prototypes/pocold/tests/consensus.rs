@@ -2508,7 +2508,8 @@ fn e4_checkpoint_kill_child(){
         blocks.push(Block{header:decode_header(&part[0]).unwrap(),body:Body::decode(&part[1],1<<24).unwrap()});}
     let mut n=reopen(&e44_conf(std::path::Path::new(&dir),1));
     println!("\nE44READY {}",n.chain.head().height);std::io::stdout().flush().unwrap();
-    for b in blocks{let _=n.import(b,None);}
+    // D-6: one release step after each import, as the event loop runs one between events.
+    for b in blocks{let _=n.import(b,None);n.release_step();}
     println!("\nE44DONE");std::io::stdout().flush().unwrap();
     loop{std::thread::sleep(std::time::Duration::from_secs(1));}
 }
@@ -2645,7 +2646,8 @@ fn e4_checkpoint_kill_child(){
 }
 /// D-6 crash test at each step (`--features crash-test`): the child node aborts the n-th time it reaches
 /// a step of a block's commit (inside the state transaction, after it, after the history write, after
-/// the journal append) or of a checkpoint's write (before it, inside its transaction, after it). After
+/// the journal append), of a checkpoint's write (before it, inside its transaction, after it) or of a
+/// release step (inside its transaction, 2026-10-27). After
 /// each abort the node opens and is the node replay from genesis gives from the same journal, and a
 /// second run without the crash imports every block to the same node.
 #[cfg(feature="crash-test")]
@@ -2660,7 +2662,7 @@ fn e4_checkpoint_kill_child(){
         let done=lines.map_while(|l|l.ok()).any(|l|l=="E44DONE");
         if done{c.kill().unwrap();}c.wait().unwrap();done};
     for (step,ns) in [("state-txn",[2u64,30,90]),("state-commit",[1,25,80]),("history",[3,40,100]),("journal",[5,50,104]),
-        ("checkpoint-before",[1,33,99]),("checkpoint-txn",[2,47,103]),("checkpoint-after",[4,60,101])]{
+        ("checkpoint-before",[1,33,99]),("checkpoint-txn",[2,47,103]),("checkpoint-after",[4,60,101]),("release-step",[1,20,60])]{
         for n in ns{
             let d=e44_dir(&format!("step-{step}-{n}"));let file=d.with_extension("blocks");
             {let mut out=vec![];for b in blocks{for p in [b.header.encoded.clone(),b.body.encode()]{out.extend((p.len() as u32).to_be_bytes());out.extend(p);}}std::fs::write(&file,out).unwrap();}

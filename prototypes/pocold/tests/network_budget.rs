@@ -103,7 +103,7 @@ fn print(tag:&str,b:&pocold::resources::Bound){
 /// entries and once for each kept checkpoint. A run of n consecutive versions is the oldest whole and n − 1 blocks'
 /// additions, at most n whole versions.
 #[test] fn a13_store_file_and_batch_terms_follow_the_node_trie_bounds(){
-    use pocol_lp4_execution::node_trie::{batch_nodes,block_bytes,version_bytes,Id,Node};use pocold::resources as r;
+    use pocol_lp4_execution::node_trie::{batch_nodes,block_bytes,version_bytes,Id,Node,BRANCH_ENC,ROW};use pocold::resources as r;
     let net=devnet::build(&network()).unwrap().profile.cp().clone();
     let dev=devnet::build(&DevnetConfig::new(777910,1_700_000_000,&["a","b","c"])).unwrap().profile.cp().clone();let l=pocold::single_host_local();
     for cp in [&net,&dev]{
@@ -114,7 +114,10 @@ fn print(tag:&str,b:&pocold::resources::Bound){
         let k=32u128;let sm=u128::from(l.side_max);
         let held=whole+run(k+1)+run(k)+sm*whole+run(2);assert_eq!(r::held_versions_bytes(cp,32,l.side_max),Some(held));
         let lim=pocold::node::Limits{state_store:true,..Default::default()};let p=r::state_file_parts(cp,32,l.side_max,&lim).unwrap();
-        assert_eq!(p[0],r::STATE_FILE_FACTOR*(pocold::checkpoint::KEPT as u128+1)*held,"the entries' versions and each kept checkpoint's");
+        // D-6 (2026-10-27): and one dropped checkpoint whose nodes are owed, with a release row for at most each of its
+        // nodes (each counted at ROW + BRANCH_ENC bytes or more).
+        let owed_rows=ROW*(held/(ROW+BRANCH_ENC)+1);
+        assert_eq!(p[0],r::STATE_FILE_FACTOR*((pocold::checkpoint::KEPT as u128+2)*held+owed_rows),"the entries' versions, each kept checkpoint's and one owed");
         // The batch: its branches and leaves behind their Arcs and map slots, every branch's children, the write set.
         let (b,lv,kids)=batch_nodes(wa,ws,ka,ks).unwrap();let slot=|n:usize|pocol_lp4_execution::resources::memory::entry_bytes(n as u128);
         let node=(2*std::mem::size_of::<usize>()+std::mem::size_of::<Node>()) as u128+slot(std::mem::size_of::<(Id,std::sync::Arc<Node>)>());

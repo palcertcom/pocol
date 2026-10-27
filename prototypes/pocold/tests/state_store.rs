@@ -185,3 +185,71 @@ fn dir(tag:&str)->std::path::PathBuf{let d=std::env::temp_dir().join(format!("po
     assert_eq!(u128::from(s.stored_bytes().unwrap()),nodes+code+36,"nodes, code and the one pin row");
     drop(s);let _=std::fs::remove_dir_all(&d);
 }
+
+/// D-6 (2026-10-27): a checkpoint's write drops the oldest checkpoint's pins and owes its nodes, and
+/// `release_step` works them off a few at a time. After every step the counts recount (what is owed
+/// included) and every pinned version reads as its state. When nothing is owed, the store holds exactly
+/// what the pins reach, as a release inside the write left it. The next write finishes what is still owed
+/// before it owes more; a store that owes work reopens owing it; a step that is never made durable is
+/// simply owed again.
+#[test] fn a_dropped_checkpoint_is_released_in_steps_and_ends_as_a_release_in_the_write(){
+    let c=codes();let mut r=Rng(0xd6);let d=dir("owed");let pool=800;
+    let mut db=state(&mut r,200,&c);let mut versions:Vec<(Option<Id>,InMemoryDB)>=vec![];
+    let reads=|s:&StateStore,v:&[(Option<Id>,InMemoryDB)],ctx:&str|{for (w,st) in v{same(st,&TrieState{store:s,trie:NodeTrie{world:*w},block_hashes:&st.block_hashes},ctx);}};
+    let (steps,owed_at_reopen)={
+        let s=StateStore::open(&d).unwrap();
+        let mut b=Batch::default();let mut t=NodeTrie::build(&db,&s,&mut b);s.commit(&b,t.world,true).unwrap();versions.push((t.world,db.clone()));
+        let mut grow=|s:&StateStore,versions:&mut Vec<(Option<Id>,InMemoryDB)>,k:usize|{for _ in 0..k{
+            let next=mutate(&mut r,&db,&c,pool);let touched=Touched::between(&db,&next);let mut b=Batch::default();
+            let u=t.update(s,&mut b,&next,&touched);s.commit(&b,u.world,true).unwrap();versions.push((u.world,next.clone()));t=u;db=next;}};
+        // Three checkpoints of five versions each; with two kept, the third's write drops the first.
+        let roots=|v:&[(Option<Id>,InMemoryDB)]|v.iter().filter_map(|x|x.0).collect::<Vec<Id>>();
+        grow(&s,&mut versions,4);s.write_checkpoint(b"c0",&roots(&versions[0..5]),2).unwrap();assert!(!s.release_pending(),"nothing dropped yet");
+        grow(&s,&mut versions,10);s.write_checkpoint(b"c1",&roots(&versions[10..15]),2).unwrap();
+        grow(&s,&mut versions,10);
+        // The entries' own pins of versions 0..25 are released as entries drop theirs; the checkpoints keep theirs.
+        for (w,_) in &versions[0..20]{if let Some(w)=w{s.unpin(w,false).unwrap()}}
+        s.recount().unwrap();let before=s.node_count().unwrap();
+        // The nodes only the first checkpoint holds, read once so that the cache holds them.
+        let live:Vec<(Option<Id>,InMemoryDB)>=versions[10..15].iter().chain(&versions[20..]).cloned().collect();
+        let only_c0:Vec<Id>={let kept=reach(&s,&roots(&live));reach(&s,&roots(&versions[0..5])).into_iter().filter(|x|!kept.contains(x)).collect()};
+        assert!(!only_c0.is_empty(),"positive control: the first checkpoint holds nodes of its own");
+        s.write_checkpoint(b"c2",&roots(&versions[20..25]),2).unwrap();
+        assert!(s.release_pending(),"the first checkpoint's nodes are owed");
+        assert_eq!(s.node_count().unwrap(),before,"the write released no node");
+        s.recount().unwrap_or_else(|e|panic!("right after the write: {e}"));
+        let live=&live[..];let mut steps=0;
+        while s.release_pending(){let n=s.release_step(3).unwrap();assert!(n<=3);steps+=1;
+            s.recount().unwrap_or_else(|e|panic!("after step {steps}: {e}"));
+            if steps%5==0{reads(&s,live,&format!("after step {steps}"));}}
+        assert!(steps>3,"positive control: the release took {steps} steps of 3");
+        assert!(s.node_count().unwrap()<before,"the first checkpoint's own nodes are gone");
+        assert!(s.owed_refs().unwrap().is_empty());reads(&s,live,"released");
+        assert!(only_c0.iter().all(|id|s.try_node(id).unwrap().is_none()),"a released node is neither stored nor served from the cache");
+        // Owed work at the next write: it is finished first, then the second checkpoint is owed.
+        grow(&s,&mut versions,10);for (w,_) in &versions[20..30]{if let Some(w)=w{s.unpin(w,false).unwrap()}}
+        s.write_checkpoint(b"c3",&roots(&versions[30..35]),2).unwrap();assert!(s.release_pending());
+        s.release_step(2).unwrap();let owed=s.owed_refs().unwrap().len();
+        grow(&s,&mut versions,5);
+        s.write_checkpoint(b"c4",&roots(&versions[35..40]),2).unwrap();s.recount().unwrap();
+        // What c1's drop left owed was finished in c4's write: what is owed now is c2's alone.
+        let c2_nodes=reach(&s,&roots(&versions[20..25]));
+        assert!(s.owed_refs().unwrap().iter().all(|(id,_)|c2_nodes.contains(id)),"only the checkpoint c4's write dropped is owed");
+        assert!(owed>0,"positive control: c1's drop was still owed at c4's write");
+        // A step never made durable: the store is closed before any durable commit follows it.
+        let durable_owed=s.owed_refs().unwrap();s.release_step(2).unwrap();
+        (steps,durable_owed.len())
+    };
+    let s=StateStore::open(&d).unwrap();assert!(!s.rebuilt);
+    assert!(s.release_pending(),"a store that owes work reopens owing it");assert!(owed_at_reopen>0);
+    s.recount().unwrap_or_else(|e|panic!("reopened: {e}"));
+    let n=s.release_all().unwrap();assert!(n>0);assert!(!s.release_pending());s.recount().unwrap();
+    reads(&s,&versions[30..],"reopened and released");
+    println!("D6-RELEASE steps {steps} ownedAtReopen {owed_at_reopen} releasedAtReopen {n}");
+    let _=std::fs::remove_dir_all(&d);
+}
+/// Every node the roots reach.
+fn reach(s:&StateStore,roots:&[Id])->std::collections::HashSet<Id>{
+    let mut seen=std::collections::HashSet::new();let mut st=roots.to_vec();
+    while let Some(id)=st.pop(){if seen.insert(id){st.extend(s.try_node(&id).unwrap().unwrap().children())}}seen
+}

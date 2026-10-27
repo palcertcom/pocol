@@ -655,6 +655,15 @@ evidence/memory-r14/a13-models.log):
 | everything else | 0.887 | 0.887 |
 | **total** | **7.605** | **5.086** |
 
+**Updated 2026-10-27 (R3).** Two changes raise this total.
+- `5abbaf3` adds two stored-version handles.
+- The deferred checkpoint release counts one owed checkpoint's versions, and a release row for at most each of
+  their nodes (§3c).
+
+Network store mode is now **5,581,321,485 B (5.198 GiB), gate 5.94 GiB**, budget 6 GiB, model cap 5.25 GiB.
+- The state.redb allocator term rises from 0.279 to 0.391 GiB; its largest file is 3.08 TiB.
+- Devnet store mode is 2.449 GiB.
+
 **Mutation controls** (evidence/memory-r14/mutants.log): 25 mutants of the new code, 24 killed, one
 equivalent.
 - P6 drops the `min(n·whole, …)` of `chain_versions_bytes`. It is equivalent for every input the types allow:
@@ -974,17 +983,23 @@ on one host under one synthetic workload, not a bound.
   - `b6d57e8` reads a version whose parent's was read through `NodeTrie::diff` (§ condition
     `open-replay-transient`), and the open took 262 s;
   - the touched set it holds is one block's writes at most, as an import's write set, so it adds no term.
-- **Checkpoint stalls (open):**
-  - a checkpoint that drops the oldest one spends 8–11 s releasing what only the dropped one held, and 2.1–2.5 s
+- **Checkpoint stalls:**
+  - a checkpoint that dropped the oldest one spent 8–11 s releasing what only the dropped one held, and 2.1–2.5 s
     committing, inside its transaction on the consensus thread.
-  - Releasing them later, in slices, would leave one more checkpoint's versions in the store until done. The
-    file term would then count (KEPT + 2) sets of held versions instead of (KEPT + 1).
-  - Computed for the network profile in store mode (`a13_store_model_at_the_network_profile` with that factor,
-    scratch build):
-    - the largest file would grow from 2.20 to 2.86 TiB;
+  - **Deferred release** (D-6's mechanism, no rule change; C1-STORAGE-DESIGN.md, E4.4): the write owes the
+    dropped checkpoint's nodes in a `release` table, and `release_step` works them off between events. The next
+    write finishes what is still owed first, so at most one dropped checkpoint is owed.
+  - **The file term** (`state_file_parts`) now counts (KEPT + 2) sets of held versions instead of (KEPT + 1),
+    plus a `release` row (ROW bytes) for at most each node of the owed set. Every node it counts is at least
+    ROW + BRANCH_ENC bytes, so a set has at most bytes / (ROW + BRANCH_ENC) nodes.
+  - Computed for the network profile in store mode, with (KEPT + 2) sets before the release rows (scratch
+    build):
+    - the largest file from 2.20 to 2.86 TiB;
     - the redb allocator term from 0.2789 to 0.3626 GiB;
-    - the total from 5.086 to **5.170 GiB** (5.908 GiB required, against the 6 GiB budget and the 5.25 GiB cap).
-  - Not implemented.
+    - the total from 5.086 to 5.170 GiB.
+  - **Committed, with the release rows** (`a13_store_model_at_the_network_profile`): **5,581,321,485 B (5.198
+    GiB)**, 5.941 GiB required. The allocator term is 0.3908 GiB, and the largest file 3.08 TiB.
+  - The rows' bound is loose: every node counted at ROW + BRANCH_ENC bytes, where most are larger.
 
 ## 4. Assumptions, one by one (round 2)
 

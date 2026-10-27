@@ -80,10 +80,11 @@ condition stays, because the timing is still not a bound.
 | mode | model | budget required (model ÷ 7/8) | budget | result |
 |---|---:|---:|---:|---|
 | whole-state (the default) | 26,819,504,117 B | 30,650,861,848 B | 6,442,450,944 B | **fail** |
-| store (`--state-store`, opt-in) | 5,460,970,545 B (5.086 GiB) | 6,241,109,195 B | 6,442,450,944 B | pass |
+| store (`--state-store`, opt-in) | 5,581,321,485 B (5.198 GiB) | 6,378,653,126 B | 6,442,450,944 B | pass |
 
 This is the computed bound, not measured memory. Store mode is opt-in, and making it the network default is
-decision row 9.
+decision row 9. (2026-10-27: 5,460,970,545 B before `5abbaf3`'s two stored-version handles and the deferred
+checkpoint release's owed checkpoint set and release rows; A13-DERIVATION §3c.)
 
 ## Devnet constraints, kept apart
 

@@ -912,9 +912,21 @@ normative changes.
 - Not kept: the invalid-block cache and the protect set. Replay recomputes the protect set from the
   journal.
 - It is written in one durable `state.redb` transaction: the snapshot, its roots record, one pin per
-  root, and the release of checkpoints beyond `KEPT` = 2. redb commits atomically, so a crash leaves the
+  root, and the drop of checkpoints beyond `KEPT` = 2. redb commits atomically, so a crash leaves the
   checkpoints from before or after the write, never part of one. This replaces the temporary file and
   rename of the frozen text.
+- **Deferred release** (2026-10-27, implementation; no rule changes). At the network's state caps,
+  releasing a dropped checkpoint's nodes inside that transaction took 8–11 s on the consensus thread,
+  plus 2.1–2.5 s to commit (evidence/memory-r14/scale-d30dc71).
+  - The write now takes the dropped checkpoint's pins off and owes each root's node one reference, in the
+    `release` table.
+  - `StateStore::release_step` works the debt off: `RELEASE_SLICE` references per transaction, between the
+    node's events, as the pool's revalidation slices run. A node left with no reference is deleted, and
+    owes one reference to each of its children.
+  - A node's stored count is the stored nodes naming it, plus its pins, plus what it owes.
+  - The next checkpoint's write first finishes what is still owed, so at most one dropped checkpoint is
+    owed at a time. A13's file term counts that set (`state_file_parts`).
+  - A release step is not fsynced: a crash loses the step, never part of it, and the work stays owed.
 - When it is written: every `checkpoint_every` = 1024 journal records (`Limits`, local), by a running
   node and by replay. Replay first makes its history.redb writes durable.
 
@@ -930,8 +942,9 @@ history window, slim depth). It is used only under the same ones.
 1. redb's full integrity check, as before.
 2. Every checkpoint's seal, and its roots record against its snapshot. A failure here means the store is
    not sound: it is rebuilt.
-3. The pins become exactly the checkpoints' (`reset_pins`). This releases a running node's entry pins,
-   and the version of a block whose journal record a crash cut off.
+3. What a checkpoint's write left owed is worked off (`release_all`, 2026-10-27). Then the pins become
+   exactly the checkpoints' (`reset_pins`). This releases a running node's entry pins, and the version of
+   a block whose journal record a crash cut off.
 4. The newest checkpoint is tried, then the one before it. `checkpoint::restore` checks:
    - the binding against the journal;
    - every entry's journal record: the header hashes to the entry, its parent is restored, its total

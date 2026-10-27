@@ -7,6 +7,13 @@
 //! any more. The store is derived data (invariant I1): it can be rebuilt from the journal, and a store
 //! that does not open or is found damaged is set aside and rebuilt, as `history.redb` is.
 //!
+//! D-6 (2026-10-27): a checkpoint's write drops the oldest checkpoint's pins without releasing its nodes in
+//! the same transaction. It owes each of its roots one reference in the `release` table, and
+//! `release_step` works that list off in bounded transactions between the node's events. At the network's
+//! state caps the release took 8-11 s on the consensus thread (evidence/memory-r14/scale-d30dc71). At most one
+//! dropped checkpoint is owed at a time: the next checkpoint's write finishes what is left first, and open
+//! finishes it before anything else.
+//!
 //! Reads are checked: a node whose bytes do not hash to its `Id`, or do not decode, marks the store
 //! damaged and is never served. A bounded cache (`NODE_CACHE` bytes, counted in A13) sits in front of the
 //! node table; redb's own page cache (`STATE_PAGE_CACHE`) is set explicitly.
@@ -33,6 +40,10 @@ const CKPT:TableDefinition<u64,&[u8]>=TableDefinition::new("checkpoint");
 /// Checkpoint sequence -> the roots it pins (32 bytes each, a root once per entry that holds it), so a
 /// checkpoint is released without decoding its snapshot.
 const CKPT_ROOTS:TableDefinition<u64,&[u8]>=TableDefinition::new("checkpoint_roots");
+/// D-6 (2026-10-27): node id -> the references it still owes (released but not yet taken off its count): a
+/// dropped checkpoint's roots, then the children of each node the work deletes. A node's stored count is the
+/// stored nodes that name it, plus its pins, plus what it owes here.
+const RELEASE:TableDefinition<&[u8;32],u32>=TableDefinition::new("release");
 
 pub const FILE:&str="state.redb";
 /// Written when the store was found damaged while running; the next open rebuilds it.
@@ -66,6 +77,8 @@ impl Cache{
 pub struct StateStore{db:Database,path:PathBuf,dir:PathBuf,pub rebuilt:bool,damaged:AtomicBool,cache:Mutex<Cache>,cache_cap:usize,
     /// Set when the node closes (`close`): versions are no longer released one by one.
     closing:AtomicBool,
+    /// D-6: the `release` table holds work (`release_pending`).
+    owed:AtomicBool,
     /// Nodes read from the table (cache misses) and nodes written, since open (measurements).
     pub reads:std::sync::atomic::AtomicU64,pub writes:std::sync::atomic::AtomicU64}
 
@@ -83,7 +96,7 @@ impl StateStore{
             match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}_=>return Err(StateStoreError("integrity check failed".into()))}
             catch_unwind(AssertUnwindSafe(||->Result<(),StateStoreError>{let w=db.begin_write().map_err(err)?;
                 {let nodes=w.open_table(NODES).map_err(err)?;w.open_table(CODE).map_err(err)?;w.open_table(PINS).map_err(err)?;
-                 w.open_table(CKPT).map_err(err)?;w.open_table(CKPT_ROOTS).map_err(err)?;let mut m=w.open_table(META).map_err(err)?;
+                 w.open_table(CKPT).map_err(err)?;w.open_table(CKPT_ROOTS).map_err(err)?;w.open_table(RELEASE).map_err(err)?;let mut m=w.open_table(META).map_err(err)?;
                  let format=m.get("format").map_err(err)?.map(|v|v.value());
                  match format{Some(FORMAT)=>{}None if nodes.is_empty().map_err(err)?=>{m.insert("format",FORMAT).map_err(err)?;}
                      f=>return Err(StateStoreError(format!("state store format {f:?}, not {FORMAT}")))}}
@@ -95,7 +108,8 @@ impl StateStore{
             Err(_)=>{let aside=dir.join(format!("{FILE}.aside"));let _=std::fs::remove_file(&aside);let _=std::fs::rename(&path,&aside);
                 let db=create(&path)?;let _=std::fs::remove_file(&marker);(db,true)}
         };
-        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),reads:Default::default(),writes:Default::default()})
+        let owed={let r=db.begin_read().map_err(err)?;!r.open_table(RELEASE).map_err(err)?.is_empty().map_err(err)?};
+        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),owed:AtomicBool::new(owed),reads:Default::default(),writes:Default::default()})
     }
     pub fn path(&self)->&Path{&self.path}
     pub fn is_damaged(&self)->bool{self.damaged.load(Ordering::SeqCst)}
@@ -127,6 +141,11 @@ impl StateStore{
     /// The reference count stored with a node (None: not stored).
     pub fn count(&self,id:&Id)->Result<Option<u32>,StateStoreError>{
         self.guard(||{let r=self.db.begin_read().map_err(err)?;let t=r.open_table(NODES).map_err(err)?;Ok(t.get(id).map_err(err)?.map(|v|u32::from_be_bytes(v.value()[..4].try_into().unwrap())))})
+    }
+    /// D-6: the owed references (`release`), by node.
+    pub fn owed_refs(&self)->Result<Vec<(Id,u32)>,StateStoreError>{
+        self.guard(||{let r=self.db.begin_read().map_err(err)?;let t=r.open_table(RELEASE).map_err(err)?;let mut out=Vec::new();
+            for kv in t.iter().map_err(err)?{let (k,v)=kv.map_err(err)?;out.push((*k.value(),v.value()));}Ok(out)})
     }
     pub fn pins(&self)->Result<Vec<(Id,u32)>,StateStoreError>{
         self.guard(||{let r=self.db.begin_read().map_err(err)?;let t=r.open_table(PINS).map_err(err)?;let mut out=Vec::new();
@@ -212,27 +231,62 @@ impl StateStore{
             for kv in x.iter().map_err(err)?{n+=(kv.map_err(err)?.1.value().len()/32) as u64;}Ok(n)})
     }
     /// C-1 E4.4: stores a checkpoint under the next sequence and pins each of its roots once (as a block
-    /// commit pins its root), then releases the oldest checkpoints beyond `keep`, in one durable
-    /// transaction: a crash leaves the checkpoints before it or after it, never a part of one. Every root
-    /// must already be stored (each is an entry's pinned version). Returns the new sequence.
+    /// commit pins its root), then drops the oldest checkpoints beyond `keep`, in one durable transaction: a
+    /// crash leaves the checkpoints before it or after it, never a part of one. Every root must already be
+    /// stored (each is an entry's pinned version). Returns the new sequence.
+    ///
+    /// D-6 (2026-10-27): a dropped checkpoint's pins are taken off at once, but its nodes are owed in the
+    /// `release` table rather than released here (`release_step`). What an earlier write left owed is
+    /// finished first, in this transaction, so the store never owes more than one dropped checkpoint.
     pub fn write_checkpoint(&self,snapshot:&[u8],roots:&[Id],keep:usize)->Result<u64,StateStoreError>{
         let mut gone=Vec::new();
         let seq=self.guard(||{
             let w=self.db.begin_write().map_err(err)?;let seq;
             {
                 let mut c=w.open_table(CKPT).map_err(err)?;let mut x=w.open_table(CKPT_ROOTS).map_err(err)?;
-                let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;
+                let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
+                while work(&mut t,&mut o,usize::MAX,&mut gone)?>0{}
                 seq=c.last().map_err(err)?.map_or(0,|(k,_)|k.value()+1);
                 let flat:Vec<u8>=roots.iter().flat_map(|r|r.iter().copied()).collect();
                 c.insert(seq,snapshot).map_err(err)?;x.insert(seq,flat.as_slice()).map_err(err)?;
                 for r in roots{pin_stored(&mut p,&mut t,r)?;}
                 let mut seqs=Vec::new();for kv in c.iter().map_err(err)?{seqs.push(kv.map_err(err)?.0.value());}
-                for old in seqs.iter().take(seqs.len().saturating_sub(keep.max(1))){drop_one(&mut c,&mut x,&mut p,&mut t,*old,&mut gone)?;}
+                for old in seqs.iter().take(seqs.len().saturating_sub(keep.max(1))){owe_one(&mut c,&mut x,&mut p,&mut o,*old)?;}
+                self.owed.store(!o.is_empty().map_err(err)?,Ordering::SeqCst);
             }
             crate::crash_point("checkpoint-txn");
             w.commit().map_err(err)?;Ok(seq)
         })?;
         self.forget(&gone);Ok(seq)
+    }
+    /// D-6: whether a dropped checkpoint's nodes are still owed (`release_step` has work).
+    pub fn release_pending(&self)->bool{self.owed.load(Ordering::SeqCst)}
+    /// D-6: works off at most `budget` owed references in one transaction, not fsynced (as an entry's
+    /// release: a crash loses the step, never part of it, and the work is still owed). Each takes one
+    /// reference off a node's count and, when none is left, deletes the node and owes one for each of its
+    /// children. Returns the references worked off. A step that fails marks the store damaged (the next open
+    /// rebuilds it) and nothing more is tried.
+    pub fn release_step(&self,budget:usize)->Result<usize,StateStoreError>{
+        let mut gone=Vec::new();
+        let n=self.guard(||{
+            let mut w=self.db.begin_write().map_err(err)?;w.set_durability(Durability::None);let n;
+            {let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
+             n=work(&mut t,&mut o,budget.max(1),&mut gone)?;if o.is_empty().map_err(err)?{self.owed.store(false,Ordering::SeqCst);}}
+            crate::crash_point("release-step");
+            w.commit().map_err(err)?;Ok(n)
+        }).map_err(|e|{self.owed.store(false,Ordering::SeqCst);self.mark_damaged(&format!("a release step failed: {}",e.0))})?;
+        self.forget(&gone);Ok(n)
+    }
+    /// D-6: works off everything owed, in one durable transaction (open, before it reads a checkpoint).
+    pub fn release_all(&self)->Result<u64,StateStoreError>{
+        let mut gone=Vec::new();
+        let n=self.guard(||{
+            let w=self.db.begin_write().map_err(err)?;let mut n=0u64;
+            {let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
+             loop{let k=work(&mut t,&mut o,usize::MAX,&mut gone)?;if k==0{break}n+=k as u64;}}
+            w.commit().map_err(err)?;Ok(n)
+        })?;
+        self.owed.store(false,Ordering::SeqCst);self.forget(&gone);Ok(n)
     }
     /// C-1 E4.4: releases one checkpoint (one that failed verification at open) and its pins, durably.
     pub fn drop_checkpoint(&self,seq:u64)->Result<(),StateStoreError>{
@@ -267,12 +321,13 @@ impl StateStore{
         })?;
         self.forget(&gone);Ok(released)
     }
-    /// Recounts every node's references from the pins: equal to the stored counts, and no stored node that
-    /// no pin reaches (a test of the counts; it reads the whole table).
+    /// Recounts every node's references from the pins and what is owed (`release`): equal to the stored
+    /// counts, and no stored node that no pin or owed reference reaches (a test of the counts; it reads the
+    /// whole table).
     pub fn recount(&self)->Result<(),String>{
-        let pins=self.pins().map_err(|e|e.0)?;let mut count:HashMap<Id,u32>=HashMap::new();let mut seen=std::collections::HashSet::new();
-        for (r,c) in &pins{*count.entry(*r).or_insert(0)+=*c;}
-        let mut stack:Vec<Id>=pins.iter().map(|x|x.0).collect();
+        let pins=self.pins().map_err(|e|e.0)?;let owed=self.owed_refs().map_err(|e|e.0)?;let mut count:HashMap<Id,u32>=HashMap::new();let mut seen=std::collections::HashSet::new();
+        for (r,c) in pins.iter().chain(&owed){*count.entry(*r).or_insert(0)+=*c;}
+        let mut stack:Vec<Id>=pins.iter().chain(&owed).map(|x|x.0).collect();
         while let Some(id)=stack.pop(){
             if !seen.insert(id){continue}
             let n=self.try_node(&id).map_err(|e|e.0)?.ok_or_else(||format!("node {} is reachable but not stored",B256::from(id)))?;
@@ -311,6 +366,33 @@ fn pin_stored(p:&mut Pins<'_>,t:&mut Nodes<'_>,root:&Id)->Result<(),StateStoreEr
 fn drop_one(c:&mut redb::Table<'_,u64,&'static [u8]>,x:&mut redb::Table<'_,u64,&'static [u8]>,p:&mut Pins<'_>,t:&mut Nodes<'_>,seq:u64,gone:&mut Vec<Id>)->Result<(),StateStoreError>{
     let roots=x.remove(seq).map_err(err)?.map(|v|v.value().to_vec()).unwrap_or_default();c.remove(seq).map_err(err)?;
     for r in roots.chunks(32){release(p,t,&r.try_into().unwrap(),gone)?;}Ok(())
+}
+type Owed<'a>=redb::Table<'a,&'static [u8;32],u32>;
+fn owe(o:&mut Owed<'_>,id:&Id)->Result<(),StateStoreError>{let k=o.get(id).map_err(err)?.map_or(0,|v|v.value());o.insert(id,k+1).map_err(err)?;Ok(())}
+/// D-6: drops checkpoint `seq` and takes each of its pins off, owing each root's node the reference its pin
+/// counted (`release`), instead of releasing the nodes now.
+fn owe_one(c:&mut redb::Table<'_,u64,&'static [u8]>,x:&mut redb::Table<'_,u64,&'static [u8]>,p:&mut Pins<'_>,o:&mut Owed<'_>,seq:u64)->Result<(),StateStoreError>{
+    let roots=x.remove(seq).map_err(err)?.map(|v|v.value().to_vec()).unwrap_or_default();c.remove(seq).map_err(err)?;
+    for r in roots.chunks(32){let r:Id=r.try_into().unwrap();
+        let n=p.get(&r).map_err(err)?.map(|v|v.value()).ok_or_else(||StateStoreError(format!("root {} is not pinned",B256::from(r))))?;
+        if n>1{p.insert(&r,n-1).map_err(err)?;}else{p.remove(&r).map_err(err)?;}owe(o,&r)?;}
+    Ok(())
+}
+/// D-6: works off at most `budget` owed nodes: each takes what it owes off its count; a node left with
+/// none is deleted and owes one reference to each of its children. Returns the nodes worked off.
+fn work(t:&mut Nodes<'_>,o:&mut Owed<'_>,budget:usize,gone:&mut Vec<Id>)->Result<usize,StateStoreError>{
+    let mut done=0;
+    while done<budget{
+        let Some((id,k))=o.pop_first().map_err(err)?.map(|(a,b)|(*a.value(),b.value())) else{break};
+        let v=t.get(&id).map_err(err)?.map(|v|v.value().to_vec()).ok_or_else(||StateStoreError(format!("node {} is owed a release but not stored",B256::from(id))))?;
+        let n=u32::from_be_bytes(v[..4].try_into().unwrap());
+        if n<k{return Err(StateStoreError(format!("node {} owes {k} references and counts {n}",B256::from(id))))}
+        if n>k{t.insert(&id,node_value(n-k,&v[4..]).as_slice()).map_err(err)?;}
+        else{t.remove(&id).map_err(err)?;gone.push(id);
+            for c in Node::decode(&v[4..]).ok_or_else(||StateStoreError("a node does not decode".into()))?.children(){owe(o,&c)?;}}
+        done+=1;
+    }
+    Ok(done)
 }
 impl NodeStore for StateStore{
     /// A damaged store panics (the caller's state cannot be read: never served). A missing node is None,

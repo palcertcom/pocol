@@ -74,6 +74,10 @@ const HISTORY_SYNC:u64=256;
 /// execution of the one transaction in progress when it ends (one transaction is at most GAS_LIMIT,
 /// which the R14/R19 gate bounds by t_exec).
 pub const POOL_SLICE:Duration=Duration::from_millis(50);
+/// D-6 (2026-10-27): the owed references one release step works off (`StateStore::release_step`). At the
+/// network's state caps a release took about 0.25 ms per node, so a step holds the consensus thread for
+/// tens of milliseconds, against 8-11 s for the whole release inside a checkpoint's write.
+pub const RELEASE_SLICE:usize=256;
 /// Default memory budget of one single-host devnet node.
 pub const MEM_BUDGET:u64=6<<30;
 /// Blocks waiting for their timestamp, buffered templates, equivocation observations,
@@ -267,7 +271,10 @@ pub struct Stats{pub imported:u64,pub mined:u64,pub signed_templates:u64,pub fal
     /// the checkpoints written since.
     pub resumed_from:Option<u64>,pub checkpoints_refused:u64,pub pins_released:u64,pub checkpoints_written:u64,
     /// C-1 E4.4: how the checkpoint open resumed from read its stored versions (`checkpoint::Read`).
-    pub versions_read:crate::checkpoint::Read}
+    pub versions_read:crate::checkpoint::Read,
+    /// D-6: release steps run, the longest (ms), the owed references they worked off, and those open
+    /// worked off before reading a checkpoint.
+    pub release_steps:u64,pub release_step_max_ms:u64,pub released_refs:u64,pub released_at_open:u64}
 
 fn orphan_size(b:&Block)->usize{b.header.encoded.len()+b.body.txs.iter().chain(b.body.evidence.iter()).map(|x|x.len()).sum::<usize>()}
 fn result_bytes(r:&Option<ParentResult>)->Vec<u8>{
@@ -333,11 +340,15 @@ impl Node{
         // from genesis and refills it (derived data, I1). Checkpoints are kept only under the R_keep replay
         // uses (a lowered configured R_keep would make live keep less than replay).
         let ckpt_every=if cfg.limits.state_store&&cfg.limits.r_keep==rk_replay{cfg.limits.checkpoint_every}else{0};
-        let (mut start,mut refused,mut released,mut state_store,mut versions_read)=(0usize,0u64,0u64,None,crate::checkpoint::Read::default());
+        let (mut start,mut refused,mut released,mut state_store,mut versions_read)=(0usize,0u64,0u64,None,crate::checkpoint::Read::default());let mut opened_release=0u64;
         if cfg.limits.state_store{
             let st=Arc::new(crate::state_store::StateStore::open(&cfg.dir).map_err(|e|format!("state store: {}",e.0))?);
             let dyn_st:Arc<dyn pocol_lp4_execution::node_trie::TrieStore>=st.clone();
             let mut resumed=None;
+            // D-6: what a checkpoint's write left owed is worked off before anything is read (a store owes at
+            // most one dropped checkpoint).
+            // A store that fails here is marked damaged, so its checkpoints are not used and it is rebuilt.
+            let released_at_open=if st.rebuilt||ckpt_every==0{0}else{st.release_all().unwrap_or_else(|e|{let _=st.mark_damaged(&format!("release at open: {}",e.0));0})};
             // The pins are reset to the checkpoints' before genesis's version is pinned for its entry.
             let snaps:Result<Vec<(u64,crate::checkpoint::Snapshot)>,String>=if ckpt_every>0&&!st.rebuilt&&!history.rebuilt&&history_kept{
                 st.checkpoints().map_err(|e|e.0).and_then(|c|c.iter().map(|(q,b,roots)|{
@@ -366,7 +377,7 @@ impl Node{
                 }
             }
             match resumed{
-                Some(k)=>{start=k;state_store=Some(st);}
+                Some(k)=>{start=k;state_store=Some(st);opened_release=released_at_open;}
                 None=>{
                     // Started empty: every handle on the old file goes before it is removed (Windows cannot
                     // remove an open file).
@@ -453,7 +464,7 @@ impl Node{
             pool:Pool{code_total:pool_code,txs:vec![],pending:Default::default(),pending_base:head_state,bytes:0,meter,backlog:VecDeque::new(),backlog_bytes:0,gas:0,gas_max:pool_gas_max},rejects:VecDeque::new(),stats:Stats::default(),stopped:false,seen_templates:HashMap::new(),seen_wins:HashMap::new(),evidence_pool:Vec::new(),
             state_store,ckpt:Ckpt{every:ckpt_every,last:ckpt_last,roll:rolls[n_rec]}};
         node.stats.imported=rec.payloads.len() as u64;node.stats.replay_skipped=skipped;node.stats.restored=restored as u64;node.stats.history_refilled=refilled;
-        node.stats.resumed_from=(start>0).then_some(start as u64);node.stats.checkpoints_refused=refused;node.stats.pins_released=released;node.stats.checkpoints_written=written;node.stats.versions_read=versions_read;
+        node.stats.resumed_from=(start>0).then_some(start as u64);node.stats.checkpoints_refused=refused;node.stats.pins_released=released;node.stats.checkpoints_written=written;node.stats.versions_read=versions_read;node.stats.released_at_open=opened_release;
         if rec.torn_tail{node.log("recovered torn journal tail into a new journal");}
         if rec.migrated_v1{node.log("migrated a fully verified v1 journal to format v2 (original kept as blocks.journal.v1-n)");}
         Ok(node)
@@ -492,12 +503,13 @@ impl Node{
     pub fn run(&mut self){
         self.restart_production();
         while !self.stopped{
-            // D-7: while the pool has a backlog, one event (if any is waiting) and one slice alternate.
-            let ev=match self.deferred.pop_front(){Some(e)=>e,None=>if self.pool_pending(){match self.rx.try_recv(){Ok(e)=>e,Err(mpsc::TryRecvError::Empty)=>{self.drain_light();self.pool_step();continue}Err(_)=>break}}
+            // D-7: while the pool has a backlog, one event (if any is waiting) and one slice alternate. D-6: so do
+            // one event and one release step while a dropped checkpoint's nodes are owed (the pool first).
+            let ev=match self.deferred.pop_front(){Some(e)=>e,None=>if self.background_pending(){match self.rx.try_recv(){Ok(e)=>e,Err(mpsc::TryRecvError::Empty)=>{self.drain_light();self.background_step();continue}Err(_)=>break}}
                 else{match self.rx.recv_timeout(Duration::from_millis(200)){Ok(e)=>e,Err(mpsc::RecvTimeoutError::Timeout)=>Event::Tick,Err(_)=>break}}};
             if matches!(ev,Event::Wake){self.light.wake.store(false,std::sync::atomic::Ordering::SeqCst);}
             self.drain_light();self.handle(ev);
-            if self.pool_pending(){self.pool_step();}
+            if self.background_pending(){self.background_step();}
         }
         if let Some(p)=&self.prod{if let Some(m)=&p.miner{m.stop();}}
     }
@@ -689,6 +701,18 @@ impl Node{
     }
     /// Whether a new head left pool revalidation to do (D-7).
     pub fn pool_pending(&self)->bool{!self.pool.backlog.is_empty()}
+    /// D-6: a dropped checkpoint's nodes are still owed (store mode).
+    pub fn release_pending(&self)->bool{self.state_store.as_ref().map_or(false,|s|s.release_pending())}
+    fn background_pending(&self)->bool{self.pool_pending()||self.release_pending()}
+    fn background_step(&mut self){if self.pool_pending(){self.pool_step()}else{self.release_step()}}
+    /// D-6: one release step (`RELEASE_SLICE` owed references, one transaction). A store that fails here is
+    /// marked damaged by the store and rebuilt at the next open, as any failed store write.
+    pub fn release_step(&mut self){
+        let Some(st)=self.state_store.clone() else{return};
+        let t0=Instant::now();
+        match st.release_step(RELEASE_SLICE){Ok(n)=>{self.stats.released_refs+=n as u64;}Err(e)=>self.log(&format!("release step: {}",e.0))}
+        let ms=t0.elapsed().as_millis() as u64;self.stats.release_steps+=1;self.stats.release_step_max_ms=self.stats.release_step_max_ms.max(ms);
+    }
     /// Revalidates the whole backlog now (in-process callers and tests; `run` never does).
     pub fn pool_settle(&mut self){while self.pool_pending(){self.pool_step_until(Instant::now()+Duration::from_secs(3600));}}
     /// One slice of revalidation (D-7): at most `pool_slice`, checked between transactions.

@@ -238,10 +238,17 @@ pub fn held_versions_bytes(cp:&ConsensusParams,k_hist:u32,side_max:u32)->Option<
     held_runs(k_hist,side_max).into_iter().try_fold(0u128,|t,n|add(&[t,chain_versions_bytes(cp,n)?]))
 }
 /// `state_file_max`'s parts: (versions' nodes, key preimages, code, checkpoint snapshots), each at
-/// STATE_FILE_FACTOR times its bytes. The entries' versions and the KEPT checkpoints' are counted apart.
+/// STATE_FILE_FACTOR times its bytes. The entries' versions and the KEPT checkpoints' are counted apart,
+/// and so is one dropped checkpoint whose nodes are still owed (D-6, 2026-10-27: `StateStore::release_step`
+/// works them off between events; a checkpoint's write finishes what is left first, so at most one is owed),
+/// with a `release` row (ROW bytes) for at most each of its nodes. Each node counted here is at least ROW +
+/// BRANCH_ENC bytes (a branch without its children, the smallest node), so a held set has at most
+/// bytes / (ROW + BRANCH_ENC) nodes.
 pub fn state_file_parts(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits)->Option<[u128;4]>{
-    let kept=crate::checkpoint::KEPT as u128;
-    let nodes=mul(kept+1,held_versions_bytes(cp,k_hist,side_max)?)?;
+    use pocol_lp4_execution::node_trie::{BRANCH_ENC,ROW};
+    let kept=crate::checkpoint::KEPT as u128;let held=held_versions_bytes(cp,k_hist,side_max)?;
+    let owed_rows=mul(ROW,(held/(ROW+BRANCH_ENC)).checked_add(1)?)?;
+    let nodes=add(&[mul(kept+2,held)?,owed_rows])?;
     let blocks=u128::from(cp.H_END)+1;
     let preimages=0;
     let code=mul(blocks,memory::execution_gas(cp.GAS_LIMIT)/CODE_DEPOSIT)?;
