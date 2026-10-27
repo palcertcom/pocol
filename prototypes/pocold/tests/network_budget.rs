@@ -110,3 +110,73 @@ fn print(tag:&str,b:&pocold::resources::Bound){
     // At the network profile the window's run is the oldest version and its blocks' additions, not K_hist + 1 whole versions.
     assert!(r::chain_versions_bytes(&net,33).unwrap()<33*r::chain_versions_bytes(&net,1).unwrap());
 }
+
+/// Why the network profile does not boot, gate by gate. The CP is network() (governance.md; chainId 777920
+/// only because the builder refuses 777001). The local parameters are governance.md's for a network node
+/// (Δ=5, φ=5, Φ=10, t_exec=3, Δ_rel=26, Γ=30; K_hist=32; retentionStress off) with pocold's RPC facts. The timing
+/// is measured here. Each R1–R26 line prints the rule's inputs, what it requires and what it gets; the rules
+/// re-derived here must agree with gate::check's own verdict (`admit` on a simnet request, which returns the
+/// pure violations), so the table cannot drift from the gate. Then the Specification-scope conditions, pocold's
+/// A13 check in both modes, and the boot path's structural refusals. It asserts nothing about what should boot.
+#[test] fn network_profile_boot_gates_itemized(){
+    use pocol_lp4_execution::{admission::{self,NodeLocal,Request,Scope},gate::{FactClass,calibration_target},param_gate::registry_metrics,
+        profile::{NodeKind,ProfileKind},timing::metrics};
+    let d=devnet::build(&network()).expect("network-profile candidate");let c=d.profile.cp().clone();
+    let local=NodeLocal{delta:5,phi:5,t_exec:3,delta_rel:26,gamma:30,k_hist:32,retention_stress:false,..pocold::single_host_local()};
+    let timing=admission::measure(&d.spec_bytes,&d.alloc,1).expect("the calibration blocks apply");
+    let req=|kind,node,scope|Request{spec_bytes:&d.spec_bytes,alloc:&d.alloc,forks:&d.forks,kind,node,local:&local,
+        calibration:Some((d.hash_rate,FactClass::SyntheticFixture)),timing:Some(&timing),scope};
+    let gate=admission::admit(&req(ProfileKind::Simnet,NodeKind::Simnet,Scope::ExperimentalDevnet)).err().map(|e|e.rules).unwrap_or_default();
+    let (t,big_phi,dl)=(u128::from(local.t_exec),u128::from(local.capital_phi()),u128::from(local.delta));
+    let m=metrics(local.delta.into(),big_phi as u64,local.t_exec.into(),local.delta_rel.into(),c.dFbWait.into());
+    let reg=registry_metrics(c.U,c.E_win,c.D,c.M_max,c.R_max,c.REG_RECORDS_MAX,c.RET,c.P2).ok();
+    let p99=timing.phase_ms.iter().copied().max().unwrap();
+    let hist=admission::historical_bytes(&c,&local);
+    // (rule, fails, inputs, required, actual)
+    let rows:Vec<(&str,bool,String,String,String)>=vec![
+        ("R2",u128::from(local.delta_rel)<m.sigma+dl+2*t,format!("Δ_rel={} σ={} Δ={} t_exec={}",local.delta_rel,m.sigma,dl,t),format!("Δ_rel ≥ σ+Δ+2t_exec = {}",m.sigma+dl+2*t),local.delta_rel.to_string()),
+        ("R3",u128::from(c.dFbWait)<big_phi+dl+2*t,format!("dFbWait={} Φ={big_phi} Δ={dl} t_exec={t}",c.dFbWait),format!("dFbWait ≥ Φ+Δ+2t_exec = {}",big_phi+dl+2*t),c.dFbWait.to_string()),
+        ("R4",big_phi>=u128::from(c.dFbWait)||u128::from(local.delta_rel)<t,format!("Φ={big_phi} dFbWait={} Δ_rel={} t_exec={t}",c.dFbWait,local.delta_rel),"Φ < dFbWait and Δ_rel ≥ t_exec".into(),format!("{big_phi} < {}, {} ≥ {t}",c.dFbWait,local.delta_rel)),
+        ("R5",3*u128::from(c.dFbWait)>u128::from(c.D_att),format!("dFbWait={} D_att={}",c.dFbWait,c.D_att),format!("3·dFbWait ≤ D_att = {}",c.D_att),(3*u128::from(c.dFbWait)).to_string()),
+        ("R7",u128::from(c.D_att)+u128::from(local.gamma)<2*(m.x_w+u128::from(c.c)*u128::from(c.T_blk))+big_phi,format!("D_att={} Γ={} X^W={} c={} T_blk={} Φ={big_phi}",c.D_att,local.gamma,m.x_w,c.c,c.T_blk),format!("D_att+Γ ≥ 2(X^W+c·T_blk)+Φ = {}",2*(m.x_w+u128::from(c.c)*u128::from(c.T_blk))+big_phi),(u128::from(c.D_att)+u128::from(local.gamma)).to_string()),
+        ("R8",c.D<2||c.U<c.E_win+u32::from(c.D)||c.E_win>admission::R_KEEP,format!("D={} U={} E_win={} R_keep={}",c.D,c.U,c.E_win,admission::R_KEEP),"D ≥ 2, U ≥ E_win+D, E_win ≤ R_keep".into(),format!("{}, {} vs {}, {}",c.D,c.U,c.E_win+u32::from(c.D),c.E_win)),
+        ("R9",u128::from(c.S_max)<4*u128::from(c.kappa)*u128::from(c.m)||c.B_code_max<24577,format!("S_max={} κ={} m={} B_code_max={}",c.S_max,c.kappa,c.m,c.B_code_max),format!("S_max ≥ 4κm = {}, B_code_max ≥ 24577",4*u128::from(c.kappa)*u128::from(c.m)),format!("{}, {}",c.S_max,c.B_code_max)),
+        ("R10",u128::from(c.BODY_MAX)<u128::from(c.TX_MAX)+16384,format!("BODY_MAX={} TX_MAX={}",c.BODY_MAX,c.TX_MAX),format!("BODY_MAX ≥ TX_MAX+16384 = {}",u128::from(c.TX_MAX)+16384),c.BODY_MAX.to_string()),
+        ("R13",c.H_END<=u64::from(c.Z_close)||u128::from(c.H_CLOSE)+u128::from(c.Z_close)>u128::from(c.H_END)||c.T_CLOSE>c.T_END,format!("H_END={} H_CLOSE={} Z_close={}",c.H_END,c.H_CLOSE,c.Z_close),"H_END > Z_close, H_CLOSE+Z_close ≤ H_END, T_CLOSE ≤ T_END".into(),format!("{} ≤ {}",u128::from(c.H_CLOSE)+u128::from(c.Z_close),c.H_END)),
+        ("R14",u128::from(p99)>t*1000,format!("validate_p99 = max phase ms measured here {:?}",timing.phase_ms),format!("≤ t_exec·1000 = {}",t*1000),p99.to_string()),
+        ("R16",reg.as_ref().map_or(true,|r|u128::from(c.REG_RECORDS_MAX)<r.records_required),format!("REG_RECORDS_MAX={} U={} E_win={} D={} M_max={} R_max={} RET={} P2={}",c.REG_RECORDS_MAX,c.U,c.E_win,c.D,c.M_max,c.R_max,c.RET,c.P2),format!("≥ records_required = {:?}",reg.as_ref().map(|r|r.records_required)),c.REG_RECORDS_MAX.to_string()),
+        ("R17",u128::from(c.SWEEP_MAX)<u128::from(c.R_max)+u128::from(c.E_max),format!("SWEEP_MAX={} R_max={} E_max={}",c.SWEEP_MAX,c.R_max,c.E_max),format!("≥ R_max+E_max = {}",u128::from(c.R_max)+u128::from(c.E_max)),c.SWEEP_MAX.to_string()),
+        ("R19",timing.phase_ms.iter().any(|ms|u128::from(*ms)>t*1000),format!("phase ms measured here {:?}",timing.phase_ms),format!("each ≤ {}",t*1000),format!("{:?}",timing.phase_ms)),
+        ("R20",reg.as_ref().map_or(true,|r|u128::from(c.Z_close)<r.close_blocks_required),format!("Z_close={}",c.Z_close),format!("≥ close_blocks_required = {:?}",reg.as_ref().map(|r|r.close_blocks_required)),c.Z_close.to_string()),
+        ("R21",u64::from(local.k_hist).min(c.H_END)<u64::from(local.k_hist)||hist>admission::HIST_TRIE_BUDGET,format!("(K_hist+side_max)·snapshot(ACCT_CAP+5, SLOT_CAP+SYS_SLOT_MAX), K_hist={} side_max={}",local.k_hist,local.side_max),format!("≤ HIST_TRIE_BUDGET = {} (no retentionStress exception off simnet)",admission::HIST_TRIE_BUDGET),hist.to_string()),
+        ("R25",calibration_target(d.hash_rate,c.T_blk)!=Some(c.target_g),format!("H_cal={} (synthetic) T_blk={}",d.hash_rate,c.T_blk),"target_g = 2^256/(H_cal·T_blk)".into(),"equal (target_g derived from the same H_cal)".into()),
+    ];
+    for (rule,fails,inputs,required,actual) in &rows{
+        println!("NETWORK-GATE {}",serde_json::json!({"rule":rule,"fails":fails,"inputs":inputs,"required":required,"actual":actual}));
+        assert_eq!(*fails,gate.iter().any(|g|g==rule),"{rule}: the re-derivation disagrees with gate::check ({gate:?})");
+    }
+    println!("NETWORK-GATE-VERDICT {}",serde_json::json!({"gateViolations":gate,"t_execMs":t*1000,"phaseMs":timing.phase_ms,"sigma":m.sigma.to_string(),"x_h":m.x_h.to_string(),"x_w":m.x_w.to_string()}));
+    // Specification scope (what a network node must pass): the gate plus every condition that keeps an admission
+    // from being specification evidence.
+    let spec=admission::admit(&req(ProfileKind::Synthetic,NodeKind::Simnet,Scope::Specification)).err().expect("refused in Specification scope");
+    println!("NETWORK-SPEC-SCOPE {}",serde_json::json!({"rules":spec.rules,"missing":spec.missing,"notes":spec.notes}));
+    // R21's input is (K_hist + side_max) whole snapshots (`admission::historical_bytes`: pocold's whole-state
+    // mode keeps full states). In store mode the retained versions share nodes in state.redb: what the K_hist
+    // versions behind the live one add is at most K_hist block additions (resources::chain_versions_bytes).
+    {
+        use pocol_lp4_execution::node_trie::version_bytes;
+        let (ka,ks)=pocold::resources::state_keys(&c).unwrap();let live=version_bytes(ka,ks).unwrap();
+        let window=pocold::resources::chain_versions_bytes(&c,u128::from(local.k_hist)+1).unwrap();
+        println!("NETWORK-R21-STORE {}",serde_json::json!({"wholeStateInput":hist.to_string(),"liveVersionBytes":live.to_string(),
+            "windowBytes":window.to_string(),"historicalAdditionsBytes":(window-live).to_string(),"histTrieBudget":admission::HIST_TRIE_BUDGET,
+            "additionsFit":window-live<=u128::from(admission::HIST_TRIE_BUDGET)}));
+    }
+    // pocold's A13 check (resources::check at open), both modes.
+    for store in [false,true]{
+        let lim=pocold::node::Limits{state_store:store,..Default::default()};
+        let b=pocold::resources::derive(&c,local.k_hist,local.side_max,&lim,2).unwrap();let need=pocold::resources::budget_required(b.total).unwrap();
+        let r=pocold::resources::check(&c,local.k_hist,local.side_max,&lim,2);
+        println!("NETWORK-A13 {}",serde_json::json!({"stateStore":store,"modelBytes":b.total.to_string(),"budgetRequiredBytes":need.to_string(),"budgetBytes":lim.mem_budget,"passes":r.is_ok()}));
+        assert_eq!(r.is_ok(),need<=u128::from(lim.mem_budget));
+    }
+}
