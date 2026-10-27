@@ -27,23 +27,25 @@ struct Net{chain:Chain,keys:HashMap<Address,Key>}
 fn net()->Net{let c=cfg();let d=devnet::build(&c).unwrap();let mut keys=HashMap::new();
     for m in &d.miners{keys.insert(m.id,Key::from_secret(&m.key.secret()).unwrap());}
     Net{chain:Chain::new(admitted()),keys}}
-fn try_seal(n:&Net,mut h:Header,body:Body,attempt:u32,start:u64)->Option<Block>{
-    let p=n.chain.full_entry(&h.parent_hash).unwrap();let ctx=n.chain.child_ctx(&p,attempt).unwrap();
+fn try_seal_on(chain:&Chain,keys:&HashMap<Address,Key>,mut h:Header,body:Body,attempt:u32,start:u64)->Option<Block>{
+    let p=chain.full_entry(&h.parent_hash).unwrap();let ctx=chain.child_ctx(&p,attempt).unwrap();
     let tid=template_id(&h.ut_raw);let mut shares=vec![];let mut x=start;
     loop{if (x as u128)>=ctx.assignment.nonce_max(){return None}let ph=pow_hash(&tid,x);if le_target(&ph,&ctx.t_share){if le_target(&ph,&ctx.target){break}shares.push(x);}x+=1;}
     let owner=addr(&ctx.assignment.owner(x).unwrap());
     h.nonce=x;shares.truncate(256);h.shares=shares;reseal(&mut h);
-    h.winner_sig=n.keys[&owner].sign_hash(&B256::from(pocold::hashes::win_msg(&tid,x,&share_root(&h))));reseal(&mut h);
+    h.winner_sig=keys[&owner].sign_hash(&B256::from(pocold::hashes::win_msg(&tid,x,&share_root(&h))));reseal(&mut h);
     Some(Block{header:h,body})}
-fn fallback(n:&Net,parent:[u8;32],a:u32)->Block{let p=n.chain.full_entry(&parent).unwrap();
-    for a in a..a+16{let (h,_,_)=n.chain.build_fallback(&p,a).unwrap();if let Some(b)=try_seal(n,h,Body::default(),a,0){return b}}panic!("no fallback solution")}
+fn fallback(n:&Net,parent:[u8;32],a:u32)->Block{fallback_on(&n.chain,&n.keys,parent,a)}
+fn fallback_on(chain:&Chain,keys:&HashMap<Address,Key>,parent:[u8;32],a:u32)->Block{let p=chain.full_entry(&parent).unwrap();
+    for a in a..a+16{let (h,_,_)=chain.build_fallback(&p,a).unwrap();if let Some(b)=try_seal_on(chain,keys,h,Body::default(),a,0){return b}}panic!("no fallback solution")}
 /// A signed a=0 block at ts = parent ts + T_blk (the window starts at parent ts + 1): on the ASERT schedule,
 /// like a fallback a=0 block (lower + dFbWait), so a long run of signed blocks does not harden the target
 /// (at parent ts + 1 each one ran 3 s ahead and the PoW work doubled every ~13 blocks).
-fn signed(n:&Net,parent:[u8;32],body:Body)->Block{
-    let p=n.chain.full_entry(&parent).unwrap();let ctx=n.chain.child_ctx(&p,0).unwrap();
-    for off in u64::from(n.chain.spec.cp().T_blk).saturating_sub(1)..u64::from(n.chain.spec.cp().D_att){let (h,_,_)=n.chain.build_signed(&p,&n.keys[&ctx.proposer],ctx.window.lower()+off,body.clone(),vec![]).unwrap_or_else(|e|panic!("build_signed: {e:?}"));
-        if let Some(b)=try_seal(n,h,body.clone(),0,0){return b}}panic!("no signed solution")}
+fn signed(n:&Net,parent:[u8;32],body:Body)->Block{signed_on(&n.chain,&n.keys,parent,body)}
+fn signed_on(chain:&Chain,keys:&HashMap<Address,Key>,parent:[u8;32],body:Body)->Block{
+    let p=chain.full_entry(&parent).unwrap();let ctx=chain.child_ctx(&p,0).unwrap();
+    for off in u64::from(chain.spec.cp().T_blk).saturating_sub(1)..u64::from(chain.spec.cp().D_att){let (h,_,_)=chain.build_signed(&p,&keys[&ctx.proposer],ctx.window.lower()+off,body.clone(),vec![]).unwrap_or_else(|e|panic!("build_signed: {e:?}"));
+        if let Some(b)=try_seal_on(chain,keys,h,body.clone(),0,0){return b}}panic!("no signed solution")}
 fn import(n:&mut Net,b:&Block){let (e,_)=n.chain.validate(b,None,0).unwrap_or_else(|e|panic!("h={} {e:?}",b.header.h));n.chain.insert(e);n.chain.retain();}
 
 // max_fee is set very high (1e15 wei) so a chain of full blocks, whose EIP-1559 base fee rises ~12.5%
@@ -1203,5 +1205,101 @@ fn jm_r14_workload_gap(){
             }else{n.import(b.clone(),None).unwrap();}
         }
         drop(n);let _=std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ============================ R3-4: a store-mode node at the network's state caps ============================
+/// The journal_measure profile with the network's state caps (governance.md: ACCT_CAP 10^6, SLOT_CAP 4·10^6), its
+/// code, transaction and transaction-bytes caps, and its H_END and closing window (so that the ~30,000 blocks
+/// that fill those caps fit); every other parameter is the devnet's.
+fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_000_000;c.code_cap=1<<30;c.txbytes_cap=1<<33;c.tx_cap=10_000_000;
+    c.h_end=129_600;c.h_close=129_440;c.t_end_offset=10_368_000;c.t_close_offset=10_368_000-9_600;c.z_close=160;c}
+/// R3-4 (2026-10-27): a store-mode node grown to the network's state caps, measured beside what A13 computes for
+/// it. Three processes on one directory, JM_SCALE_DIR, chosen by JM_SCALE_PHASE:
+/// - "grow" (the directory must not exist): a store-mode node of scale_cfg() builds and imports full-gas blocks of
+///   fresh slots and of fresh accounts, each followed by an empty block, until JM_SCALE_ACCTS (950,000) user
+///   accounts and JM_SCALE_SLOTS (3,800,000) user slots, whichever kind is further behind first. At JM_SCALE_STEPS
+///   (10) points on the way it prints JM-SCALE: the live counts from the head's state summary, RSS and VmHWM,
+///   state.redb's file, stored and allocated bytes and nodes, the node cache, the import times of the segment,
+///   and A13's count for one version of the same size (`node_trie::version_bytes`).
+/// - "reopen": opens the directory (from its last checkpoint) and prints the same; then builds a fallback branch
+///   from JM_SCALE_FORK (8) blocks below the head until it has more work, imports it (the reorg) and prints them
+///   again.
+/// - "verify": opens it once more, checks that the head is the branch's tip (which "reopen" wrote beside the
+///   directory, JM_SCALE_DIR.tip), and prints them.
+/// Checkpoints are every JM_SCALE_CKPT journal records (the node's default, checkpoint::EVERY = 1,024).
+/// Every phase also prints JM-SCALE-A13: the bound `resources::check` computes for this profile at boot (the
+/// caps', not the live state's) and state.redb's computed file bound. The process holds the node only (the node
+/// builds its own blocks), so RSS and VmHWM are the node's and its allocator's. A measurement on this host, not
+/// a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_store_scale(){
+    use pocol_lp4_execution::node_trie::version_bytes;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let dir=PathBuf::from(std::env::var("JM_SCALE_DIR").expect("JM_SCALE_DIR"));
+    let phase=std::env::var("JM_SCALE_PHASE").unwrap_or_else(|_|"grow".into());
+    let c=scale_cfg();let d=devnet::build(&c).unwrap();
+    let spec=||Spec::new(d.admit(&pocold::single_host_local()).unwrap_or_else(|e|panic!("{e}")).0);
+    let keys:HashMap<Address,Key>=d.miners.iter().map(|m|(m.id,Key::from_secret(&m.key.secret()).unwrap())).collect();
+    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"jm".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,
+        limits:Limits{state_store:true,checkpoint_every:env_n("JM_SCALE_CKPT",pocold::checkpoint::EVERY),..Default::default()}},spec()).unwrap();(n,t.elapsed().as_secs_f64())};
+    let size=|f:&str|std::fs::metadata(dir.join(f)).map(|m|m.len()).unwrap_or(0);
+    {   let l=pocold::single_host_local();let lim=Limits{state_store:true,..Default::default()};let cp=spec().cp().clone();
+        let b=pocold::resources::check(&cp,l.k_hist,l.side_max,&lim,2).expect("the scale profile boots in store mode");
+        let f:u128=pocold::resources::state_file_parts(&cp,l.k_hist,l.side_max,&lim).unwrap().iter().sum();
+        println!("JM-SCALE-A13 {}",serde_json::json!({"phase":phase,"boundBytes":b.total.to_string(),"budgetRequiredBytes":pocold::resources::budget_required(b.total).unwrap().to_string(),
+            "stateFileBoundBytes":f.to_string(),"oneVersionAtCapsBytes":version_bytes(u128::from(cp.ACCT_CAP)+5,u128::from(cp.SLOT_CAP)+u128::from(cp.SYS_SLOT_MAX)).unwrap().to_string(),
+            "acctCap":cp.ACCT_CAP,"slotCap":cp.SLOT_CAP,"sysSlotMax":cp.SYS_SLOT_MAX,"gasLimit":cp.GAS_LIMIT,"hEnd":cp.H_END}));
+    }
+    let counts=|n:&Node|n.chain.head().summary.as_deref().map(|s|(s.user_accounts,s.user_slots,s.sys_slots));
+    let figures=|n:&Node,what:&str,extra:serde_json::Value|{
+        let st=n.state_store().unwrap();let (alloc,frag,meta)=st.file_stats().unwrap();let stored=st.stored_bytes().unwrap();
+        let (a,us,ss)=counts(n).unwrap_or((0,0,0));
+        let model=version_bytes(u128::from(a)+5,u128::from(us+ss)).unwrap();
+        println!("JM-SCALE {}",serde_json::json!({"phase":what,"height":n.chain.head().height,"userAccounts":a,"userSlots":us,"sysSlots":ss,
+            "rssBytes":rss_bytes(),"vmHwmBytes":vmhwm_bytes(),"stateFileBytes":size("state.redb"),"storedBytes":stored,"allocatedBytes":alloc,"fragmentedBytes":frag,"metadataBytes":meta,
+            "nodes":st.node_count().unwrap(),"nodeCacheBytes":st.cache_bytes(),"oneVersionModelBytes":model.to_string(),"storedOverModel":stored as f64/model.max(1) as f64,
+            "journalBytes":size("blocks.journal"),"historyBytes":size("history.redb"),"extra":extra}));
+    };
+    let alice=devnet::account_key("alice");
+    match phase.as_str(){
+        "grow"=>{
+            assert!(!dir.exists(),"JM_SCALE_DIR must not exist for the grow phase");
+            let (ta,ts,steps)=(env_n("JM_SCALE_ACCTS",950_000),env_n("JM_SCALE_SLOTS",3_800_000),env_n("JM_SCALE_STEPS",10));
+            let (mut n,_)=open();figures(&n,"grow start",serde_json::json!({}));
+            let (mut nonce,mut fills,mut step)=(0u64,0u64,1u64);let (mut build_ms,mut fill_ms,mut empty_ms)=(vec![],vec![],vec![]);let t0=Instant::now();
+            loop{
+                let (a,us,_)=counts(&n).expect("the head has its summary");
+                let (fa,fs)=(a as f64/ta as f64,us as f64/ts as f64);
+                if fa.min(fs)>=step as f64/steps as f64||(a>=ta&&us>=ts){
+                    let st=|v:&[f64]|serde_json::json!({"n":v.len(),"medianMs":if v.is_empty(){0.0}else{median(v.to_vec())},"maxMs":v.iter().cloned().fold(0.0,f64::max)});
+                    figures(&n,&format!("grow {step}/{steps}"),serde_json::json!({"seconds":t0.elapsed().as_secs_f64(),"buildFill":st(&build_ms),"importFill":st(&fill_ms),"importEmpty":st(&empty_ms),"checkpointsWritten":n.stats.checkpoints_written}));
+                    build_ms.clear();fill_ms.clear();empty_ms.clear();step+=1;
+                    if a>=ta&&us>=ts{break}
+                }
+                let slots=us<ts&&(fs<=fa||a>=ta);
+                let init=if slots{sstore_fresh_loop()}else{fills+=1;fill_accts_init((fills+1)<<40)};
+                let t=Instant::now();let b=signed_on(&n.chain,&keys,n.chain.head,Body{txs:vec![deploy(&alice,nonce,FULL_GAS,1_000_000,init)],evidence:vec![]});build_ms.push(t.elapsed().as_secs_f64()*1e3);nonce+=1;
+                let t=Instant::now();n.import(b,None).unwrap();fill_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let f=fallback_on(&n.chain,&keys,n.chain.head,0);let t=Instant::now();n.import(f,None).unwrap();empty_ms.push(t.elapsed().as_secs_f64()*1e3);
+            }
+        }
+        "reopen"=>{
+            let (mut n,open_s)=open();figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from}));
+            let fork=env_n("JM_SCALE_FORK",8);let tip=n.chain.head;let tip_work=n.chain.get(&tip).unwrap().total_work;
+            let mut p=tip;for _ in 0..fork{p=n.chain.get(&p).unwrap().header.parent_hash;}
+            let (mut side,t)=(0u32,Instant::now());let mut imp=vec![];
+            while n.chain.get(&p).unwrap().total_work<=tip_work{let b=fallback_on(&n.chain,&keys,p,0);p=b.hash();let t=Instant::now();n.import(b,None).unwrap();imp.push(t.elapsed().as_secs_f64()*1e3);side+=1;}
+            assert_eq!(n.chain.head,p,"the heavier branch is the head");std::fs::write(dir.with_extension("tip"),p).unwrap();
+            figures(&n,"after the reorg",serde_json::json!({"forkDepth":fork,"sideBlocks":side,"reorgSeconds":t.elapsed().as_secs_f64(),"importMs":imp,"head":format!("{:x?}",&p[..8])}));
+        }
+        "verify"=>{
+            let (n,open_s)=open();
+            let tip=std::fs::read(dir.with_extension("tip")).expect("the reopen phase's tip");
+            assert_eq!(&n.chain.head[..],&tip[..],"the head after reopening is the reorg's tip");
+            figures(&n,"reopened after the reorg",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"head":format!("{:x?}",&n.chain.head[..8])}));
+        }
+        p=>panic!("JM_SCALE_PHASE {p}"),
     }
 }
