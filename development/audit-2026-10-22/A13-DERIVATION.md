@@ -657,8 +657,13 @@ evidence/memory-r14/a13-models.log):
 
 **Mutation controls** (evidence/memory-r14/mutants.log): 25 mutants of the new code, 24 killed, one
 equivalent.
-- P6 drops the `min(n·whole, …)` of `chain_versions_bytes`. Every term of `block_bytes` is at most the same
-  term of `version_bytes`, so the `min` never picks its first argument, and no test can tell.
+- P6 drops the `min(n·whole, …)` of `chain_versions_bytes`. It is equivalent for every input the types allow:
+  - every term of `block_bytes` is at most the same term of `version_bytes`, so the `min` never picks
+    its first argument;
+  - `n·whole` cannot overflow, since it is below 2^107 for u64 caps and a u32 K_hist, so the original never
+    returns `None` where the mutant would not.
+  - The proof is in evidence/memory-r14/README.md. `node_trie::tests::a_blocks_addition_is_at_most_a_whole_version`
+    pins its premise.
 - N11 (`ROW` 36 → 32 bytes) survived the node_trie tests: their bounds have slack for a row 4 bytes short.
   It is killed by `state_store::a13_row_is_what_state_redb_keeps_per_node` (`8d80354`), which checks `ROW`
   plus each node's encoding against the rows state.redb keeps, exactly.

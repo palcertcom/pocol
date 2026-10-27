@@ -51,18 +51,44 @@ in the log, then restored. Baseline unmutated: 7 + 1 + 5 tests pass.
 | resources.rs, the A13 terms (P1–P8) | 8 | 6 killed in the first run; P6 equivalent; P8 survived, see below |
 | chain.rs, the store-mode import fix (F1) | 1 | killed |
 
+Result: **24 of 25 killed, 1 equivalent (P6)**, counting the two reruns below.
+
 - **P8** (the map slot of a block entry counted ×3 instead of ×4) survived `network_budget`, whose network
   figures do not pin the devnet total. Rerun against `consensus::a13_bound_breakdown`, which pins it: killed.
 - **N11** survived both node_trie runs, also after `stored()` in node_trie/tests.rs was made to count a row's
   32 + 4 bytes itself: the bounds the tests check have slack, so a row 4 bytes short still fits. Killed by
   the new `state_store::a13_row_is_what_state_redb_keeps_per_node`, which checks `ROW` plus each node's
   encoding against the rows state.redb keeps (its `stored_bytes`), exactly.
-- **P6** removes `min(n·whole, …)` from `chain_versions_bytes`. It is equivalent: every term of
-  `block_bytes(wa,ws,ka,ks)` is at most the same term of `version_bytes(ka,ks)` (leaves `min(w,k) ≤ k`,
-  branches `min(64·keys, child) ≤ keys`, children `≤ 2·child`), so `whole + (n−1)·block ≤ n·whole` and the
-  `min` never picks its first argument. No test can kill it.
+- **P6** removes the `min` from `chain_versions_bytes`; it is equivalent (next section).
 
-Result: 24 of 25 killed, 1 equivalent.
+### Why P6 is equivalent
+
+The mutant turns `Some(mul(n,whole)?.min(add(&[whole,mul(n-1,block)?])?))` into
+`Some(add(&[whole,mul(n-1,block)?])?)`, with `whole = version_bytes(ka,ks)` and
+`block = block_bytes(wa,ws,ka,ks)`. Both return 0 at n = 0. Otherwise the two can differ in only two ways,
+and neither can happen:
+
+1. **`n·whole` is the smaller argument.** Every term of `block` is at most the same term of `whole`:
+
+   | term | `block_bytes(wa,ws,ka,ks)` | `version_bytes(ka,ks)` |
+   |---|---|---|
+   | account leaves | `min(wa,ka)·(191+36)` | `ka·(191+36)` |
+   | slot leaves | `min(ws,ks)·(98+36)` | `ks·(98+36)` |
+   | branches | `min(64·(wa+ws), ka+ks)·(70+36)` | `(ka+ks)·(70+36)` |
+   | children | `min(16·branches, 2·(ka+ks))·66` | `2·(ka+ks)·66` |
+
+   So `block ≤ whole`, and `whole + (n−1)·block ≤ whole + (n−1)·whole = n·whole`. The `min` always returns
+   its second argument (both are equal when a block changes every key of the child).
+2. **`mul(n,whole)` overflows**, so the original returns `None` where the mutant returns `Some`.
+   - ACCT_CAP and SLOT_CAP are u64 and SYS_SLOT_MAX is u32, so `ka + ks < 2^66`.
+   - A key costs at most 227 + 106 + 132 = 465 < 2^9 bytes, so `whole < 2^75`.
+   - n is at most K_hist + 1 ≤ 2^32 (K_hist is a u32).
+   - So `n·whole < 2^107`, far from u128's 2^128, and the other products are smaller.
+
+The outputs are therefore the same for every input the types allow, and no test can kill the mutant. The
+`min` is kept as a clamp. `node_trie::tests::a_blocks_addition_is_at_most_a_whole_version` pins the premise
+of point 1: 200,000 random and edge counts up to u64::MAX + 2^32, with n = 2^32. A change to `block_bytes`
+that broke the premise would fail that test, so the clamp cannot start to bind unnoticed.
 
 ## Not established here
 

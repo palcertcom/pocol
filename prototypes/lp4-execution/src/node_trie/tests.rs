@@ -272,3 +272,22 @@ fn a_path_of_64_branches_and_a_displaced_leaf_reach_the_batch_bounds(){
     let (br,lv,kids)=batch_counts(&b);assert_eq!((br,lv,kids),(1,2,2),"a branch at the last nibble over the new and the displaced leaf");
     let (mb,ml,mk)=batch_nodes(0,1,0,2).unwrap();assert_eq!(ml,2,"the leaves' bound counts the displaced leaf");assert!(br<=mb&&kids<=mk);
 }
+
+/// A13 (pocold `chain_versions_bytes`): what a block's version adds is at most a whole version, term by term,
+/// for any counts the caps allow (each a u64, plus the system keys). So the union bound whole + (n−1)·block is
+/// never above n·whole for any n a u32 K_hist gives, and the `min` there never picks n·whole: its mutant (P6)
+/// is equivalent. This pins that premise; a change to `block_bytes` that broke it would fail here.
+#[test]
+fn a_blocks_addition_is_at_most_a_whole_version(){
+    let edge=[0u128,1,2,63,64,65,1<<20,u128::from(u64::MAX),u128::from(u64::MAX)+(1<<32)];
+    let pick=|r:&mut Rng|->u128{if r.below(3)==0{edge[r.below(edge.len() as u64) as usize]}else{u128::from(r.next())>>r.below(64)}};
+    let (mut r,mut equal,n)=(Rng(0xb10c),0,u128::from(u32::MAX)+1);
+    for _ in 0..200_000{
+        let (wa,ws,ka,ks)=(pick(&mut r),pick(&mut r),pick(&mut r),pick(&mut r));
+        let (Some(b),Some(v))=(block_bytes(wa,ws,ka,ks),version_bytes(ka,ks)) else{panic!("overflow at {wa} {ws} {ka} {ks}")};
+        assert!(b<=v,"{wa} {ws} {ka} {ks}: {b} > {v}");
+        assert!(v.checked_add((n-1).checked_mul(b).unwrap()).unwrap()<=n.checked_mul(v).unwrap());
+        if b==v&&v>0{equal+=1}
+    }
+    assert!(equal>0,"positive control: a block that changes every key of the child reaches a whole version");
+}
