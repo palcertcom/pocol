@@ -270,6 +270,11 @@
     "run": "palcertcom/pocol 40546902481",
     "commit": "d45dfe2",
     "result": "PASS on every step (lp4 208/0 with the seven modexp tests, pocold 238/0): the first Windows run of the wide even path (0c2ad75); PACER close 2 ms after s_v; evidence/windows-d45dfe2/"
+   },
+   {
+    "run": "palcertcom/pocol 40550009922",
+    "commit": "b8fb7ab",
+    "result": "PASS on every step (lp4 209/0 with the eight modexp tests, pocold 238/0): MODEXP's trivial powers handed to revm (review finding 1); PACER close 1 ms after s_v; evidence/windows-b8fb7ab/"
    }
   ],
   "defectsFoundAndFixed": [
