@@ -31,7 +31,9 @@ transaction. This is D-6's local mechanism; no consensus, validity or specificat
 | `release-93a40d0.log` | `206eaa4` + the change committed as `93a40d0` | lp4 and pocold release suites: 451 passed, 0 failed |
 | `crash-test-93a40d0.log` | the same | `--features crash-test`: crashes inside release steps 1, 20 and 60, and kills at increasing delays |
 | `crash-test-22a82c2.log` | the tree committed as `22a82c2` (steps fsynced) | the same |
-| `mutants-deferred-release.log` | `22a82c2` + `e4_checkpoint_release_runs_at_open_and_between_events` | seeded faults (below) |
+| `mutants-deferred-release-dd85cc0.log` | `22a82c2` + the change committed as `dd85cc0` (its test and comment) | seeded faults RL1–RL16 (below) |
+| `release-review-fixes.log` | `dd85cc0` + the review fixes | lp4 and pocold release suites: 455 passed, 0 failed |
+| `mutants-deferred-release-2.log` | the review fixes' commit | seeded faults RL1–RL16 again, adapted to the fixed code, and RV1–RV12 for the fixes (below) |
 | scale-d30dc71/`ckpt-*.log` | `93a40d0`, `22a82c2` | the cost at the network's state caps (scale-d30dc71/README.md, § After the deferred release) |
 
 ## What the crash tests show
@@ -56,6 +58,30 @@ transaction. This is D-6's local mechanism; no consensus, validity or specificat
   - the counts recount at each stage.
 - **`network_budget`:** the file term with the owed set and its rows.
 
+## The independent review and its fixes
+
+An independent review of `93a40d0` and `22a82c2` found nothing critical or high
+(review-2026-10-27/D6-REVIEW.md). Its findings were fixed in the commit after `dd85cc0`:
+
+1. **Medium.** A storage error in a release step (an I/O error, say) marked the store damaged, so the next
+   open replayed from genesis. Now only a release row that contradicts the counts does. A storage error loses
+   only the step: the steps stop, and the next checkpoint's write or open finishes what is owed.
+   - Tests: `a_release_step_that_fails_on_io_leaves_the_store_whole` (Unix, RLIMIT_FSIZE in a child process)
+     and `a_release_row_that_contradicts_the_counts_marks_the_store_damaged` (the step, the write and open).
+2. **Low.** A pool backlog took every background step. With both pending, pool slices and release steps now
+   alternate (`e4_release_steps_alternate_with_pool_slices`).
+3. **Low.** No list of deleted ids is held; a deleted node leaves the cache as it is deleted.
+4. **Informational:**
+   - the flag is set after the write commits;
+   - `stored_bytes` counts the release rows;
+   - FORMAT 3, and a format-2 store opens as format 3
+     (`a_format_2_store_opens_as_format_3_and_another_format_is_rebuilt`);
+   - rows, not references, in the docs and stats (`released_rows`, `rowsReleased`; the earlier logs'
+     `refsReleased` counts rows).
+
 ## Seeded faults
 
-See `mutants-deferred-release.log`.
+- **`mutants-deferred-release-dd85cc0.log`:** 16 faults on the code before the review fixes, **all killed**.
+  RL13–RL15 (open does not release, the event loop takes no step or does not see owed work) are killed only
+  by `e4_checkpoint_release_runs_at_open_and_between_events`.
+- **`mutants-deferred-release-2.log`:** see that file.

@@ -171,13 +171,13 @@ pub trait Source{
     fn has(&self,hash:&[u8;32])->Result<bool,String>;
 }
 
-/// Restores a snapshot into `c`: a chain that holds only genesis, with its store enabled and the
-/// retention parameters set as open sets them. Every check in the module comment is made; on any failure
-/// `c` is left as it was (the versions pinned on the way are released) and the error says which check
-/// failed.
 /// How `restore` read the stored versions: whole, or through what differs from the parent's version.
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct Read{pub whole:u64,pub by_diff:u64}
+/// Restores a snapshot into `c`: a chain that holds only genesis, with its store enabled and the
+/// retention parameters set as open sets them. Every check in the module comment is made; on any failure
+/// `c` is left as it was (the versions pinned on the way are released) and the error says which check
+/// failed. Returns how the stored versions were read.
 pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore>)->Result<Read,String>{
     if s.genesis!=c.spec.genesis_hash(){return Err("snapshot of another genesis".into())}
     if s.params!=Params::of(c){return Err(format!("snapshot taken under other retention parameters: {:?}, now {:?}",s.params,Params::of(c)))}
@@ -251,7 +251,7 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
             let base=e.parent.and_then(|h|blocks.get(&h)).and_then(|p|Some((p.stored.clone()?,*read_sums.get(&p.hash)?)));
             let got=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||match &base{
                 Some((p,sum))=>sum.moved(&p.view(),&pin.view(),&p.trie.diff(&**store,&pin.trie)),
-                None=>Summary::scan_view(&pin.view(),code_max)})).map_err(|_|why("the stored version could not be read whole"))?;
+                None=>Summary::scan_view(&pin.view(),code_max)})).map_err(|_|why("the stored version could not be read"))?;
             if base.is_some(){read.by_diff+=1}else{read.whole+=1}read_sums.insert(e.hash,got);
             match r.summary{Some(want) if got!=want=>return Err(why("the stored version's summary is not the sealed one")),None if r.flags&F_SLIM==0=>return Err(why("a stored version without its summary")),_=>{}}
         }

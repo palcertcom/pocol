@@ -252,3 +252,91 @@ fn reach(s:&StateStore,roots:&[Id])->std::collections::HashSet<Id>{
     let mut seen=std::collections::HashSet::new();let mut st=roots.to_vec();
     while let Some(id)=st.pop(){if seen.insert(id){st.extend(s.try_node(&id).unwrap().unwrap().children())}}seen
 }
+
+/// A store that owes a dropped checkpoint's nodes: four versions, each the only pin of a checkpoint
+/// (keeping two), so the last two writes each drop one.
+fn owing_store(d:&std::path::Path,seed:u64)->StateStore{
+    let c=codes();let mut r=Rng(seed);let s=StateStore::open(d).unwrap();let mut db=state(&mut r,150,&c);
+    let mut b=Batch::default();let mut t=NodeTrie::build(&db,&s,&mut b);s.commit(&b,t.world,true).unwrap();let mut roots=vec![t.world.unwrap()];
+    for _ in 0..3{let next=mutate(&mut r,&db,&c,600);let tc=Touched::between(&db,&next);let mut b=Batch::default();
+        let u=t.update(&s,&mut b,&next,&tc);s.commit(&b,u.world,true).unwrap();roots.push(u.world.unwrap());t=u;db=next;}
+    for (i,x) in roots.iter().enumerate(){s.write_checkpoint(format!("c{i}").as_bytes(),&[*x],2).unwrap();s.unpin(x,true).unwrap();}
+    assert!(s.release_pending(),"positive control: the last write's dropped checkpoint is owed");s
+}
+/// D-6 (review 2026-10-27, finding 1): a release step that fails on a storage error loses only the step.
+/// Before the fix, any failed step marked the store damaged, so the next open threw its checkpoints away and
+/// replayed from genesis, while the same error in a block commit leaves the store whole. A child process
+/// (the file size limit is the whole process's) builds a store owing a dropped checkpoint, then sets
+/// RLIMIT_FSIZE below the file's size with SIGXFSZ ignored, so redb's writes fail with EFBIG. The step
+/// returns the error, the store is not marked damaged and no more steps are tried. Reopened, the store is
+/// not rebuilt, keeps both checkpoints and owes what it owed; its counts recount and the release finishes.
+#[cfg(unix)]
+#[test] fn a_release_step_that_fails_on_io_leaves_the_store_whole(){
+    let d=dir("io-step");
+    let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["release_step_io_child","--exact","--ignored","--nocapture","--test-threads=1"])
+        .env("POCOLD_IO_CHILD",&d).output().unwrap();
+    let text=String::from_utf8_lossy(&out.stdout).to_string();
+    let owed:usize=text.split("IO-CHILD owed ").nth(1).and_then(|x|x.split_whitespace().next()).and_then(|x|x.parse().ok())
+        .unwrap_or_else(||panic!("the child: {text}\n{}",String::from_utf8_lossy(&out.stderr)));
+    assert!(out.status.success()&&text.contains("IO-CHILD done"),"the child: {text}\n{}",String::from_utf8_lossy(&out.stderr));
+    println!("{}",text.lines().filter(|l|l.contains("IO-CHILD")).collect::<Vec<_>>().join("\n"));
+    let s=StateStore::open(&d).unwrap();
+    assert!(!s.rebuilt&&!d.join(pocold::state_store::DAMAGED).exists(),"an I/O error in a release step does not damage the store");
+    assert_eq!(s.checkpoints().unwrap().len(),2,"both checkpoints are kept");
+    assert!(s.release_pending(),"the work is still owed");assert_eq!(s.owed_refs().unwrap().len(),owed,"the failed step lost no row");
+    s.recount().unwrap();
+    let mut steps=0;while s.release_pending(){s.release_step(16).unwrap();steps+=1;}
+    assert!(steps>0);s.recount().unwrap();assert!(s.owed_refs().unwrap().is_empty());
+    drop(s);let _=std::fs::remove_dir_all(&d);
+}
+#[cfg(unix)]
+#[test] #[ignore="the child process of a_release_step_that_fails_on_io_leaves_the_store_whole"]
+fn release_step_io_child(){
+    let Ok(d)=std::env::var("POCOLD_IO_CHILD") else{return};let d=std::path::PathBuf::from(d);
+    let s=owing_store(&d,0x10e);let owed=s.owed_refs().unwrap().len();let len=std::fs::metadata(s.path()).unwrap().len();
+    assert!(len>4096,"positive control: the file is larger than the limit");
+    let old=unsafe{libc::signal(libc::SIGXFSZ,libc::SIG_IGN);let mut old=libc::rlimit{rlim_cur:0,rlim_max:0};assert_eq!(libc::getrlimit(libc::RLIMIT_FSIZE,&mut old),0);
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE,&libc::rlimit{rlim_cur:4096,rlim_max:old.rlim_max}),0);old};
+    let r=s.release_step(256);
+    unsafe{assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE,&old),0);}
+    println!("IO-CHILD owed {owed}");println!("IO-CHILD file {len} B; the step under RLIMIT_FSIZE 4096: {:?}",r.as_ref().map_err(|e|e.0.clone()));
+    assert!(r.is_err(),"positive control: the step fails on I/O");
+    assert!(!s.is_damaged()&&!d.join(pocold::state_store::DAMAGED).exists(),"a storage error does not mark the store damaged");
+    assert!(!s.release_pending(),"no more steps are tried");
+    println!("IO-CHILD done");
+}
+/// D-6 (review 2026-10-27): what a count means changed with the `release` table (format 3). A format-2 store
+/// opens without a rebuild and is marked format 3, so a build of format 2 sets it aside rather than miss what
+/// it owes; a store of another format is rebuilt.
+#[test] fn a_format_2_store_opens_as_format_3_and_another_format_is_rebuilt(){
+    const META:redb::TableDefinition<&str,u64>=redb::TableDefinition::new("meta");
+    let set=|d:&std::path::Path,f:u64|{let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
+        {let mut m=w.open_table(META).unwrap();m.insert("format",f).unwrap();}w.commit().unwrap();};
+    let get=|d:&std::path::Path|{let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let r=db.begin_read().unwrap();
+        let v=r.open_table(META).unwrap().get("format").unwrap().map(|v|v.value());v};
+    assert_eq!(pocold::state_store::FORMAT,3);
+    let d=dir("format");{let s=owing_store(&d,0xf2);drop(s);}
+    assert_eq!(get(&d),Some(3));set(&d,2);
+    {let s=StateStore::open(&d).unwrap();assert!(!s.rebuilt,"a format-2 store is not rebuilt");assert!(s.release_pending());s.recount().unwrap();}
+    assert_eq!(get(&d),Some(3),"it is marked format 3");
+    set(&d,4);{let s=StateStore::open(&d).unwrap();assert!(s.rebuilt,"a store of another format is rebuilt");assert!(!s.release_pending());}
+    let _=std::fs::remove_dir_all(&d);
+}
+/// D-6 (review 2026-10-27): a `release` row that contradicts the counts still marks the store damaged,
+/// whichever path works it off (a release step, a checkpoint's write, the release at open), and the next
+/// open rebuilds the store. A row is written straight into state.redb for a node that is not stored.
+#[test] fn a_release_row_that_contradicts_the_counts_marks_the_store_damaged(){
+    const RELEASE:redb::TableDefinition<&[u8;32],u32>=redb::TableDefinition::new("release");
+    for (i,path) in ["step","write","open"].into_iter().enumerate(){
+        let d=dir(&format!("broken-{path}"));
+        {let s=owing_store(&d,0xb0+i as u64);while s.release_pending(){s.release_step(256).unwrap();}s.recount().unwrap();}
+        {let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
+         {let mut t=w.open_table(RELEASE).unwrap();t.insert(&[7u8;32],1).unwrap();}w.commit().unwrap();}
+        let s=StateStore::open(&d).unwrap();assert!(s.release_pending(),"{path}: positive control: the row is owed");
+        let r=match path{"step"=>s.release_step(256).map(|_|()),"write"=>s.write_checkpoint(b"c9",&[],2).map(|_|()),_=>s.release_all().map(|_|())};
+        let e=r.expect_err(path).0;assert!(e.contains("not stored"),"{path}: {e}");
+        assert!(s.is_damaged()&&d.join(pocold::state_store::DAMAGED).exists(),"{path}: the store is marked damaged");
+        drop(s);let s=StateStore::open(&d).unwrap();assert!(s.rebuilt,"{path}: the next open rebuilds it");
+        drop(s);let _=std::fs::remove_dir_all(&d);
+    }
+}

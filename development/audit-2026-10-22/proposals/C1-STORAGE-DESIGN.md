@@ -926,7 +926,15 @@ normative changes.
   - A node's stored count is the stored nodes naming it, plus its pins, plus what it owes.
   - The next checkpoint's write first finishes what is still owed, so at most one dropped checkpoint is
     owed at a time. A13's file term counts that set (`state_file_parts`).
-  - A release step is fsynced: a crash loses the step, never part of it, and the work stays owed. Unsynced
+  - A release step is fsynced: a crash loses the step, never part of it, and the work stays owed.
+  - A step that fails on a storage error (an I/O error, say) loses only the step: the steps stop, the
+    store stays whole, and the next checkpoint's write or open finishes what is owed. Only a row that
+    contradicts the counts (a node owed but not stored, more owed than counted) marks the store damaged.
+    Independent review, 2026-10-27, finding 1 (evidence/memory-r14/review-2026-10-27/D6-REVIEW.md).
+  - With both pending, the event loop's background steps alternate between pool slices and release steps,
+    so a pool backlog cannot hold the release back to the next write (finding 2).
+  - A deleted node leaves the cache as it is deleted; no list of the deleted ids is held (finding 3).
+  - The store's format is 3: a node's count includes what it owes. A format-2 store opens as format 3. Unsynced
     steps were measured too: each block's durable commit then wrote their pages, and imports during a release
     took up to 905 ms, against 155–209 ms with fsynced steps (two runs), and state.redb grew to 4.3–8.6 GB, since
     pages freed by unsynced transactions are not reused before a durable commit.

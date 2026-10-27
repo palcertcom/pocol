@@ -74,7 +74,7 @@ const HISTORY_SYNC:u64=256;
 /// execution of the one transaction in progress when it ends (one transaction is at most GAS_LIMIT,
 /// which the R14/R19 gate bounds by t_exec).
 pub const POOL_SLICE:Duration=Duration::from_millis(50);
-/// D-6 (2026-10-27): the owed references one release step works off (`StateStore::release_step`). At the
+/// D-6 (2026-10-27): the `release` rows one release step works off (`StateStore::release_step`). At the
 /// network's state caps a step, fsynced, held the consensus thread 32-45 ms on average (180 ms at most, two
 /// runs), against 8-11 s for the whole release inside a checkpoint's write.
 pub const RELEASE_SLICE:usize=256;
@@ -241,6 +241,8 @@ pub struct Node{
     /// C-1 E4.4: the node store (store mode) and the checkpoint cadence: records between checkpoints (0:
     /// none), the records the last one covers, and the journal's rolling hash (`checkpoint::roll`).
     state_store:Option<Arc<crate::state_store::StateStore>>,ckpt:Ckpt,
+    /// D-6: with both pending, the next background step is a release step (they alternate with pool slices).
+    release_turn:bool,
 }
 #[derive(Default)]
 struct Ckpt{every:u64,last:u64,roll:[u8;32]}
@@ -272,9 +274,9 @@ pub struct Stats{pub imported:u64,pub mined:u64,pub signed_templates:u64,pub fal
     pub resumed_from:Option<u64>,pub checkpoints_refused:u64,pub pins_released:u64,pub checkpoints_written:u64,
     /// C-1 E4.4: how the checkpoint open resumed from read its stored versions (`checkpoint::Read`).
     pub versions_read:crate::checkpoint::Read,
-    /// D-6: release steps run, the longest (ms), the owed references they worked off, and those open
+    /// D-6: release steps run, the longest (ms), the `release` rows they worked off, and the rows open
     /// worked off before reading a checkpoint.
-    pub release_steps:u64,pub release_step_max_ms:u64,pub released_refs:u64,pub released_at_open:u64}
+    pub release_steps:u64,pub release_step_max_ms:u64,pub released_rows:u64,pub released_at_open:u64}
 
 fn orphan_size(b:&Block)->usize{b.header.encoded.len()+b.body.txs.iter().chain(b.body.evidence.iter()).map(|x|x.len()).sum::<usize>()}
 fn result_bytes(r:&Option<ParentResult>)->Vec<u8>{
@@ -346,9 +348,10 @@ impl Node{
             let dyn_st:Arc<dyn pocol_lp4_execution::node_trie::TrieStore>=st.clone();
             let mut resumed=None;
             // D-6: what a checkpoint's write left owed is worked off before anything is read (a store owes at
-            // most one dropped checkpoint).
-            // A store that fails here is marked damaged, so its checkpoints are not used and it is rebuilt.
-            let released_at_open=if st.rebuilt||ckpt_every==0{0}else{st.release_all().unwrap_or_else(|e|{let _=st.mark_damaged(&format!("release at open: {}",e.0));0})};
+            // most one dropped checkpoint). A count that contradicts what is owed marks the store damaged
+            // (`release_all`), so its checkpoints are not used and it is rebuilt. A storage error leaves the
+            // work owed (the counts include it): the release steps, or the next checkpoint's write, finish it.
+            let released_at_open=if st.rebuilt||ckpt_every==0{0}else{st.release_all().unwrap_or(0)};
             // The pins are reset to the checkpoints' before genesis's version is pinned for its entry.
             let snaps:Result<Vec<(u64,crate::checkpoint::Snapshot)>,String>=if ckpt_every>0&&!st.rebuilt&&!history.rebuilt&&history_kept{
                 st.checkpoints().map_err(|e|e.0).and_then(|c|c.iter().map(|(q,b,roots)|{
@@ -462,7 +465,7 @@ impl Node{
         let mut node=Self{cfg,chain,net,orphan_order:VecDeque::new(),orphan_bytes:0,journal:rec.journal,history,peers:HashMap::new(),peer_status:HashMap::new(),session:None,sync_ask_ms:0,sync_turn:0,outbound:Arc::new(Mutex::new(HashSet::new())),tx,rx,light,light_rx,draining:false,deferred:VecDeque::new(),between:false,resp,tick_pending:Arc::new(std::sync::atomic::AtomicBool::new(false)),miner_tx,prod:None,
             orphans:HashMap::new(),future:Vec::new(),own_future:HashSet::new(),templates:HashMap::new(),received:HashMap::new(),
             pool:Pool{code_total:pool_code,txs:vec![],pending:Default::default(),pending_base:head_state,bytes:0,meter,backlog:VecDeque::new(),backlog_bytes:0,gas:0,gas_max:pool_gas_max},rejects:VecDeque::new(),stats:Stats::default(),stopped:false,seen_templates:HashMap::new(),seen_wins:HashMap::new(),evidence_pool:Vec::new(),
-            state_store,ckpt:Ckpt{every:ckpt_every,last:ckpt_last,roll:rolls[n_rec]}};
+            state_store,ckpt:Ckpt{every:ckpt_every,last:ckpt_last,roll:rolls[n_rec]},release_turn:false};
         node.stats.imported=rec.payloads.len() as u64;node.stats.replay_skipped=skipped;node.stats.restored=restored as u64;node.stats.history_refilled=refilled;
         node.stats.resumed_from=(start>0).then_some(start as u64);node.stats.checkpoints_refused=refused;node.stats.pins_released=released;node.stats.checkpoints_written=written;node.stats.versions_read=versions_read;node.stats.released_at_open=opened_release;
         if rec.torn_tail{node.log("recovered torn journal tail into a new journal");}
@@ -704,13 +707,22 @@ impl Node{
     /// D-6: a dropped checkpoint's nodes are still owed (store mode).
     pub fn release_pending(&self)->bool{self.state_store.as_ref().map_or(false,|s|s.release_pending())}
     fn background_pending(&self)->bool{self.pool_pending()||self.release_pending()}
-    fn background_step(&mut self){if self.pool_pending(){self.pool_step()}else{self.release_step()}}
-    /// D-6: one release step (`RELEASE_SLICE` owed references, one transaction). A store that fails here is
-    /// marked damaged by the store and rebuilt at the next open, as any failed store write.
+    /// One background step, as `run` takes it between events: a pool slice (D-7) or a release step (D-6).
+    /// With both pending they alternate (review 2026-10-27): a pool whose backlog does not empty between
+    /// heads would otherwise leave the whole release to the next checkpoint's write, the stall the steps
+    /// remove. An event still waits for at most one step of either kind.
+    pub fn background_step(&mut self){
+        let release=self.release_pending()&&(self.release_turn||!self.pool_pending());
+        if release{self.release_step()}else if self.pool_pending(){self.pool_step()}
+        self.release_turn=!release;
+    }
+    /// D-6: one release step (`RELEASE_SLICE` rows, one transaction). A step that fails stops the steps until
+    /// the next checkpoint's write or open finishes what is owed; only a broken count marks the store damaged
+    /// (`StateStore::release_step`).
     pub fn release_step(&mut self){
         let Some(st)=self.state_store.clone() else{return};
         let t0=Instant::now();
-        match st.release_step(RELEASE_SLICE){Ok(n)=>{self.stats.released_refs+=n as u64;}Err(e)=>self.log(&format!("release step: {}",e.0))}
+        match st.release_step(RELEASE_SLICE){Ok(n)=>{self.stats.released_rows+=n as u64;}Err(e)=>self.log(&format!("release step: {}",e.0))}
         let ms=t0.elapsed().as_millis() as u64;self.stats.release_steps+=1;self.stats.release_step_max_ms=self.stats.release_step_max_ms.max(ms);
     }
     /// Revalidates the whole backlog now (in-process callers and tests; `run` never does).

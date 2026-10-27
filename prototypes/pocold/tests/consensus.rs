@@ -2526,6 +2526,31 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     st.recount().unwrap();drop(st);drop(n);let _=std::fs::remove_dir_all(&a);
 }
 
+/// D-6 (review 2026-10-27, finding 2): with a pool revalidation backlog and a dropped checkpoint's nodes both
+/// pending, the background steps the event loop takes between events alternate. Before, every step went to
+/// the pool while it had a backlog, so a backlog that does not empty between heads left the whole release
+/// to the next checkpoint's write. A store-mode node pools four transfers, a new head puts them back in the
+/// backlog (one transaction per slice), and three checkpoints drop the first: while both are pending, the
+/// steps alternate, and a release step runs before the backlog is empty.
+#[test] fn e4_release_steps_alternate_with_pool_slices(){
+    use std::time::Duration;
+    let mut h=net();let g=h.chain.head;let blocks=branch(&mut h,g,2,&[]);
+    let (n,dir)=gas_node("release-turns",pocold::node::Limits{state_store:true,checkpoint_every:1000,pool_slice:Duration::ZERO,..Default::default()});let mut n=n.unwrap();
+    n.import(blocks[0].clone(),None).unwrap();let alice=devnet::account_key("alice");
+    for nonce in 0..4{n.submit_tx(pay(&alice,nonce,1),false).unwrap();}
+    n.import(blocks[1].clone(),None).unwrap();assert!(n.pool_pending(),"positive control: the new head left a revalidation backlog");
+    for _ in 0..3{n.checkpoint_now().unwrap();}assert!(n.release_pending(),"positive control: the third checkpoint dropped the first, owed");
+    let mut kinds=vec![];
+    while n.pool_pending()&&n.release_pending(){let (r,p)=(n.stats.release_steps,n.stats.pool_slices);n.background_step();
+        kinds.push(match (n.stats.release_steps-r,n.stats.pool_slices-p){(1,0)=>'r',(0,1)=>'p',x=>panic!("one step, one kind: {x:?}")});}
+    println!("E4-TURNS {}",kinds.iter().collect::<String>());
+    assert!(kinds.contains(&'r'),"a release step ran while the pool still had a backlog: {kinds:?}");
+    assert!(kinds.windows(2).all(|w|w[0]!=w[1]),"the steps alternate: {kinds:?}");
+    while n.pool_pending()||n.release_pending(){n.background_step();}
+    assert_eq!(n.pool.txs.len(),4,"every transfer is still pooled");n.state_store().unwrap().recount().unwrap();
+    drop(n);let _=std::fs::remove_dir_all(&dir);
+}
+
 /// The child of `e4_checkpoint_survives_kills`: imports the blocks of `POCOLD_E44_BLOCKS` into the node
 /// at `POCOLD_E44_CHILD`, a checkpoint after every record, until it is killed. Not a test on its own.
 #[test] #[ignore="the child process of e4_checkpoint_survives_kills"]
