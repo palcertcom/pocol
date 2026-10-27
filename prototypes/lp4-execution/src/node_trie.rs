@@ -316,6 +316,46 @@ fn walk(s:&dyn NodeStore,id:&Id,f:&mut dyn FnMut(&Key,&Val)){
         match &*n{Node::Leaf{key,val}=>f(key,val),Node::Branch{kids,..}=>for (c,_) in kids.iter().rev(){stack.push(*c)}}
     }
 }
+/// A leaf that differs between two versions (`NodeTrie::diff`): only in the first, only in the second, or under the
+/// same key in both with another value. (The key is read by the tests: the world and storage leaves carry their
+/// preimages.)
+#[cfg_attr(not(test),allow(dead_code))]
+enum Change<'a>{Gone(&'a Key,&'a Val),Came(&'a Key,&'a Val),Moved(&'a Key,&'a Val,&'a Val)}
+/// The key nibbles every key below a node shares: a branch's up to the nibble it branches at, a leaf's whole key.
+fn shared(n:&Node)->usize{match n{Node::Leaf{..}=>64,Node::Branch{at,..}=>usize::from(*at)}}
+fn kid(n:&Node,i:u8)->Option<Id>{match n{Node::Branch{mask,kids,..} if mask&(1<<i)!=0=>Some(kids[(mask&((1u16<<i)-1)).count_ones() as usize].0),_=>None}}
+fn read(s:&dyn NodeStore,id:&Id)->Arc<Node>{s.node(id).unwrap_or_else(||panic!("C-1 E4: trie node {} is missing from the store",B256::from(*id)))}
+/// Every leaf below `n`, each node read.
+fn leaves(s:&dyn NodeStore,n:&Node,f:&mut dyn FnMut(&Key,&Val)){
+    match n{Node::Leaf{key,val}=>f(key,val),Node::Branch{kids,..}=>for (c,_) in kids.iter(){leaves(s,&read(s,c),f)}}
+}
+/// The leaves that differ between the subtrees `a` and `b`, which hold the keys of one key range in two versions.
+fn diff_ids(s:&dyn NodeStore,a:Option<&Id>,b:Option<&Id>,f:&mut dyn FnMut(Change)){
+    match (a,b){
+        (Some(x),Some(y)) if x==y=>{}
+        (None,None)=>{}
+        (Some(x),None)=>leaves(s,&read(s,x),&mut |k,v|f(Change::Gone(k,v))),
+        (None,Some(y))=>leaves(s,&read(s,y),&mut |k,v|f(Change::Came(k,v))),
+        (Some(x),Some(y))=>diff_nodes(s,&read(s,x),&read(s,y),f),
+    }
+}
+/// As `diff_ids`, for two nodes at hand. All keys below `a` share its first `shared(a)` nibbles, and likewise for
+/// `b`: if those prefixes part before either ends, no key is in both; if one is longer, the shorter node's other
+/// children hold keys the longer one cannot.
+fn diff_nodes(s:&dyn NodeStore,a:&Node,b:&Node,f:&mut dyn FnMut(Change)){
+    let (la,lb)=(shared(a),shared(b));
+    if diverge(a.key(),b.key(),0)<la.min(lb){leaves(s,a,&mut |k,v|f(Change::Gone(k,v)));leaves(s,b,&mut |k,v|f(Change::Came(k,v)));return}
+    match (a,b){
+        (Node::Leaf{key,val:x},Node::Leaf{val:y,..})=>if x!=y{f(Change::Moved(key,x,y))},
+        _ if la==lb=>for i in 0..16u8{diff_ids(s,kid(a,i).as_ref(),kid(b,i).as_ref(),f)},
+        _ if la<lb=>{let own=nib(b.key(),la);
+            for i in 0..16u8{match (kid(a,i),i==own){(Some(x),true)=>diff_nodes(s,&read(s,&x),b,f),(None,true)=>leaves(s,b,&mut |k,v|f(Change::Came(k,v))),
+                (Some(x),false)=>leaves(s,&read(s,&x),&mut |k,v|f(Change::Gone(k,v))),(None,false)=>{}}}}
+        _=>{let own=nib(a.key(),lb);
+            for i in 0..16u8{match (kid(b,i),i==own){(Some(y),true)=>diff_nodes(s,a,&read(s,&y),f),(None,true)=>leaves(s,a,&mut |k,v|f(Change::Gone(k,v))),
+                (Some(y),false)=>leaves(s,&read(s,&y),&mut |k,v|f(Change::Came(k,v))),(None,false)=>{}}}}
+    }
+}
 fn root_of(n:Option<&Node>)->B256{match n{None=>keccak256([0x80u8]),Some(n)=>node_ref(n,0).root()}}
 
 /// One version of the state trie: its world trie's top node.
@@ -374,6 +414,27 @@ impl NodeTrie{
         ch.sort_unstable_by(|x,y|x.0.cmp(&y.0));
         let start=self.world.map(|id|(id,load(s,b,&id)));
         NodeTrie{world:update(s,b,start,0,&ch).map(|(id,_)|id)}
+    }
+}
+
+impl NodeTrie{
+    /// C-1 E4.4 (2026-10-27): the accounts and slots whose committed values differ between this version and `to`,
+    /// as `Touched::between` lists them for two whole states: an account in one version only, whole; one in both
+    /// with another leaf, with the slots whose leaves differ. It reads every node of `to` that this version does
+    /// not hold at the same place, the storage of an account only `to` has included, each through the store
+    /// (which checks it against its id); of this version, only where the two differ. Two nodes with the same `Id`
+    /// are the same subtree, so a node of `to` it does not read is one this version holds, under the same keys.
+    pub fn diff(&self,s:&dyn NodeStore,to:&NodeTrie)->Touched{
+        let mut t=Touched::default();
+        diff_ids(s,self.world.as_ref(),to.world.as_ref(),&mut |c|match c{
+            Change::Gone(_,Val::Acct{address,..})=>t.whole_account(*address),
+            Change::Came(_,Val::Acct{address,storage,..})=>{t.whole_account(*address);if let Some(st)=storage{walk(s,st,&mut |_,_|{})}}
+            Change::Moved(_,Val::Acct{address,storage:x,..},Val::Acct{storage:y,..})=>{let a=*address;t.account(a);
+                diff_ids(s,x.as_ref(),y.as_ref(),&mut |c|match c{Change::Gone(_,Val::Slot(_,k))|Change::Came(_,Val::Slot(_,k))|Change::Moved(_,_,Val::Slot(_,k))=>t.slot(a,*k),
+                    _=>panic!("C-1 E4: an account leaf in a storage trie")})}
+            _=>panic!("C-1 E4: a slot leaf in the world trie"),
+        });
+        t
     }
 }
 

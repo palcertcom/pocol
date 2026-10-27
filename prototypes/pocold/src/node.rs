@@ -265,7 +265,9 @@ pub struct Stats{pub imported:u64,pub mined:u64,pub signed_templates:u64,pub fal
     /// C-1 E4.4: the journal records the last open resumed after (None: replayed from genesis), the
     /// checkpoints it refused (each released), the pins it released (versions no checkpoint holds), and
     /// the checkpoints written since.
-    pub resumed_from:Option<u64>,pub checkpoints_refused:u64,pub pins_released:u64,pub checkpoints_written:u64}
+    pub resumed_from:Option<u64>,pub checkpoints_refused:u64,pub pins_released:u64,pub checkpoints_written:u64,
+    /// C-1 E4.4: how the checkpoint open resumed from read its stored versions (`checkpoint::Read`).
+    pub versions_read:crate::checkpoint::Read}
 
 fn orphan_size(b:&Block)->usize{b.header.encoded.len()+b.body.txs.iter().chain(b.body.evidence.iter()).map(|x|x.len()).sum::<usize>()}
 fn result_bytes(r:&Option<ParentResult>)->Vec<u8>{
@@ -331,7 +333,7 @@ impl Node{
         // from genesis and refills it (derived data, I1). Checkpoints are kept only under the R_keep replay
         // uses (a lowered configured R_keep would make live keep less than replay).
         let ckpt_every=if cfg.limits.state_store&&cfg.limits.r_keep==rk_replay{cfg.limits.checkpoint_every}else{0};
-        let (mut start,mut refused,mut released,mut state_store)=(0usize,0u64,0u64,None);
+        let (mut start,mut refused,mut released,mut state_store,mut versions_read)=(0usize,0u64,0u64,None,crate::checkpoint::Read::default());
         if cfg.limits.state_store{
             let st=Arc::new(crate::state_store::StateStore::open(&cfg.dir).map_err(|e|format!("state store: {}",e.0))?);
             let dyn_st:Arc<dyn pocol_lp4_execution::node_trie::TrieStore>=st.clone();
@@ -355,7 +357,7 @@ impl Node{
                             let r=if k>n_rec||offs[k]!=b.end||rolls[k]!=b.hash{Err("it is not bound to this journal's records".to_string())}
                                 else if s.protect.as_ref().map_or(false,|p|p.len()!=protect.len()||p.iter().any(|h|!protect.contains(h))){Err("its protect set is not the one replay had after its last record".to_string())}
                                 else{crate::checkpoint::restore(&mut chain,&s,&crate::checkpoint::JournalSource{by_off:by_off.clone(),payloads:&rec.payloads,records:k,history:&history},&dyn_st)};
-                            match r{Ok(())=>{resumed=Some(k);chain.protect=protect;break}
+                            match r{Ok(r)=>{resumed=Some(k);versions_read=r;chain.protect=protect;break}
                                 Err(e)=>{refused+=1;if cfg.log{eprintln!("[{}] checkpoint {q} (record {k}) refused: {e}",cfg.name);}
                                     if st.drop_checkpoint(q).is_err()||st.is_damaged(){break}}}
                         }
@@ -451,7 +453,7 @@ impl Node{
             pool:Pool{code_total:pool_code,txs:vec![],pending:Default::default(),pending_base:head_state,bytes:0,meter,backlog:VecDeque::new(),backlog_bytes:0,gas:0,gas_max:pool_gas_max},rejects:VecDeque::new(),stats:Stats::default(),stopped:false,seen_templates:HashMap::new(),seen_wins:HashMap::new(),evidence_pool:Vec::new(),
             state_store,ckpt:Ckpt{every:ckpt_every,last:ckpt_last,roll:rolls[n_rec]}};
         node.stats.imported=rec.payloads.len() as u64;node.stats.replay_skipped=skipped;node.stats.restored=restored as u64;node.stats.history_refilled=refilled;
-        node.stats.resumed_from=(start>0).then_some(start as u64);node.stats.checkpoints_refused=refused;node.stats.pins_released=released;node.stats.checkpoints_written=written;
+        node.stats.resumed_from=(start>0).then_some(start as u64);node.stats.checkpoints_refused=refused;node.stats.pins_released=released;node.stats.checkpoints_written=written;node.stats.versions_read=versions_read;
         if rec.torn_tail{node.log("recovered torn journal tail into a new journal");}
         if rec.migrated_v1{node.log("migrated a fully verified v1 journal to format v2 (original kept as blocks.journal.v1-n)");}
         Ok(node)

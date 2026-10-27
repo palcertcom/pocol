@@ -938,8 +938,12 @@ history window, slim depth). It is used only under the same ones.
      work follows from the parent;
    - every stored version's state root, computed from its stored root node, against the block's
      committed stateRoot;
-   - every stored version read whole: each node checked against its id, a missing node marks the store
-     damaged, and its summary recomputed and compared with the sealed one.
+   - every node of every stored version read: each node checked against its id, a missing node marks the
+     store damaged, and each version's summary recomputed and compared with the sealed one. (2026-10-27,
+     implementation, no rule change: a version whose parent's version was read is read through what differs
+     from it, `NodeTrie::diff`, and its summary moved through those accounts and slots, as an import moves it;
+     the oldest is read whole. Reading each whole took about 17 s a version at the network's state caps,
+     evidence/memory-r14/scale-d30dc71.)
    A checkpoint that fails is released. A store found damaged is rebuilt.
 5. Replay continues after the checkpoint's last record, with replay's protect set recomputed from the
    journal events. With no checkpoint usable, the store starts empty and replay begins at genesis, as

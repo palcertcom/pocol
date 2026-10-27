@@ -147,6 +147,95 @@ fn raw_clustered_keys_build_and_update_give_p1_roots(){
     }
 }
 
+// ---------------- C-1 E4.4 (2026-10-27): what differs between two versions ----------------
+/// A store that records every node read through it.
+struct Reads<'a>{s:&'a dyn NodeStore,ids:std::cell::RefCell<std::collections::HashSet<Id>>}
+impl NodeStore for Reads<'_>{
+    fn node(&self,id:&Id)->Option<Arc<Node>>{self.ids.borrow_mut().insert(*id);self.s.node(id)}
+    fn code(&self,h:&B256)->Option<Bytecode>{self.s.code(h)}
+}
+/// Every node of the subtree at `root` (a storage trie hangs from its account's leaf).
+fn reach(s:&dyn NodeStore,root:Option<Id>)->std::collections::HashSet<Id>{
+    let mut seen=std::collections::HashSet::new();let mut st:Vec<Id>=root.into_iter().collect();
+    while let Some(id)=st.pop(){if seen.insert(id){st.extend(s.node(&id).unwrap().children())}}seen
+}
+/// A `Touched` as a value: each account, whole (None) or with its distinct slots in order.
+fn norm(t:&Touched)->std::collections::BTreeMap<Address,Option<Vec<U256>>>{t.iter().map(|(a,s)|(*a,s.map(|s|{let mut v=s.to_vec();v.sort();v.dedup();v}))).collect()}
+
+/// `NodeTrie::diff` lists what `Touched::between` lists for the two whole states, `Summary::moved` through it gives
+/// the second version's `scan_view`, and it reads every node the second version holds and the first does not. Pairs:
+/// each version and the next, versions further apart in either direction, an unrelated state, the empty one.
+#[test]
+fn diff_lists_what_differs_and_reads_every_node_only_the_second_version_holds(){
+    use crate::state_summary::Summary;
+    let codes=codes();let mut r=Rng(0x51ab);let (mut pairs,mut big)=(0u64,vec![]);
+    for case in 0..12u64{
+        let n=[0,1,3,40,150,400][case as usize%6];let pool=4*n+8;
+        let mut store=MemStore::default();let mut db=random_state(&mut r,n,&codes);
+        let mut b=Batch::default();let t0=NodeTrie::build(&db,&store,&mut b);store.commit(&b,t0.world);
+        let mut v=vec![(t0,db.clone())];
+        for _ in 0..20{
+            let next=mutate(&mut r,&db,&codes,pool);let touched=Touched::between(&db,&next);let mut b=Batch::default();
+            let u=v.last().unwrap().0.update(&store,&mut b,&next,&touched);store.commit(&b,u.world);v.push((u,next.clone()));db=next;
+        }
+        let other=random_state(&mut r,n+5,&codes);let mut b=Batch::default();let o=NodeTrie::build(&other,&store,&mut b);store.commit(&b,o.world);
+        let mut cases:Vec<(usize,usize,bool)>=(1..v.len()).map(|i|(i-1,i,true)).collect();
+        for _ in 0..10{cases.push((r.below(v.len() as u64) as usize,r.below(v.len() as u64) as usize,false));}
+        v.push((o,other));v.push((NodeTrie{world:None},InMemoryDB::default()));let (u,e)=(v.len()-2,v.len()-1);
+        cases.extend([(0,u,false),(u,0,false),(e,0,false),(0,e,false),(e,e,false),(e,u,false)]);
+        for (i,j,next) in cases{
+            let ((fa,fd),(ta,td))=(&v[i],&v[j]);let ctx=format!("case {case}: version {i} -> {j}");
+            let reads=Reads{s:&store,ids:Default::default()};let t=fa.diff(&reads,ta);
+            assert_eq!(norm(&t),norm(&Touched::between(fd,td)),"{ctx}: the accounts and slots that differ");
+            let (fv,tv)=(TrieState{store:&store,trie:*fa,block_hashes:&fd.block_hashes},TrieState{store:&store,trie:*ta,block_hashes:&td.block_hashes});
+            assert_eq!(Summary::scan_view(&fv,24577).moved(&fv,&tv,&t),Summary::scan_view(&tv,24577),"{ctx}: the summary moved through the diff");
+            let (from,to)=(reach(&store,fa.world),reach(&store,ta.world));let read=reads.ids.into_inner();
+            assert!(to.difference(&from).all(|id|read.contains(id)),"{ctx}: a node only the second version holds was not read");
+            if next&&n==400{big.push(read.len() as f64/to.len() as f64)}pairs+=1;
+        }
+    }
+    // Positive control: between one version and the next of a 400-account state, the diff reads a small share of
+    // the version (a whole read would be 1).
+    big.sort_by(|a,b|a.partial_cmp(b).unwrap());let med=big[big.len()/2];
+    println!("NODE-TRIE-DIFF pairs {pairs} nextOf400 {} medianShareRead {med:.3} maxShareRead {:.3}",big.len(),big[big.len()-1]);
+    assert!(med<0.25,"the diff of consecutive versions reads {med} of the version");
+}
+
+/// Keys that share long prefixes, so that branches split and merge at every depth between the two versions: the
+/// diff's changes are exactly the rows that differ, and it reads every node only the second trie holds.
+#[test]
+fn diff_of_raw_clustered_keys_is_exactly_the_rows_that_differ(){
+    let mut r=Rng(0x2545f4914f6cdd1d);let store=MemStore::default();let mut reads_total=(0usize,0usize);
+    for round in 0..300{
+        let mut model=std::collections::BTreeMap::new();let mut b=Batch::default();let mut t:Option<(Id,Arc<Node>)>=None;
+        for _ in 0..1+r.below(12){
+            let (before,old)=(model.clone(),t.as_ref().map(|x|x.0));
+            let mut ch:Vec<(Key,Option<Val>)>=Vec::new();
+            for _ in 0..1+r.below(if round%2==0{4}else{40}){
+                let k=if !model.is_empty()&&r.below(3)==0{*model.keys().nth(r.below(model.len() as u64) as usize).unwrap()}else{clustered_key(&mut r)};
+                if ch.iter().any(|(x,_)|*x==k){continue}
+                let v=if r.below(3)==0{None}else{Some(U256::from(1+r.below(3)))};
+                ch.push((k,v.map(|v|Val::Slot(v,U256::from(7u64)))));
+            }
+            ch.sort_by(|a,b|a.0.cmp(&b.0));
+            for (k,v) in &ch{match v{Some(Val::Slot(v,_))=>{model.insert(*k,*v);}_=>{model.remove(k);}}}
+            t=update(&store,&mut b,t,0,&ch);let new=t.as_ref().map(|x|x.0);
+            let over=Over{store:&store,batch:&b};let reads=Reads{s:&over,ids:Default::default()};
+            let mut got=std::collections::BTreeMap::new();
+            let val=|v:&Val|match v{Val::Slot(v,_)=>*v,_=>panic!("a slot trie")};
+            diff_ids(&reads,old.as_ref(),new.as_ref(),&mut |c|{let (k,x,y)=match c{Change::Gone(k,v)=>(*k,Some(val(v)),None),Change::Came(k,v)=>(*k,None,Some(val(v))),
+                Change::Moved(k,x,y)=>(*k,Some(val(x)),Some(val(y)))};assert!(got.insert(k,(x,y)).is_none(),"round {round}: a key reported twice");});
+            let want:std::collections::BTreeMap<Key,(Option<U256>,Option<U256>)>=before.keys().chain(model.keys()).map(|k|(*k,(before.get(k).copied(),model.get(k).copied())))
+                .filter(|(_,(x,y))|x!=y).collect();
+            assert_eq!(got,want,"round {round}: the changes are the rows that differ");
+            let (from,to)=(reach(&over,old),reach(&over,new));let read=reads.ids.into_inner();
+            assert!(to.difference(&from).all(|id|read.contains(id)),"round {round}: a node only the new trie holds was not read");
+            reads_total=(reads_total.0+read.len(),reads_total.1+to.len());
+        }
+    }
+    println!("NODE-TRIE-DIFF-RAW nodesRead {} nodesOfTheNewTries {}",reads_total.0,reads_total.1);
+}
+
 // ---------------- A13 (C-1 E4.5): what a store keeps of versions ----------------
 /// Bytes a store keeps: every row's 32-byte id, 4-byte count and serialization (as pocold's state_store
 /// keeps them; counted here independently of `ROW`).

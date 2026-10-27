@@ -2462,6 +2462,8 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
      assert!(s.protect.as_ref().map_or(false,|p|!p.is_empty()),"positive control: the replay checkpoint names the blocks later records build on");}
     {let mut n=reopen(&e44_conf(&r,every));let k=(blocks.len() as u64/every)*every;
      assert_eq!(n.stats.resumed_from,Some(k),"resumed after the newest checkpoint");
+     // Every stored version was read, most through their diff from the parent's version (2026-10-27).
+     let v=n.stats.versions_read;println!("E44-VERSIONS-READ {v:?}");assert!(v.by_diff>v.whole&&v.whole>=1,"the versions were read through their diffs: {v:?}");
      e44_same(&mut n,&mut g,"resumed from a replay checkpoint");}
     // (2) the live node's own checkpoints.
     {let mut n=reopen(&e44_conf(&a,every));assert_eq!(n.stats.resumed_from,Some((blocks.len() as u64/every)*every));e44_same(&mut n,&mut g,"resumed from a live checkpoint");
@@ -2557,6 +2559,9 @@ fn e4_checkpoint_kill_child(){
     // The root node of the newest checkpoint's head version (the running node's own head version was
     // released when it stopped, unless a checkpoint holds it).
     let head_root:[u8;32]=newest.entries.iter().find(|e|e.hash==newest.head).and_then(|e|e.root).expect("the newest checkpoint holds its head's version");
+    // The newest checkpoint's versions between its oldest and its head.
+    let middle:Vec<[u8;32]>={let r:Vec<[u8;32]>=newest.entries.iter().filter_map(|e|e.root).collect();r[1..r.len().saturating_sub(1)].iter().copied().filter(|x|*x!=head_root).collect()};
+    assert!(!middle.is_empty(),"positive control: the newest checkpoint holds versions between its oldest and its head");
     // Rewrites the newest snapshot (re-sealed, its roots record kept in step).
     let tamper=|d:&std::path::Path,f:&dyn Fn(&mut pocold::checkpoint::Snapshot)|{
         let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
@@ -2609,6 +2614,17 @@ fn e4_checkpoint_kill_child(){
                 while let Some(id)=st.pop(){if !seen.insert(id){continue}let v=t.get(&id).unwrap().unwrap().value().to_vec();st.extend(pocol_lp4_execution::node_trie::Node::decode(&v[4..]).unwrap().children());}seen};
              let old=reach(&t,&pocold::checkpoint::roots(&older));let new=reach(&t,&[head_root]);
              let only=*new.iter().find(|x|!old.contains(*x)).expect("a node only the newest head version names");t.remove(&only).unwrap();}
+            w.commit().unwrap();}),None,false),
+        // A node only one version in the middle of the newest checkpoint's chain names (no other pinned version holds
+        // it): open reads that version through its diff from its parent's (2026-10-27), and must still read it.
+        ("a missing node only a middle version names",Box::new(move|d|{let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
+            {let pins:redb::TableDefinition<&[u8;32],u32>=redb::TableDefinition::new("pins");
+             let pinned:Vec<[u8;32]>={let p=w.open_table(pins).unwrap();p.iter().unwrap().map(|kv|*kv.unwrap().0.value()).collect()};
+             let mut t=w.open_table(nodes).unwrap();
+             let reach=|t:&redb::Table<&[u8;32],&[u8]>,roots:&[[u8;32]]|{let mut seen=std::collections::HashSet::new();let mut st:Vec<[u8;32]>=roots.to_vec();
+                while let Some(id)=st.pop(){if !seen.insert(id){continue}let v=t.get(&id).unwrap().unwrap().value().to_vec();st.extend(pocol_lp4_execution::node_trie::Node::decode(&v[4..]).unwrap().children());}seen};
+             let only=middle.iter().find_map(|r|{let others=reach(&t,&pinned.iter().filter(|x|*x!=r).copied().collect::<Vec<_>>());reach(&t,&[*r]).into_iter().find(|x|!others.contains(x))})
+                .expect("a node only one middle version names");t.remove(&only).unwrap();}
             w.commit().unwrap();}),None,false),
         ("a missing node",Box::new(move|d|{let db=redb::Database::open(d.join(pocold::state_store::FILE)).unwrap();let w=db.begin_write().unwrap();
             {let mut t=w.open_table(nodes).unwrap();let v=t.get(&head_root).unwrap().unwrap().value().to_vec();
