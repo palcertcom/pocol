@@ -698,8 +698,12 @@ fn frames_from(n:&mut pocold::node::Node,s:&mut std::net::TcpStream,buf:&mut Vec
     let dir=std::env::temp_dir().join(format!("pocold-poolgas-run-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);
     let (ready_tx,ready_rx)=std::sync::mpsc::channel();let d=dir.clone();
     let node=std::thread::Builder::new().stack_size(64<<20).spawn(move||{
-        // One-item slices make the order of events and slices deterministic.
-        let mut n=Node::open(Config{dir:d,name:"run".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:Some(3),log:false,limits:Limits{pool_slice:Duration::ZERO,..Default::default()}},admitted(&cfg(&["a","b","c"]))).unwrap();
+        // One-item slices make the order of events and slices deterministic. The status request measures the hold,
+        // so it waits for admission as long as its deadline: with QUEUE_WAIT's 2 s, a loaded host whose heavy
+        // transaction takes 0.5 s answers it busy (-32021, network.md:232-234) before the bound below is reached
+        // (seen in a suite run beside a scale measurement; admission has its own tests).
+        let mut n=Node::open(Config{dir:d,name:"run".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:Some(3),log:false,
+            limits:Limits{pool_slice:Duration::ZERO,rpc:pocold::rpc::Limits{queue_wait:Duration::from_secs(120),..Default::default()},..Default::default()}},admitted(&cfg(&["a","b","c"]))).unwrap();
         let alice=devnet::account_key("alice");
         let input=pocold::types::unhex(&format!("{:08x}{}01",7_800_000u32,"00".repeat(64+128+16))).unwrap();
         let mut max_tx=Duration::ZERO;
@@ -713,7 +717,8 @@ fn frames_from(n:&mut pocold::node::Node,s:&mut std::net::TcpStream,buf:&mut Vec
     let send_block=|b:&Block|tx.send(Event::Net(NetEvent::Message(1,Msg::Block{header:b.header.encoded.clone(),body:b.body.encode()}))).unwrap();
     let status=||{let (t,r)=std::sync::mpsc::channel();
         tx.send(Event::Rpc(Request::local(br#"{"jsonrpc":"2.0","id":1,"method":"pocol_status","params":[]}"#.to_vec(),t,Instant::now()+Duration::from_secs(120),false))).unwrap();
-        let v:serde_json::Value=serde_json::from_str(&r.recv().unwrap().body).unwrap();(v["result"]["head"]["height"].as_u64().unwrap(),v["result"]["stats"]["poolBacklog"].as_u64().unwrap())};
+        let body=r.recv().unwrap().body;let v:serde_json::Value=serde_json::from_str(&body).unwrap();
+        match (v["result"]["head"]["height"].as_u64(),v["result"]["stats"]["poolBacklog"].as_u64()){(Some(h),Some(b))=>(h,b),_=>panic!("the status request was not answered with a status: {body}")}};
     send_block(&blocks[0]);let t0=Instant::now();send_block(&blocks[1]);
     let (height,backlog)=status();let took=t0.elapsed();
     assert_eq!(height,2,"both blocks were imported before the status request");
