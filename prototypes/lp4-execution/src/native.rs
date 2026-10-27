@@ -141,6 +141,11 @@ pub(crate) fn build_engine<'a>(snapshot:&'a dyn crate::view::View,code_total:Opt
                 } else { previous(context,inputs) }
             });
         }).append_handler_register(crate::collision::register)
+        // D-2: MODEXP at address 5 is crate::modexp's (revm's results and gas; a faster exact path for one-word moduli).
+        .append_handler_register(|handler|{
+            let previous=handler.pre_execution.load_precompiles.clone();
+            handler.pre_execution.load_precompiles=Arc::new(move||{let mut p=previous();p.extend([crate::modexp::BERLIN]);p});
+        })
         .append_handler_register_box(Box::new(move |handler| {
             if let Some(limits)=limits {crate::code_caps::register(handler,limits);}
         })).build()

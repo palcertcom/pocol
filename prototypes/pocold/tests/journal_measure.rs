@@ -577,6 +577,15 @@ fn jm_exec_cost_per_gas(){
         let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.05||calls<3{let _=run();calls+=1;}
         let ns=t.elapsed().as_secs_f64()*1e9/calls as f64;
         println!("JM-PRECOMPILE {}",serde_json::json!({"kind":k,"address":addr,"inputBytes":input.len(),"ok":res.is_ok(),"gasPerCall":gas,"nsPerCall":ns,"nsPerGas":ns/gas as f64}));
+        // D-2: the MODEXP pocol's EVM runs at address 5 (pocol_lp4_execution::modexp), on the same input; the
+        // line above is revm's, the reference whose results and gas it returns.
+        if addr==5{
+            let ours=||pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX).map(|o|(o.gas_used,o.bytes));
+            assert_eq!(format!("{:?}",ours()),format!("{:?}",pc::modexp::berlin_run(&inp,u64::MAX).map(|o|(o.gas_used,o.bytes))),"{k}: pocol's MODEXP equals revm's");
+            let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.05||calls<3{let _=ours();calls+=1;}
+            let ns2=t.elapsed().as_secs_f64()*1e9/calls as f64;
+            println!("JM-PRECOMPILE-POCOL {}",serde_json::json!({"kind":k,"gasPerCall":gas,"nsPerCall":ns2,"nsPerGas":ns2/gas as f64,"revmNsPerCall":ns,"speedup":ns/ns2}));
+        }
     }
     let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");
     let p0=fallback(&n,g,0);import(&mut n,&p0);
@@ -1070,7 +1079,7 @@ fn jm_r14_workload_gap(){
     use pocol_lp4_execution::admission;
     let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
     let kinds:Vec<String>=std::env::var("JM_GAP_KINDS").map(|s|s.split(',').map(str::to_string).collect()).unwrap_or_else(|_|["full_gas_compute","full_gas_transfers",
-        "modexp_b8_e1024_m8_even","modexp_b8_e4096_m8_even","bn_pair_1","ecrecover","keccak_32KiB","mem_grow_mstore","sstore_fresh","create2_loop","cold_call","log0_loop","fill_accts"]
+        "modexp_b8_e1024_m8_even","modexp_b8_e4096_m8_even","modexp_b16_e1024_m16_odd","modexp_b16_e1024_m16_even","bn_pair_1","bn_mul","ecrecover","keccak_32KiB","mem_grow_mstore","sstore_fresh","create2_loop","cold_call","log0_loop","fill_accts"]
         .map(str::to_string).to_vec());
     let (slots_t,accts_t)=(env_n("JM_GAP_SLOTS",48_000),env_n("JM_GAP_ACCTS",19_000));
     let t_exec_ms=u64::from(pocold::single_host_local().t_exec)*1000;
