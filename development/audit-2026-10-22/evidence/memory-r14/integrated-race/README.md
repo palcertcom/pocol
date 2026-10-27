@@ -66,6 +66,8 @@ reorg-recovery check changed above.
 - **Not a node defect**: the heaviest-work rule worked as specified.
 - An observation not changed here: an isolated c stops producing after some blocks (here at h=55, about 24
   s before the heal; at 39 and 42 in other runs). The test does not depend on it.
+  Reproduced and explained since: ../isolated-stall/README.md. It is the W_act nonce membership, specified
+  behaviour.
 
 **The fix (test only).** The wait now also requires a's total work (`pocol_status` head.totalWork) to
 exceed c's before the heal. The heal then has a heavier majority branch for c to adopt, which is what the
