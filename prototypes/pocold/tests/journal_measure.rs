@@ -167,13 +167,30 @@ fn kzg_input()->Vec<u8>{
 /// MODEXP(base, exp, mod) with `b`, `e`, `m` byte lengths: exponent all ones (the maximum iteration count
 /// for its length), base and modulus pseudo-random with the top bit set (the base even when b <= 8); the
 /// modulus odd, even (odd part times 2: CRT, two exponentiations) or a power of two ("pow2").
-fn modexp_input(b:usize,e:usize,m:usize,md_kind:&str)->Vec<u8>{
+fn modexp_input(b:usize,e:usize,m:usize,md_kind:&str)->Vec<u8>{modexp_input_bits(b,8*e,m,md_kind)}
+/// As `modexp_input`, with an exponent of `ebits` one bits (ceil(ebits/8) bytes), and one more modulus kind:
+/// "evenhalf", whose low floor(m/2) bytes are zero (2^(8·floor(m/2)) times an odd part), and "evenmax", 3·2^(8m-2)
+/// (the odd part 3, the largest power of two an odd part above 1 allows).
+fn modexp_input_bits(b:usize,ebits:usize,m:usize,md_kind:&str)->Vec<u8>{
+    let e=ebits.div_ceil(8);
     let mut v=vec![];for l in [b,e,m]{let mut w=[0u8;32];w[24..].copy_from_slice(&(l as u64).to_be_bytes());v.extend(w);}
     let fill=|n:usize,s:u8|->Vec<u8>{(0..n).map(|i|(i as u8).wrapping_mul(37).wrapping_add(s)).collect()};
     let mut base=fill(b,11);if let Some(x)=base.first_mut(){*x|=0x80;}if b<=8{if let Some(x)=base.last_mut(){*x&=!1}}
     let mut md=fill(m,101);if let Some(x)=md.first_mut(){*x|=0x80;}
-    match md_kind{"odd"=>{if let Some(x)=md.last_mut(){*x|=1}},"even"=>{if let Some(x)=md.last_mut(){*x=(*x|3)&!1}},_=>{md=vec![0u8;m];md[0]=0x80;}}
-    v.extend(base);v.extend(vec![0xffu8;e]);v.extend(md);v
+    match md_kind{"odd"=>{if let Some(x)=md.last_mut(){*x|=1}},"even"=>{if let Some(x)=md.last_mut(){*x=(*x|3)&!1}},
+        "evenhalf"=>{let h=m/2;for x in &mut md[m-h..]{*x=0}md[m-h-1]|=1;},"evenmax"=>{md=vec![0u8;m];md[0]=0xc0;},_=>{md=vec![0u8;m];md[0]=0x80;}}
+    let mut ex=vec![0xffu8;e];if ebits%8!=0{ex[0]=(1u8<<(ebits%8))-1;}
+    v.extend(base);v.extend(ex);v.extend(md);v
+}
+/// A MODEXP kind named `modexp_b{b}_e{bytes}_m{m}_{kind}` or `modexp_b{b}_n{bits}_m{m}_{kind}` (the exponent
+/// as a count of one bits), for shapes outside MODEXP_SHAPES (jm_modexp_sweep, JM_GAP_KINDS).
+fn modexp_named(name:&str)->Option<(String,u8,Vec<u8>,Vec<u8>)>{
+    let p:Vec<&str>=name.strip_prefix("modexp_")?.split('_').collect();if p.len()!=4{return None}
+    let b:usize=p[0].strip_prefix('b')?.parse().ok()?;let m:usize=p[2].strip_prefix('m')?.parse().ok()?;
+    let ebits:usize=if let Some(x)=p[1].strip_prefix('e'){x.parse::<usize>().ok()?*8}else{p[1].strip_prefix('n')?.parse().ok()?};
+    if !["odd","even","pow2","evenhalf","evenmax"].contains(&p[3]){return None}
+    let input=modexp_input_bits(b,ebits,m,p[3]);let n=input.len() as u16;
+    Some((name.to_string(),5,input.clone(),precompile_loop(5,&input,n,m as u16)))
 }
 const MODEXP_SHAPES:[(usize,usize,usize,&str);23]=[(1,32,1,"odd"),(8,32,8,"odd"),(8,32,8,"even"),(32,32,32,"odd"),(8,256,8,"even"),
     (1,1024,1,"odd"),(1,1024,1,"even"),(2,1024,2,"even"),(4,1024,4,"even"),(8,1024,8,"odd"),(8,1024,8,"even"),(8,1024,8,"pow2"),(8,4096,8,"even"),
@@ -201,7 +218,8 @@ fn compute_kinds()->Vec<(String,u8,Vec<u8>,Vec<u8>)>{
         v.push(pre(&format!("modexp_b{b}_e{e}_m{m}_{mk}"),5,input,n,m as u16));}
     v
 }
-fn compute_init(kind:&str)->Option<Vec<u8>>{if kind=="full_gas_compute"{return Some(vec![0x5b,0x60,0x00,0x56])}compute_kinds().into_iter().find(|k|k.0==kind).map(|k|k.3)}
+fn compute_init(kind:&str)->Option<Vec<u8>>{if kind=="full_gas_compute"{return Some(vec![0x5b,0x60,0x00,0x56])}
+    compute_kinds().into_iter().find(|k|k.0==kind).or_else(||modexp_named(kind)).map(|k|k.3)}
 /// One block body of `kind` at alice's `nonce` (advanced): the JM-KIND kinds or any compute kind.
 fn kind_body(kind:&str,alice:&Key,nonce:&mut u64,transfers_k:u64,bodymax_len:usize)->Body{
     let txs=match kind{
@@ -606,6 +624,62 @@ fn jm_exec_cost_per_gas(){
         let net_ns=if gas>0{(med-empty_med)*1e6/gas as f64}else{0.0};
         println!("JM-EXEC {}",serde_json::json!({"kind":k,"txs":b.body.txs.len(),"bodyBytes":b.body.encode().len(),"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"reps":reps,
             "nsPerGasGross":if gas>0{med*1e6/gas as f64}else{0.0},"nsPerGasNet":net_ns,"projectedMsAt8M":empty_med+net_ns*8e6/1e6}));
+    }
+}
+
+/// D-2 and decision row 2: the cost per gas of MODEXP over a grid of shapes, for the precompile pocol's EVM runs
+/// at address 5 (pocol_lp4_execution::modexp) and for revm's (the reference whose results it returns, checked
+/// on every shape). Moduli of 1 to 1,024 bytes (JM_SWEEP_MODS): odd, even, a power of two, an even modulus whose
+/// low half is zero and 3·2^(8m-2) (JM_SWEEP_MKINDS); base as long as the modulus; exponents of all ones from
+/// the 200-gas floor up to the block's gas. A
+/// block of precompile_loop spends LOOP_GAS per call beside the precompile, so a full-gas block of a shape
+/// makes about (gas left) / (gas + LOOP_GAS) calls: projectedBlockMs is that count times the time per call.
+/// The JM_SWEEP_BLOCKS (default 4) shapes with the largest projection are then built as full-gas blocks and
+/// validated (median of 3, whole-state mode, genesis state). A measurement on this host over the grid it
+/// lists: it is not a proof of the maximum, and it gates nothing. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_modexp_sweep(){
+    use revm::precompile as pc;
+    // JUMPDEST 1, five PUSHes 15, GAS 2, a warm STATICCALL 100 (precompiles are warm), POP 2, PUSH2 3, JUMP 8.
+    const LOOP_GAS:u64=131;
+    let blocks_n:usize=std::env::var("JM_SWEEP_BLOCKS").ok().and_then(|s|s.parse().ok()).unwrap_or(4);
+    let time=|f:&dyn Fn()|{f();let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.03||calls<3{f();calls+=1;}t.elapsed().as_secs_f64()*1e9/calls as f64};
+    let list=|k:&str,d:&str|std::env::var(k).unwrap_or_else(|_|d.to_string()).split(',').map(str::to_string).collect::<Vec<_>>();
+    let mods:Vec<usize>=list("JM_SWEEP_MODS","1,4,8,9,12,16,17,24,32,33,48,64,96,128,256,512,1024").iter().map(|x|x.parse().unwrap()).collect();
+    let mkinds=list("JM_SWEEP_MKINDS","odd,even,pow2,evenhalf,evenmax");
+    let mut rows:Vec<(f64,String,serde_json::Value)>=vec![];
+    for m in mods{
+        let c=(m.div_ceil(8) as u64).pow(2);
+        let floor_bits=((600/c) as usize+1).max(2);
+        for mk in mkinds.iter().map(String::as_str){
+            if (mk=="evenhalf"||mk=="evenmax")&&m<2{continue}
+            for ebits in [floor_bits,256,2048,8192,32768]{
+                let input=modexp_input_bits(m,ebits,m,mk);let inp=revm::primitives::Bytes::from(input.clone());
+                // The deploy carrying the loop pays 53,000 plus 16 per byte of init code.
+                let avail=FULL_GAS-53_000-16*(input.len() as u64+30);
+                let ours=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);let theirs=pc::modexp::berlin_run(&inp,u64::MAX);
+                assert_eq!(format!("{ours:?}"),format!("{theirs:?}"),"m={m} {mk} ebits={ebits}: pocol's MODEXP equals revm's");
+                let gas=theirs.as_ref().map(|o|o.gas_used).unwrap();if gas+LOOP_GAS>avail{continue}
+                let t_ours=time(&||{let _=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);});
+                let t_revm=time(&||{let _=pc::modexp::berlin_run(&inp,u64::MAX);});
+                let calls=(avail/(gas+LOOP_GAS)) as f64;
+                let name=format!("modexp_b{m}_n{ebits}_m{m}_{mk}");
+                let v=serde_json::json!({"kind":name,"modBytes":m,"modKind":mk,"expBits":ebits,"gasPerCall":gas,"fastPath":m<=8,
+                    "pocolNsPerCall":t_ours,"revmNsPerCall":t_revm,"pocolNsPerBlockGas":t_ours/(gas+LOOP_GAS) as f64,"revmNsPerBlockGas":t_revm/(gas+LOOP_GAS) as f64,
+                    "callsPerBlock":calls,"projectedBlockMs":calls*t_ours/1e6,"revmProjectedBlockMs":calls*t_revm/1e6});
+                println!("JM-MODEXP-SWEEP {v}");rows.push((calls*t_ours/1e6,name,v));
+            }
+        }
+    }
+    rows.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap());
+    for (_,_,v) in rows.iter().take(10){println!("JM-MODEXP-SWEEP-TOP {v}");}
+    let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");
+    let p0=fallback(&n,g,0);import(&mut n,&p0);
+    for (proj,name,_) in rows.iter().take(blocks_n){
+        let b=signed(&n,p0.hash(),Body{txs:vec![deploy(&alice,0,FULL_GAS,0,compute_init(name).unwrap())],evidence:vec![]});
+        let (min,med,gas)=validate_ms(&n.chain,&b,3);
+        println!("JM-MODEXP-SWEEP-BLOCK {}",serde_json::json!({"kind":name,"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"projectedBlockMs":proj,"nsPerGas":med*1e6/gas as f64}));
     }
 }
 
