@@ -365,3 +365,25 @@ copied references.
 | 26 https://github.com/raedrasheed/Proof-of-Collaboration/actions/runs/40092151252 | 43e7e0f | evidence for 462fffc (the prototypes/ tree is 462fffc's): the A11 reorg walk (pocold/src/node.rs) and the R14/R19 calibration (lp4-execution/src/admission.rs) | **the last code commit has run on Windows**. The new calibration test runs there. The new deep-reorg test is `#[ignore]` (release only) and does not |
 
 Their artifacts are not copied.
+
+### palcertcom/pocol, PR #2 (claude/memory-r14-followup), 2026-10-27
+
+| run | commit | result |
+|---|---|---|
+| 40507248611 | f65b44a (node code as 892dca6) | PASS on every step; evidence/windows-f65b44a/ |
+| 40510911424 | 2839f2a | PASS on every step; evidence/windows-2839f2a/ |
+| 40512470697 | c0a0e66 (evidence only) | PASS |
+| 40516277272, 40516762578 | 8d80354, 799e809 | cancelled: replaced by newer pushes (one pending run per PR) |
+| 40518244446 | 69d5794 | PASS on every step (lp4 201/0, pocold 237/0); evidence/windows-69d5794/ |
+| 40522024488 | 182d73a (evidence only) | **FAIL, 1 test**: `send_pacer_closes_a_slow_reader_after_grace`, no close within the test's 5 s wait; evidence/windows-182d73a/ |
+
+The 182d73a failure:
+- It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
+  passing runs.
+- The test's wait counted from the request, so it included executing the batch before any byte was sent.
+  That takes 0.67–0.91 s on Linux and can take longer on a busy Windows runner.
+- The test now waits up to 20 s and bounds the send time (from the first byte) by s_v + 1 s, with
+  s_v = max(GRACE, A/R). Lateness ≤ ENFORCE_SLACK and CloseOK are unchanged.
+- It prints a PACER line on every platform. Details in evidence/windows-182d73a/RUN.md.
+- The next run on the PR's head verifies the change on Windows.
+

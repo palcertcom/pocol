@@ -70,3 +70,11 @@ reorg-recovery check changed above.
 **The fix (test only).** The wait now also requires a's total work (`pocol_status` head.totalWork) to
 exceed c's before the heal. The heal then has a heavier majority branch for c to adopt, which is what the
 check "c reorganized onto the heavier branch (D133)" asserts.
+
+## The reruns of both fixes (../accept-int-2c40a9f/)
+
+- `92f6a80` added the total-work wait, but its helper was named `work`, which shadowed the run directory in
+  `main()`. Both reruns on it failed before the partition (../accept-int-92f6a80/, kept as they ran).
+- `2c40a9f` renames the helper. Its reruns: **six of six PASS 20/20**, three per mode.
+  - In every one, c reorganized onto the heavier branch.
+  - The reorg-recovery views agreed with the canonical version.

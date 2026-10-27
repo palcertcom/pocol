@@ -240,6 +240,11 @@
     "run": "palcertcom/pocol 40518244446",
     "commit": "69d5794",
     "result": "PASS on every step (lp4 201/0, pocold 237/0, both new tests included; node code as 2839f2a); evidence/windows-69d5794/"
+   },
+   {
+    "run": "palcertcom/pocol 40522024488",
+    "commit": "182d73a",
+    "result": "FAIL, 1 test: send_pacer_closes_a_slow_reader_after_grace (no close within the test's 5 s wait, counted from the request and so including the batch's execution); test-only fix: wait to 20 s, bounds on the send time from s_v = max(GRACE, A/R), PACER line on stdout; evidence/windows-182d73a/"
    }
   ],
   "defectsFoundAndFixed": [

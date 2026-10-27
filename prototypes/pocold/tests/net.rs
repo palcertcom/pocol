@@ -539,27 +539,36 @@ fn pacer_batch()->String{
     let body=pacer_batch();
     let mut s=unread_client(r.rpc);
     write!(s,"POST / HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",body.len()).unwrap();
-    // Do not read. Poll pacer_closed and record when the pacer fires.
-    let t=Instant::now();while counter(&c.pacer_closed)==p0&&t.elapsed()<Duration::from_secs(5){std::thread::sleep(Duration::from_millis(10));}
+    // Do not read. Poll pacer_closed and record when the pacer fires. The time from the request includes
+    // executing the batch before its answer is sent (0.6-0.9 s on Linux): Windows run 40522024488
+    // (palcertcom/pocol) saw no close within the 5 s this wait had. So it runs to 20 s, and the bounds below
+    // are on the send time, from the first byte sent: the violation instant is s_v = max(GRACE, A/R), with A
+    // what the kernel accepted for this client.
+    let t=Instant::now();while counter(&c.pacer_closed)==p0&&t.elapsed()<Duration::from_secs(20){std::thread::sleep(Duration::from_millis(10));}
     let closed_at=t.elapsed();let (late,waits)=(counter(&c.pacer_late_max_ms),counter(&c.pacer_waits)-w0);
-    assert!(counter(&c.pacer_closed)>p0,"the pacer closed the non-reading client");
+    let st=rpc_json(r.rpc,r#"{"jsonrpc":"2.0","id":2,"method":"pocol_getRpcStats","params":[]}"#)["result"].clone();
+    assert!(counter(&c.pacer_closed)>p0,"the pacer closed the non-reading client (after {closed_at:?}; stats {st})");
+    let (send_time,accepted)=(st["lastPacerClose"]["sendTime"].as_f64().unwrap(),st["lastPacerClose"]["accepted"].as_u64().unwrap());
+    let s_v=(accepted as f64/(1u64<<20) as f64).max(0.5);
+    // Written to stdout directly, as ABSORB is, so A and s_v reach the log of a passing run too.
+    let line=format!("PACER {}\n",serde_json::json!({"os":std::env::consts::OS,"closedMs":closed_at.as_millis() as u64,"sendTimeS":send_time,
+        "acceptedBytes":accepted,"violationS":s_v,"pacerWaits":waits,"pacerLateMaxMs":late}));
+    let _=std::io::Write::write_all(&mut std::io::stdout(),line.as_bytes());
     // Review 2 (RG2-M2): a blocked write waits for writability, waking only at the backstop and at the
-    // violation instant: about GRACE/PACER_BACKSTOP waits for this client, not one per millisecond.
-    let bound=2*(500/pocold::rpc::PACER_BACKSTOP.as_millis() as usize)+10;
+    // violation instant: about one wait per PACER_BACKSTOP of send time, not one per millisecond.
+    let backstop=pocold::rpc::PACER_BACKSTOP.as_millis() as usize;
+    let bound=2*((send_time*1000.0) as usize/backstop)+10;
     assert!(waits<=bound,"the pacer waited {waits} times for a client that does not read (bound {bound})");
     // Review 3 (RG3V-m2): and it does wake at the backstop (network.md:246), about every 50 ms before
     // GRACE, not only at the timer: at least half of GRACE/PACER_BACKSTOP waits.
-    let floor=500/pocold::rpc::PACER_BACKSTOP.as_millis() as usize/2;
+    let floor=500/backstop/2;
     assert!(waits>=floor,"the pacer waited {waits} times before GRACE: the backstop check is missing (floor {floor})");
     assert!(closed_at>=Duration::from_millis(400),"not before GRACE: {closed_at:?}");
-    assert!(closed_at<Duration::from_secs(4),"after GRACE, promptly: {closed_at:?}");
+    assert!(send_time<s_v+1.0,"after the violation instant, promptly: send time {send_time} s, s_v = {s_v} s");
     // ENFORCE_SLACK: the close came within 200 ms of the violation instant s_v (TIMER_EPS + scheduling).
     assert!(late<=200,"pacer lateness {late} ms > ENFORCE_SLACK");
-    let st=rpc_json(r.rpc,r#"{"jsonrpc":"2.0","id":2,"method":"pocol_getRpcStats","params":[]}"#)["result"].clone();
-    let (send_time,accepted)=(st["lastPacerClose"]["sendTime"].as_f64().unwrap(),st["lastPacerClose"]["accepted"].as_u64().unwrap());
     assert!(send_time>0.5&&(accepted as f64)<(1u64<<20) as f64*send_time,"CloseOK: sendTime > GRACE and A < R·sendTime: {send_time} s, {accepted} B");
     s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();assert!(closed(&mut s),"the slow reader's connection is closed");
-    println!("PACER {}",serde_json::json!({"closedMs":closed_at.as_millis() as u64,"pacerLateMaxMs":late,"pacerWaits":waits,"lastPacerClose":st["lastPacerClose"]}));
     // Honest reader: a client that reads promptly gets the whole ~14 MiB answer (sendDone, no close),
     // and it is the complete answer: ten members, each a 1 MiB revert payload.
     let (p1,sd0)=(counter(&c.pacer_closed),counter(&c.send_done));c.batch_send_max_ms.store(0,Ordering::SeqCst);
