@@ -39,3 +39,34 @@ version legitimately changed in between.
 - The assertion is unchanged: the views are identical on all nodes and equal to that canonical version.
 - The pools still settle before v3, as in 919a50c.
 - The original log stays here unchanged. The reruns of the fixed test are in ../accept-<commit>/.
+
+## A second test defect: the taller branch is not always the heavier one (store-2-073923f/)
+
+**What failed.** Of the six reruns of the fixed test on `073923f` (../accept-int-073923f/), five passed 20/20.
+Store-mode run 2 stopped at "timeout: c reorganized" after 9 checks. That wait comes before the
+reorg-recovery check changed above.
+
+**Why.**
+- Before the heal, the test waits until the majority branch is "heavier" by checking only heights:
+  `ha > hc + 4`. That held at ab = 60 against c = 55.
+- Fork choice (D133, `Chain::better`) compares total work, the sum of 2^256 / (target + 1) over a branch's
+  blocks, not height. The blocks the nodes hold (blocks-known-to-a.txt and blocks-known-to-c.txt, read from
+  copies of their data dirs) give these figures:
+
+  | branch | tip | total work | work of its last blocks |
+  |---|---|---:|---:|
+  | ab (a and b meshed) | h=60, 0xe240f561e022 | 0x245033 (2,379,827) | 0xaedd–0xded8 |
+  | c (isolated) | h=55, 0x07284e80a6cc | **0x27aa15 (2,599,445)** | 0x13b29–0x151cf |
+
+- c's uninterrupted 1-second blocks (h=35–55) raised its difficulty by about 4% a block. The ab branch's
+  slow early blocks (h=31–33, 4–5 s apart, two of them unsigned fallbacks) eased its own.
+- So c's branch was the heavier, and a and b correctly adopted it. Their logs show "TrieRebuild for a fork
+  below the K_hist window", and their canonical chain is c's from h=31 on.
+- c had nothing to reorganize. All three nodes then agreed at every height, up to h=235 with the same hash.
+- **Not a node defect**: the heaviest-work rule worked as specified.
+- An observation not changed here: an isolated c stops producing after some blocks (here at h=55, about 24
+  s before the heal; at 39 and 42 in other runs). The test does not depend on it.
+
+**The fix (test only).** The wait now also requires a's total work (`pocol_status` head.totalWork) to
+exceed c's before the heal. The heal then has a heavier majority branch for c to adopt, which is what the
+check "c reorganized onto the heavier branch (D133)" asserts.
