@@ -275,6 +275,16 @@
     "run": "palcertcom/pocol 40550009922",
     "commit": "b8fb7ab",
     "result": "PASS on every step (lp4 209/0 with the eight modexp tests, pocold 238/0): MODEXP's trivial powers handed to revm (review finding 1); PACER close 1 ms after s_v; evidence/windows-b8fb7ab/"
+   },
+   {
+    "run": "palcertcom/pocol 40550825203",
+    "commit": "beed0d2",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab)"
+   },
+   {
+    "run": "palcertcom/pocol 40557534874",
+    "commit": "7e565b7",
+    "result": "PASS on every step (lp4 209/0, pocold 238/0), the first with 3705559's pacer test: client window 0.508 s (bounds 0.45 to 1.0), first byte 517 ms against an honest reader's 504 ms, pacer lateness 7 ms; evidence/windows-7e565b7/"
    }
   ],
   "defectsFoundAndFixed": [
