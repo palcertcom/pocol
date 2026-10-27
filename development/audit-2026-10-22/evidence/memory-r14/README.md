@@ -97,6 +97,8 @@ The outputs are therefore the same for every input the types allow, and no test 
 `min` is kept as a clamp. `node_trie::tests::a_blocks_addition_is_at_most_a_whole_version` pins the premise
 of point 1: 200,000 random and edge counts up to u64::MAX + 2^32, with n = 2^32. A change to `block_bytes`
 that broke the premise would fail that test, so the clamp cannot start to bind unnoticed.
+Control (mutants-p6-premise.log): Q1, which drops the child cap from `batch_nodes`' branch count, so that
+`block_bytes` can exceed `version_bytes`, is killed by that test.
 
 ## Acceptance on 8d80354 (accept-8d80354/, witnesses-8d80354.log)
 
