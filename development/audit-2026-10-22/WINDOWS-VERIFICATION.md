@@ -376,6 +376,9 @@ Their artifacts are not copied.
 | 40516277272, 40516762578 | 8d80354, 799e809 | cancelled: replaced by newer pushes (one pending run per PR) |
 | 40518244446 | 69d5794 | PASS on every step (lp4 201/0, pocold 237/0); evidence/windows-69d5794/ |
 | 40522024488 | 182d73a (evidence only) | **FAIL, 1 test**: `send_pacer_closes_a_slow_reader_after_grace`, no close within the test's 5 s wait; evidence/windows-182d73a/ |
+| 40525606586 | 2c40a9f (tests only) | PASS on every step (lp4 201/0, pocold 237/0); the pacer test as before 6a1e480; evidence/windows-2c40a9f/ |
+| 40530131878 | 7624419 (contains 6a1e480) | PASS on every step (lp4 201/0, pocold 237/0); the first run of the pacer test with its PACER line; evidence/windows-7624419/ |
+| 40533664638, 40537362826 | 1babbc7, b46658a | cancelled: replaced by newer pushes |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
@@ -385,5 +388,11 @@ The 182d73a failure:
 - The test now waits up to 20 s and bounds the send time (from the first byte) by s_v + 1 s, with
   s_v = max(GRACE, A/R). Lateness ≤ ENFORCE_SLACK and CloseOK are unchanged.
 - It prints a PACER line on every platform. Details in evidence/windows-182d73a/RUN.md.
-- The next run on the PR's head verifies the change on Windows.
+- Run 40530131878 on 7624419 printed it: `sendTimeS` 0.502009 s, `acceptedBytes` 32,940, s_v = GRACE = 0.5 s,
+  `pacerLateMaxMs` 2 (ENFORCE_SLACK 200), 10 pacer waits (bounds 5 to 30), the connection closed. The close came
+  1,092 ms after the request: 0.59 s of execution before the first byte, then 0.502 s of sending. Every bound of
+  network.md:237-256 holds on Windows. The longer wait is not what makes it pass: the 5 s wait would have held
+  in this run too.
+- This shows the mechanism on Windows. It does not show what delayed the 182d73a run, which recorded no send
+  time. That cause stays likely, not established. Details in evidence/windows-7624419/RUN.md.
 

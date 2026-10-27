@@ -245,6 +245,16 @@
     "run": "palcertcom/pocol 40522024488",
     "commit": "182d73a",
     "result": "FAIL, 1 test: send_pacer_closes_a_slow_reader_after_grace (no close within the test's 5 s wait, counted from the request and so including the batch's execution); test-only fix: wait to 20 s, bounds on the send time from s_v = max(GRACE, A/R), PACER line on stdout; evidence/windows-182d73a/"
+   },
+   {
+    "run": "palcertcom/pocol 40525606586",
+    "commit": "2c40a9f",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0; the pacer test as before 6a1e480); evidence/windows-2c40a9f/"
+   },
+   {
+    "run": "palcertcom/pocol 40530131878",
+    "commit": "7624419",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0), with 6a1e480's pacer test: PACER sendTimeS 0.502009, acceptedBytes 32940, s_v 0.5 s, pacerLateMaxMs 2 (ENFORCE_SLACK 200), pacerWaits 10, closed 1092 ms after the request; every network.md:237-256 bound holds on Windows; the 182d73a delay's cause stays unestablished; evidence/windows-7624419/"
    }
   ],
   "defectsFoundAndFixed": [
