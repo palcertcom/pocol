@@ -54,10 +54,22 @@ fn fast(input:&[u8],gas_limit:u64)->Option<PrecompileOutput>{
             // m = 0: aurora returns no bytes; otherwise the value's big-endian bytes ([0] for zero). Both pad to mod_len.
             if m==0{vec![]}else if r==0{vec![0]}else{bytes[lead..].to_vec()}
         }
+        (None,Some(_)) if revm_is_quick(base,exp,&modulus)=>return None,
         (None,Some((q,t)))=>wide_even(base,exp,&q,t)?,
         (None,None)=>return None,
     };
     Some(PrecompileOutput::new(gas,left_pad_vec(&out,mod_len).into_owned().into()))
+}
+/// The inputs aurora answers without modular arithmetic, which the wide path would not speed up (the 2026-10-27
+/// review: up to ~10^4 times revm's time there, a few ns per gas): a zero exponent (aurora returns 1), and a
+/// power base^e of fewer words than the modulus, e of at most 8 bytes (aurora computes it directly when
+/// base words · e < modulus words). The base's and the modulus's words are counted without leading zeros, as
+/// aurora's `from_big_endian` keeps them, so this is aurora's condition or a wider one; either way revm runs it.
+fn revm_is_quick(base:&[u8],exp:&[u8],m:&[u8])->bool{
+    let words=|b:&[u8]|b.iter().position(|x|*x!=0).map_or(1,|i|(b.len()-i).div_ceil(8));
+    let e=&exp[exp.iter().position(|x|*x!=0).unwrap_or(exp.len())..];
+    if e.is_empty(){return true}
+    e.len()<=8&&{let v=e.iter().fold(0u64,|a,x|(a<<8)|u64::from(*x));u64::try_from(words(base)).ok().and_then(|w|w.checked_mul(v)).is_some_and(|x|x<u64::try_from(words(m)).unwrap_or(u64::MAX))}
 }
 /// For a big-endian modulus m = q·2^t of more than one word with t > 64 and odd q > 1: q (little-endian words)
 /// and t. None for every other modulus: revm runs those (the 2026-10-27 sweep measured its paths there at up to
@@ -154,8 +166,8 @@ fn word(b:&[u8])->Option<u64>{
 pub fn modpow_word(base:&[u8],exp:&[u8],m:u64)->u64{
     if m<=1{return 0}
     let exp=&exp[exp.iter().position(|x|*x!=0).unwrap_or(exp.len())..];
-    let b=base.iter().fold(0u128,|a,x|((a<<8)|u128::from(*x))%u128::from(m)) as u64;
     if exp.is_empty(){return 1}
+    let b=base.iter().fold(0u128,|a,x|((a<<8)|u128::from(*x))%u128::from(m)) as u64;
     let t=m.trailing_zeros();let q=m>>t;
     let x1=if q==1{0}else{Mont::new(q).pow(b%q,exp)};
     if t==0{return x1}
