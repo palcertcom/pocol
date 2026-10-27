@@ -255,6 +255,16 @@
     "run": "palcertcom/pocol 40530131878",
     "commit": "7624419",
     "result": "PASS on every step (lp4 201/0, pocold 237/0), with 6a1e480's pacer test: PACER sendTimeS 0.502009, acceptedBytes 32940, s_v 0.5 s, pacerLateMaxMs 2 (ENFORCE_SLACK 200), pacerWaits 10, closed 1092 ms after the request; every network.md:237-256 bound holds on Windows; the 182d73a delay's cause stays unestablished; evidence/windows-7624419/"
+   },
+   {
+    "run": "palcertcom/pocol 40535963171",
+    "commit": "563a0c3",
+    "result": "PASS on every step (lp4 201/0, pocold 238/0); PACER close 1 ms after s_v; evidence/windows-563a0c3/"
+   },
+   {
+    "run": "palcertcom/pocol 40538722157",
+    "commit": "b66ba65",
+    "result": "PASS on every step (lp4 205/0 with the four modexp tests, pocold 238/0): the first Windows run of the MODEXP precompile (b46658a); PACER close 10 ms after s_v; evidence/windows-b66ba65/"
    }
   ],
   "defectsFoundAndFixed": [

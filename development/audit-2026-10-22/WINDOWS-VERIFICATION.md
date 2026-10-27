@@ -379,6 +379,8 @@ Their artifacts are not copied.
 | 40525606586 | 2c40a9f (tests only) | PASS on every step (lp4 201/0, pocold 237/0); the pacer test as before 6a1e480; evidence/windows-2c40a9f/ |
 | 40530131878 | 7624419 (contains 6a1e480) | PASS on every step (lp4 201/0, pocold 237/0); the first run of the pacer test with its PACER line; evidence/windows-7624419/ |
 | 40533664638, 40537362826 | 1babbc7, b46658a | cancelled: replaced by newer pushes |
+| 40535963171 | 563a0c3 | PASS on every step (lp4 201/0, pocold 238/0); evidence/windows-563a0c3/ |
+| 40538722157 | b66ba65 | PASS on every step (lp4 205/0 with the four MODEXP tests, pocold 238/0): the first Windows run of the MODEXP precompile (`b46658a`'s one-word path); evidence/windows-b66ba65/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
@@ -393,6 +395,8 @@ The 182d73a failure:
   1,092 ms after the request: 0.59 s of execution before the first byte, then 0.502 s of sending. Every bound of
   network.md:237-256 holds on Windows. The longer wait is not what makes it pass: the 5 s wait would have held
   in this run too.
+- Two later runs printed it too: 563a0c3, the close 1 ms after s_v (send time 0.501655 s); b66ba65, 10 ms after
+  (0.510413 s). On all three Windows runs the kernel took 32,940 B and every bound held.
 - This shows the mechanism on Windows. It does not show what delayed the 182d73a run, which recorded no send
   time. That cause stays likely, not established. Details in evidence/windows-7624419/RUN.md.
 
