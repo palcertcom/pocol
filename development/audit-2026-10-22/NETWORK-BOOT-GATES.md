@@ -70,9 +70,10 @@ specification evidence is a refusal, with its rules:
 | gate-deferred-general-R18, -general-R21, -caps64 | R18, R21 | LP3 obligations deferred to LP4 (the general R18/R21 derivations, the caps64 minimum of SYS_SLOT_MAX) | those derivations |
 | r21 (bound above the budget) | R21 | as in layer 2 | K_eff |
 
-**Timing at the network profile.** t_exec is 3 s, not the devnet's 1 s. So the slowest block measured on
-this host, MODEXP with an even modulus at 1.2–1.6 s, is within it here. The condition stays, because the
-timing is still not a bound.
+**Timing at the network profile.** t_exec is 3 s, not the devnet's 1 s. When this was written, the slowest
+block measured on this host was MODEXP with an even modulus, at 1.2–1.6 s, which is within 3 s. After the two
+MODEXP fast paths (`b46658a`, `0c2ad75`; A13-DERIVATION §3b-2) the slowest measured is about 0.51 s. The
+condition stays, because the timing is still not a bound.
 
 ## 4. pocold's A13 memory check (`resources::check` at open)
 

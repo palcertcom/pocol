@@ -133,3 +133,22 @@ fn wide_modulus(r:&mut Rng,len:usize)->Vec<u8>{
     match p.to_mut().get(&u64_to_address(5)){Some(ContextPrecompile::Ordinary(Precompile::Standard(f)))=>assert!(*f as *const ()==berlin_run as *const (),"address 5 is crate::modexp::berlin_run"),
         _=>panic!("address 5 is not a standard precompile")}
 }
+/// Measurement (ignored): the cost of this precompile's own checks on inputs it hands to revm, against revm's
+/// time on the same input, interleaved (15 rounds of 50 calls each, medians), so that the order of the two runs
+/// and the host's drift do not bias the comparison as one-shot timings do.
+#[test] #[ignore="measurement: run in release with --ignored --nocapture"] fn wrapper_overhead_interleaved(){
+    let fill=|n:usize,s:u8|->Vec<u8>{(0..n).map(|i|(i as u8).wrapping_mul(37).wrapping_add(s)).collect()};
+    for (ml,eb,kind) in [(12usize,151usize,"odd"),(9,151,"even"),(9,32768,"odd"),(256,2,"odd"),(1024,2,"odd")]{
+        let mut b=fill(ml,11);b[0]|=0x80;let mut m=fill(ml,101);m[0]|=0x80;if kind=="odd"{*m.last_mut().unwrap()|=1}else{let x=m.last_mut().unwrap();*x=(*x|3)&!1}
+        let e=eb.div_ceil(8);let mut ex=vec![0xffu8;e];if eb%8!=0{ex[0]=(1u8<<(eb%8))-1;}
+        let inp=Bytes::from(input(&b,&ex,&m));
+        let (mut a,mut r)=(vec![],vec![]);
+        for _ in 0..15{
+            let t=std::time::Instant::now();for _ in 0..50{let _=std::hint::black_box(berlin_run(&inp,u64::MAX));}a.push(t.elapsed().as_nanos() as f64/50.0);
+            let t=std::time::Instant::now();for _ in 0..50{let _=std::hint::black_box(revm_run(&inp,u64::MAX));}r.push(t.elapsed().as_nanos() as f64/50.0);
+        }
+        a.sort_by(|x,y|x.partial_cmp(y).unwrap());r.sort_by(|x,y|x.partial_cmp(y).unwrap());
+        let t=std::time::Instant::now();for _ in 0..2000{let _=std::hint::black_box(fast(&inp,u64::MAX));}let f=t.elapsed().as_nanos() as f64/2000.0;
+        println!("MODEXP-WRAPPER m{ml} n{eb} {kind}: ours median {:.1} us, revm median {:.1} us, the fast-path checks alone {:.2} us",a[7]/1e3,r[7]/1e3,f/1e3);
+    }
+}

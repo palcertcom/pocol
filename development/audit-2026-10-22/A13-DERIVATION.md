@@ -800,6 +800,85 @@ Repeated runs on this host vary by up to about 2× (the MODEXP block took 2.5 s 
   - whole-state mode: 0 before and after.
 - The times after the fix are in evidence/memory-r14/r14-gap-after-fix.log.
 
+### 3b-2. MODEXP: two exact fast paths, the shape sweep, and the slowest blocks after them (2026-10-27)
+
+The precompile pocol's EVM runs at address 5 is now `lp4-execution/src/modexp.rs` (`native.rs` `build_engine`
+puts it in place of revm's entry; the other addresses are revm's Cancun set). For every input and gas limit
+it returns what revm 19.7's `berlin_run` returns: the same gas, bytes and errors. It computes two classes
+itself and hands every other input to revm unchanged. No gas, rule or result changes.
+
+**The two fast paths.**
+- **A modulus value below 2^64** (`b46658a`): Montgomery multiplication on one word for the odd part q; the
+  power of two 2^t directly (an even base to an exponent of at least t is 0; an odd base's exponent counts
+  mod 2^64); joined by the Chinese remainder theorem (CRT).
+- **An even modulus q·2^t of more than one word with t > 64 and q > 1** (`0c2ad75`): x1 = base^exp mod q by
+  revm's own MODEXP (or the one-word path when q fits a word), and x2 = base^exp mod 2^t by revm's own (its
+  power-of-two path). q^-1 mod 2^t comes from Newton's iteration, and CRT joins them.
+  - Why this class: aurora-engine-modexp 1.3.0 inverts q mod 2^t one bit at a time (Koç's algorithm,
+    `mpnat.rs` `koc_2017_inverse`). That is t steps on t/64 words.
+  - EIP-2565 prices the call at c/3 with c = (m/8)^2 for a small exponent. The inverse grows as t² ∝ m², so
+    the cost per gas stays at about 190 ns however large the modulus.
+  - Newton needs about log2(t/64) multiplications.
+
+**The sweep that found the second class** (`journal_measure::jm_modexp_sweep`, ignored).
+- 17 modulus sizes (1 to 1,024 bytes) × 5 kinds (odd; even; a power of two; the low half zero; 3·2^(8m-2))
+  × 5 exponents (all ones, from the 200-gas floor up to 32,768 bits), with the base as long as the modulus.
+- 384 shapes within a block's gas. Each is checked equal to revm.
+- Each is timed per call, for pocol and for revm. A full-gas block's time is projected as the calls a block
+  makes (131 gas of loop per call) times the time per call. The slowest projections are then built as real
+  blocks and validated.
+
+| shape (base = modulus length) | gas per call | revm per call | pocol per call | full block, before → after |
+|---|---:|---:|---:|---:|
+| 3·2^8190, exponent 3 (1,024 bytes) | 5,461 | 1,062 µs | 156 µs | 1,554 ms → 227–267 ms |
+| 3·2^4094, exponent 3 (512 bytes) | 1,365 | 273 µs | 47 µs | 1,563 ms → (not built) |
+| 3·2^2046, exponent 3 (256 bytes) | 341 | 79 µs | 17 µs | 1,457 ms → 291–348 ms |
+| 2^4096 · odd, exponent 3 (1,024 bytes) | 5,461 | 425 µs | 135 µs | |
+| one word, even, 1,024-byte exponent | 2,730 | 512 µs | 86 µs | 957–1,023 ms → 238–272 ms |
+
+The before and after per-call figures are from sweep-evenmax-before-wide.log and sweep-0c2ad75.log. The
+one-word row is from exec-cost-per-gas.log. The blocks are from those logs and from r14-gap-d30dc71.log
+(both modes, genesis and grown state).
+
+**The slowest blocks now** (`r14-gap-d30dc71.log`, POCOL_ROOT_CHECK=0, ms, validate median / import; whole-state
+genesis, whole-state grown, store genesis, store grown):
+
+| kind | ws genesis | ws grown | store genesis | store grown |
+|---|---:|---:|---:|---:|
+| MODEXP 16-byte modulus, low half zero, 2,048-bit exponent (revm's path) | 464 / 421 | 409 / 456 | 474 / 454 | 449 / 476 |
+| MODEXP 16-byte even modulus, 1,024-byte exponent (revm's path) | 425 / 419 | 427 / 490 | 403 / 450 | 434 / 510 |
+| MODEXP 1,024-byte even modulus (t = 1), exponent 3 (revm's path) | 425 / 401 | 420 / 448 | 444 / 458 | 429 / 433 |
+| MODEXP 3·2^2046, exponent 3 (wide path) | 308 / 309 | 348 / 320 | 291 / 304 | 330 / 302 |
+| MODEXP 9-byte odd modulus, 2,048-bit exponent (revm's path) | 294 / 318 | 298 / 315 | 338 / 308 | 321 / 315 |
+| BN pairing, one pair | 282 / 310 | 295 / 294 | 305 / 285 | 347 / 303 |
+| BN mul | 271 / 254 | 281 / 275 | 271 / 258 | 285 / 295 |
+| MODEXP one word, even, 1,024-byte exponent (one-word path) | 238 / 253 | 256 / 266 | 251 / 249 | 272 / 278 |
+| MODEXP 3·2^8190, exponent 3 (wide path) | 227 / 281 | 243 / 277 | 257 / 241 | 267 / 268 |
+| the calibration's compute loop | 12 / 19 | 15 / 23 | 19 / 21 | 30 / 37 |
+
+- **Every kind measured is now under the devnet t_exec of 1 s,** in both modes and on both states.
+  - The slowest is about 0.47 s to validate and 0.51 s to import, up to about 60 ns per gas.
+  - These are MODEXP moduli of 9–16 bytes on revm's own path. BN pairing and BN mul are next, at 0.27–0.35 s.
+- **The margin is about 2×,** and repeated runs on this host vary by up to 2×. So a host somewhat slower than
+  this one could exceed t_exec on these blocks. That is what decision row 2 (ii) would detect at boot.
+- **The sweep is a grid of measured shapes, not a proof of the maximum.** It found the second class only
+  because a kind was added for it.
+
+**Correctness evidence.**
+- `modexp::tests`: 60,000 random and edge inputs (gas limits around the cost, inputs cut short) and 20,000
+  one-word moduli against revm.
+- 20,000 random wide moduli: q of 1 to 160 bytes, t around 64 and at its largest, leading zero bytes. The
+  wide path ran in more than a third of the cases.
+- The Newton inverse is checked directly. The swept shapes are checked one by one.
+- Seeded faults (mutants.log, mutants-wide.log): 22 mutants of the arithmetic, the parsing, the gas check and
+  the wiring, all caught. WX11 moves the threshold t > 64 to t > 1. That changes only which path runs, not the
+  results, and the routing assertion catches it.
+- **A defect of the new code, caught before commit:** `mul_trunc` dropped a row's carry when the second operand
+  was shorter than the remaining words. The differential tests and the inverse test failed on it; it was fixed.
+- One-shot per-call timings in the sweep are noisy on this host, up to about 2×. Interleaved
+  (`modexp::tests::wrapper_overhead_interleaved`, wrapper-overhead.log), pocol's time on inputs it hands to
+  revm equals revm's within noise. Its own checks cost 0.07–0.56 µs per call.
+
 ### 3a. EVM execution memory (`resources::memory::execution`, round 2, corrected)
 
 One execution consuming at most G gas, with code at most `B_code_max` (revm 19.7, CANCUN). The first

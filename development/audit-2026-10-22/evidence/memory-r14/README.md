@@ -28,6 +28,7 @@ The mutation runs used a separate worktree.
 | accept-8d80354/ | e2e in both modes on `8d80354`: devnet, site, browser, integrated ×2, boot timing | all PASS except integrated whole-state run 1 (FAIL 1 of 20, a test race); see below |
 | witnesses-8d80354.log | the security witnesses on `8d80354` (their programs are kept outside the repository) | 9 NOT_REPRODUCED, controls OK |
 | integrated-race/ | the failing integrated run's log, the three node logs, the analysis | a race in the test, fixed in `073923f` |
+| modexp/ | the MODEXP fast paths (`b46658a`, `0c2ad75`), the shape sweep, suites and mutants per commit (modexp/README.md) | every measured kind under t_exec = 1 s after `0c2ad75`; see A13-DERIVATION §3b-2 |
 
 ## What the measurement shows (A13-DERIVATION §3b)
 
@@ -43,7 +44,8 @@ All times are with the checks off, in ms (validate median / import).
 | cold CALLs | 65 / 83 | 343 / 318 |
 
 - Calibration: 9–10 ms per phase in memory, 12–19 ms through the store. t_exec is 1,000 ms.
-- **Only MODEXP with an even modulus exceeds t_exec.** That is D-2.
+- **Only MODEXP with an even modulus exceeds t_exec.** That is D-2. (Update: after the two MODEXP fast paths,
+  every kind measured is under t_exec on this host; modexp/README.md and A13-DERIVATION §3b-2.)
 - **Store-mode import before the fix:** MODEXP 2,535–2,609 ms and transfers 255 ms, because every import
   re-executed the head.
 
