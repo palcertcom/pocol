@@ -89,16 +89,29 @@ version names" (evidence/windows-22a82c2/RUN.md).
 - **Reproduced on Linux** with a sweep over every candidate node (an uncommitted change to the test, run as a
   scratch binary):
   - 14 of the first 363 candidates panicked on `ad301e7` (`damage-sweep-before-fix.log`, the panic lines);
-  - after the fix, the same sweep over all 587 candidates is recorded in `damage-sweep-after-fix.log`, committed
-    when it finishes.
+  - after the fix, the same sweep over all 587 candidates: **none panicked**. Each replayed from genesis and
+    equals the reference node (`damage-sweep-after-fix.log`).
 - **The fix:** `Node::open` sets aside a store found damaged before genesis is pinned, as `StateStore::open`
   sets aside one marked damaged, and replays from genesis.
 - **The test:** `e4_checkpoint_open_rebuilds_a_store_its_release_finds_damaged` removes an owed node
-  deterministically. It fails without the fix (the same panic) and passes with it.
+  deterministically. It fails without the fix (the same panic; `open-damaged-without-fix.log`) and passes with
+  it.
 
 ## Seeded faults
 
 - **`mutants-deferred-release-dd85cc0.log`:** 16 faults on the code before the review fixes, **all killed**.
   RL13–RL15 (open does not release, the event loop takes no step or does not see owed work) are killed only
   by `e4_checkpoint_release_runs_at_open_and_between_events`.
-- **`mutants-deferred-release-2.log`:** see that file.
+- **`mutants-deferred-release-2.log`:** 28 faults on `ad301e7`, the review fixes in.
+  - RL1–RL16 again, adapted to the fixed code: all killed. RL1 first failed to build (its pattern left a value
+    untyped). Its pattern was corrected and the rerun, the last line, killed it.
+  - RV1–RV9, faults in the review fixes: all killed, each by the test written for it.
+  - **Three survive, with nothing that tests them:**
+    - RV10 (`stored_bytes` omits the release rows): a measurement helper; no test reads it with rows owed.
+    - RV11 (open marks the store damaged on any error from `release_all`): it needs a storage error inside
+      `Node::open`, which these tests do not make. The store-level path is tested by
+      `a_release_step_that_fails_on_io_leaves_the_store_whole`.
+    - RV12 (the flag set before the write commits): with KEPT = 2, every write that finds rows owed also drops a
+      checkpoint, so a failed commit leaves the flag right either way (review finding 4a).
+- **The fix in `e453851`:** shown by its test against the code without it (`open-damaged-without-fix.log`), and
+  by the sweep before and after.

@@ -98,9 +98,13 @@ async function main() {
     // ---- heal ----
     await stopIsolatedC(); for (const p of partition.splice(0)) process.kill(-p.pid, 'SIGTERM'); await sleep(1500);
     devnet(['start', work, '--log']);
-    await wait(async () => { const s = await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); return s[2].head.height >= s[0].head.height - 1 && s[2].stats.reorgs >= 1; }, 240000, 'c reorganized');
-    const stC = await rpc(8542, 'pocol_status');
-    ok('heal: c reorganized onto the heavier branch (D133)', stC.stats.reorgs >= 1, JSON.stringify(stC.stats));
+    // The heaviness above holds at the heal, but all three nodes mine on while they reconnect, and c's branch can
+    // be the heavier one by the time they meet (accept-e453851 whole-state run 1: a and b rebuilt onto c's branch,
+    // and all three ended on one head with c showing no reorg). Fork choice (D133) is checked either way: the
+    // three converge on one head, and the side that lost (c, or both a and b) reorganized.
+    let st = [];
+    await wait(async () => { st = await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); return new Set(st.map((x) => x.head.hash)).size === 1 && (st[2].stats.reorgs >= 1 || (st[0].stats.reorgs >= 1 && st[1].stats.reorgs >= 1)); }, 240000, 'one branch after the heal');
+    ok('heal: the three nodes converge on one branch, and the side that lost reorganized onto it (D133)', true, `reorgs a=${st[0].stats.reorgs} b=${st[1].stats.reorgs} c=${st[2].stats.reorgs}, head ${st[0].head.height}`);
     await wait(async () => { const v = await Promise.all([0, 1, 2].map((i) => currentVersion(i, S))); return v.every((x) => x === v[0]) && v; }, 120000, 'site state agrees');
     // The transactions c returns include its v2 publication, which the healed network can include a block or two
     // later, so the canonical version can move between two reads (accept-8d80354: v2 included at heights 76-77,

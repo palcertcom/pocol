@@ -393,6 +393,9 @@ Their artifacts are not copied.
 | 40583789163 | 206eaa4 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 751 ms against an honest reader's 784 ms, pacer lateness 3 ms; evidence/windows-206eaa4/ |
 | 40585164582 | 93a40d0 (node code: the deferred checkpoint release) | PASS on every step (lp4 211/0, pocold 240/0); client window 0.506 s, pacer lateness 3 ms; evidence/windows-93a40d0/ |
 | 40589342452 | 22a82c2 (node code: release steps fsynced) | **FAIL, one test:** pocold 239/1, `e4_checkpoint_damage_falls_back_to_a_verified_state`. Open panicked on a store the release at open had marked damaged: a defect of `93a40d0`, reproduced on Linux and fixed after `ad301e7` (evidence/windows-22a82c2/RUN.md). lp4 211/0, extension 234/0 |
+| 40592643692 | dd85cc0 (the release at open and in the event loop tested; node code as 22a82c2) | PASS on every step (lp4 211/0, pocold 241/0); client window 0.514 s, pacer lateness 10 ms; evidence/windows-dd85cc0/ |
+| 40595988585 | ad301e7 (node code: the independent review's fixes) | PASS on every step (lp4 211/0, pocold 244/0); client window 0.505 s, pacer lateness 2 ms; evidence/windows-ad301e7/ |
+| 40600109673 | e453851 (node code: open sets aside a store it finds damaged) | PASS on every step (lp4 211/0, pocold 245/0), the damage test and the new release tests included; client window 0.503 s, pacer lateness 2 ms; evidence/windows-e453851/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
