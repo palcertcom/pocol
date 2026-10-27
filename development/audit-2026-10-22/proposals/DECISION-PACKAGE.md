@@ -201,6 +201,35 @@ allocator over the adversarial file (1.81), the execution's code set (1.125), th
 (1.10) and the batch (1.02). Recommendation: keep store mode opt-in, and decide the network target (D-1)
 with these figures. No bound was lowered to reach the budget.
 
+**Recounted on 2026-10-27 (A13-DERIVATION §2e, `892dca6`; the paragraphs above are kept as recorded).** The
+7.61 GiB was itemized term by term. Four terms were cut where the code was changed to hold less, or where a
+tighter count was proven and tested against a real store. Nothing normative, no local limit and no
+acceptance criterion changed.
+
+| reduction | kind | network store term | proof |
+|---|---|---:|---|
+| the pool's layer keeps the code hash, not a code copy (the row "pool layer keeps no code copies" above, now implemented) | local implementation | 0.618 → 0.0003 | equivalence over 2,000 random layers; a store-mode node test |
+| state.redb counts a shared node once, and nodes by kind | proven count | allocator 1.809 → 0.279 | the store is content-addressed with reference counts; tests over real stores, paths of 64 branches |
+| a block's batch by node kind | proven count | 1.024 → 0.916 | the same tests, both worst cases reached exactly |
+| the chain's entries boxed in their map | local implementation | metadata 0.786 → 0.524 | the type's size; pinned devnet total updated |
+
+- **Result:** network store mode **5.086 GiB, gate 5.81 GiB**, under the 5.25 GiB model cap and the 6 GiB
+  budget. Whole-state mode is 24.98 GiB; the devnet in store mode is 2.44 GiB.
+- **Two undercounts found and fixed on the way:**
+  - the file bound left out the abandoned window and the rolling re-execution, which `stored_versions`
+    lists;
+  - the batch's 65 nodes per key left out the leaf a changed key displaces.
+- **Cost:** a pool read of an account the pool touched now reads its code from state.redb. That is the
+  same read as for an account the pool did not touch.
+- **Not established by this:**
+  - acceptance;
+  - a measured RSS at network scale;
+  - the network profile booting (its other gates still refuse it);
+  - the file factor for large files (condition `store-file-factor`).
+- **The key-path assumption** is still not used. With it the bound would be about 0.7 GiB lower.
+- **Recommendation: keep store mode opt-in** until a near-cap network-scale state has been run and measured.
+  The open decisions are in [OPEN-DECISIONS.md](OPEN-DECISIONS.md).
+
 **The key-path assumption (not adopted; presented as asked).**
 - **Definition.** Every key path in a state trie has at most 21 nodes. Today `TRIE_PATH_NODES` = 65: a
   branch at each of the 64 nibbles of a hashed key, and the leaf.

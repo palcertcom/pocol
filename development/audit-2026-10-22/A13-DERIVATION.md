@@ -551,6 +551,126 @@ the layer (finding 4).
 The options, with their numbers and effects, are in DECISION-PACKAGE.md ("After D-7 and the code-loading
 audit"). No bound was lowered to reach the budget.
 
+### 2e. The network store-mode bound recounted: four provable reductions (2026-10-27, `892dca6`)
+
+The 7.61 GiB bound of §2d was itemized term by term. A term was cut only where the code was changed so that
+it holds less, or where a tighter count was proven and tested against a real store. No consensus rule,
+validity rule, local limit or acceptance criterion changed. No term was lowered without that proof.
+
+**1. The pool's layer keeps no code copies** (lp4 `view::Layer::drop_code_copies`, `Layer::info`;
+pocold `node::admit_tx`).
+- In store mode an account is read with a copy of its code (`TrieState::info`). Each entry of the pool's
+  pending layer kept that copy for as long as the layer lived. The term was min(touched accounts ×
+  B_code_max, CODE_CAP) plus the creations.
+- After each admission the touched entries now keep the code hash only. Reads give the code back, from
+  the layer's own code or from the base:
+  - `account`, `each_account` and `merge` do so;
+  - `contract_of` puts every code a commit or `insert_info` writes in the layer unless the base has it;
+  - a base never loses code (a store keeps code for good; a whole state is not changed under the layer).
+- So the layer holds its creations only, as in whole-state mode. The copies a transaction reads while it
+  is admitted belong to the execution's set, which is unchanged.
+- Tests:
+  - `view::tests::a_layer_without_its_code_copies_reads_and_merges_as_before`: 2,000 random layers;
+    reads, code checks, `each_account` and `merge` are identical with and without the copies.
+  - `consensus::d7_the_store_mode_pool_layer_keeps_no_code_copies`: on a store-mode node, after pool
+    transactions call a contract of the head and create one, no entry holds code. "pending" still answers
+    both codes, and later pool transactions run both.
+- 0.618 → 0.0003 GiB.
+
+**2. state.redb's file counts a shared node once** (pocold `resources::chain_versions_bytes`,
+`held_versions_bytes`; lp4 `node_trie::version_bytes`, `block_bytes`).
+- The old count took each held version separately and counted every node at the largest encoding (a
+  16-child branch, 1,162 bytes with its row). At the network profile every version saturated: about 108
+  whole versions, a 14.3 TiB file and 3,653 redb regions.
+- Two facts, both in the code:
+  - **Nodes are stored once.** They are content-addressed: `state_store::commit` adds a reference to a
+    node that is already stored, and `release` deletes a node when its last reference goes. So n versions
+    at consecutive heights of one chain keep the oldest version's nodes plus what each later block's
+    version added. They also keep at most n whole versions.
+  - **Nodes are counted by kind.** A version of A accounts and S slots has:
+    - one leaf per key (≤ 191 bytes for an account, which includes its storage trie's top; ≤ 98 for a slot);
+    - at most one branch per leaf, since `build` and `finish` make no branch with fewer than two children
+      (70 bytes without its children);
+    - at most one child reference per node (66 bytes each), since each node hangs from one branch.
+
+    A block adds its batch's branches and changed leaves. The displaced leaf is the parent's, unchanged.
+- **The held versions** (the `stored_versions` inventory), counted as runs:
+  - genesis;
+  - the K_hist window with the block being imported (K_hist + 1 consecutive);
+  - the abandoned window until `settle` (K_hist consecutive);
+  - side_max side states, one each;
+  - a rolling re-execution and the version it commits next (2 consecutive).
+
+  The entries hold these once, and each of the KEPT checkpoints holds them once more.
+- **Finding.** The old formula did not count the abandoned window or the rolling entry, which
+  `stored_versions` lists. Its saturation hid that undercount. The new formula counts both.
+- Tests (lp4 `node_trie::tests`):
+  - `a_store_keeps_at_most_what_a13_counts_for_its_versions`: random states of accounts with storage,
+    with accounts created, removed and cleared. Each version, each block's addition and a window of four
+    pinned versions stay within the bounds. A positive control checks that a block reaches a sizeable
+    share of its bound.
+  - `deep_shared_prefixes_stay_within_what_a13_counts`: raw keys sharing up to 64 nibbles, with branches
+    beyond nibble 60.
+  - `a13_store_file_and_batch_terms_follow_the_node_trie_bounds` (network_budget): re-derives the file
+    parts from the node_trie bounds.
+- File 14.27 → 2.20 TiB (563 regions). Allocator 1.809 → 0.279 GiB.
+
+**3. A block's batch by node kind** (lp4 `node_trie::batch_nodes`).
+- Every node an update puts in its batch is a node of the child version. It holds at most:
+  - 64 branches per changed key, and no more than the child's leaves;
+  - two leaves per changed key: the new one and the leaf it displaces;
+  - 16 children per branch, and no more than one per node of the child.
+- **Finding.** The 65-node count per key missed the displaced leaf, which `update` puts in the batch again
+  (unchanged). In the old bound the leaves were charged at branch size, which covered it.
+- `a_path_of_64_branches_and_a_displaced_leaf_reach_the_batch_bounds` builds both worst cases exactly. It
+  checks a path of 64 branches rebuilt whole, and two leaves for one changed key.
+- 1.024 → 0.916 GiB. The children term (0.63 GiB) now binds at the child's node count, not at 16 per branch.
+
+**4. The chain's entries are boxed** (pocold `Chain::blocks: HashMap<[u8;32], Box<Entry>>`).
+- A hash table keeps spare buckets. While it grows it holds its old buckets and twice as many new ones:
+  up to 24/7 buckets per entry.
+- Inline, each bucket was a whole 1,088-byte `Entry`, and the old ×3 count was short of 24/7.
+- Boxed, a bucket is the 40-byte key and pointer. The term counts it at ×4, plus the Entry once and its
+  allocation header.
+- Slimmed, offloaded and side metadata: 0.786 → 0.524 GiB.
+
+**Result** (tests/network_budget.rs; the computed bound, not measured RAM;
+evidence/memory-r14-892dca6/a13-models.log):
+
+| profile | whole-state mode | store mode |
+|---|---:|---:|
+| network | 25.24 → **24.98 GiB** (gate 28.55) | 7.605 → **5.086 GiB** (gate **5.81**, budget 6) |
+| devnet | 3.04 → 2.99 GiB (gate 3.41) | 3.48 → 2.44 GiB (gate 2.79) |
+
+| item (network, store mode) | §2d | now |
+|---|---:|---:|
+| code read by the execution in progress (CODE_CAP) | 1.125 | 1.125 |
+| EVM execution memory and operation classes | 0.979 | 0.979 |
+| a block's batch | 1.024 | 0.916 |
+| state.redb allocator | 1.809 | 0.279 |
+| node cache (NODE_CACHE) | 0.250 | 0.250 |
+| canonical metadata, offloaded and slimmed | 0.593 | 0.342 |
+| side metadata | 0.193 | 0.181 |
+| the pool's layer: writes / code | 0.127 / 0.618 | 0.127 / 0.0003 |
+| everything else | 0.887 | 0.887 |
+| **total** | **7.605** | **5.086** |
+
+**What this does and does not establish:**
+- The store-mode model of the network profile is now under the 5.25 GiB model cap. Its gate (5.81 GiB) is
+  under the 6 GiB budget.
+- This is the computed bound. It is not measured RSS and it is not acceptance:
+  - the network profile is still refused at boot for its other gates (A13 is one of them);
+  - store mode stays opt-in;
+  - nothing here was measured on a near-cap network-scale state.
+- **It still rests on:**
+  - the inventories by inspection (`BATCHES`, `EXECUTIONS`, `stored_versions`; conditions `store-inventory`
+    and `transient-snapshot-inventory`);
+  - the measured file factor (STATE_FILE_FACTOR = 12, not established for files above a few hundred MB:
+    condition `store-file-factor`; each unit is now about 0.023 GiB of the bound);
+  - revm 19.7's loading behaviour (`revm-loading`).
+- **The key-path assumption** (at most 21 nodes per path) is still not used. With it, the batch would be
+  about 0.33 GiB and the allocator about 0.15 GiB (estimated from the same formulas): about 0.7 GiB less.
+
 ## 3. System gas (R18) and timing (R14/R19)
 
 - Gas: per-call maxima measured by `resources::tests::sys_gas_envelope_fixture` (worst case plus a
