@@ -304,7 +304,7 @@ evidence/c1-e4/a13-final.log (commit fc24969).
 | store/node cache | `NODE_CACHE` (256 MiB) | resident bytes: `CACHE_ENTRY` + `Node::resident_bytes` per node, enforced by `Cache::put` | 0.25 GiB |
 | store/redb page cache | `STATE_PAGE_CACHE` (64 MiB) | set on the builder | 0.06 GiB |
 | store/redb allocator | `redb_allocator_bytes(state_file_max)` | redb 2.6.4 keeps, for every 4 GiB region of the file, a buddy allocator sized for the whole region; `redb_region_allocator` mirrors buddy_allocator.rs and bitmap.rs | 1.81 GiB |
-| store/stored-version handles | `stored_versions` × `pinned_bytes` | genesis, the K_hist window, side_max, a rolling rebuild, and an abandoned window until `settle` | 0.005 GiB |
+| store/stored-version handles | `stored_versions` × `pinned_bytes` | every version `held_runs` lists (2·K_hist + side_max + 4): genesis, the K_hist window with the block being imported, side_max, a rolling rebuild with the version it commits next, and an abandoned window until `settle`. Review 2026-10-27: this count once listed 2·K_hist + side_max + 2, apart from the versions' bytes; both now read `held_runs` (`a13_counts_a_handle_for_every_held_version`) | 0.005 GiB |
 | store/a checkpoint being written | `checkpoint_bytes` | its bytes (`REC_MAX` per entry), the entry index, and redb's copy | 0.08 GiB |
 | code/read by the execution | one code set | each loaded account's code is read from the store; bounded by CODE_CAP | 1.13 GiB |
 | code/the pool's state | one code set | the pool's own creates | 1.13 GiB |
@@ -594,7 +594,7 @@ pocold `node::admit_tx`).
     - at most one child reference per node (66 bytes each), since each node hangs from one branch.
 
     A block adds its batch's branches and changed leaves. The displaced leaf is the parent's, unchanged.
-- **The held versions** (the `stored_versions` inventory), counted as runs:
+- **The held versions** (`held_runs`, which `stored_versions` also sums for the handles), counted as runs:
   - genesis;
   - the K_hist window with the block being imported (K_hist + 1 consecutive);
   - the abandoned window until `settle` (K_hist consecutive);

@@ -82,6 +82,21 @@ fn print(tag:&str,b:&pocold::resources::Bound){
     print("A13-DEVNET-MEM",&bm);print("A13-DEVNET-STORE",&bs);
 }
 
+/// Review 2026-10-27: the stored versions' handles and their bytes are counted from one inventory, and it holds
+/// every version open keeps at once: genesis, the window of K_hist with the block being imported, the abandoned
+/// window, the side states, and a rolling re-execution with the version it commits next (2·K_hist + side_max + 4).
+#[test] fn a13_counts_a_handle_for_every_held_version(){
+    use pocold::resources as r;
+    for (k,side) in [(32u32,2u32),(32,8),(1,0),(4096,64)]{
+        let want=2*u128::from(k)+u128::from(side)+4;
+        assert_eq!(r::held_runs(k,side).iter().sum::<u128>(),want,"the runs at K_hist {k}, side_max {side}");
+        assert_eq!(r::stored_versions(k,side),want,"a handle per held version at K_hist {k}, side_max {side}");
+    }
+    let net=devnet::build(&network()).unwrap().profile.cp().clone();let one=r::chain_versions_bytes(&net,1).unwrap();
+    assert_eq!(r::held_versions_bytes(&net,32,2).unwrap(),one+r::chain_versions_bytes(&net,33).unwrap()+r::chain_versions_bytes(&net,32).unwrap()+2*one+r::chain_versions_bytes(&net,2).unwrap(),
+        "the versions' bytes are the same runs");
+}
+
 /// C-1 E4.5 (2026-10-27): state.redb's versions and a block's batch, re-derived from node_trie's bounds. The file
 /// counts the versions held at once (genesis; the K_hist window and the block being imported; the abandoned window
 /// until settle; side_max side states; a rolling re-execution and the version it commits next), once for the

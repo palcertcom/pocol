@@ -178,10 +178,13 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
     if s.params!=Params::of(c){return Err(format!("snapshot taken under other retention parameters: {:?}, now {:?}",s.params,Params::of(c)))}
     if c.blocks.len()!=1{return Err("restore into a chain that holds only genesis".into())}
     let cp=c.spec.cp();let (body_max,code_max)=(cp.BODY_MAX as usize,cp.B_code_max);let gh=c.spec.genesis_hash();
-    let mut last=(0u64,[0u8;32]);let mut blocks:HashMap<[u8;32],Entry>=HashMap::new();
+    // The entries are boxed as they are restored, as `Chain::blocks` keeps them: A13 counts each entry as a boxed
+    // slot and one Entry (review 2026-10-27: an inline map here held about 2.5 KB more per entry at open, about
+    // 320 MB at the network profile's H_END).
+    let mut last=(0u64,[0u8;32]);let mut blocks:HashMap<[u8;32],Box<Entry>>=HashMap::new();
     // The BLOCKHASH window a child of `p` executed with (`Chain::ancestors`).
-    let ancestors=|blocks:&HashMap<[u8;32],Entry>,p:&Entry|{let mut out=HashMap::new();let mut cur=Some(p);
-        while let Some(e)=cur{if p.height+1-e.height>256{break}out.insert(U256::from(e.height),B256::from(e.hash));cur=e.parent.and_then(|x|blocks.get(&x));}out};
+    let ancestors=|blocks:&HashMap<[u8;32],Box<Entry>>,p:&Entry|{let mut out=HashMap::new();let mut cur=Some(p);
+        while let Some(e)=cur{if p.height+1-e.height>256{break}out.insert(U256::from(e.height),B256::from(e.hash));cur=e.parent.and_then(|x|blocks.get(&x)).map(|b|&**b);}out};
     for (i,r) in s.entries.iter().enumerate(){
         let why=|m:&str|format!("entry {i} ({}): {m}",B256::from(r.hash));
         if r.flags&F_STORED!=0&&r.flags&F_WORLD==0{return Err(why("a stored empty state"))}
@@ -237,14 +240,14 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
             let got=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||Summary::scan_view(&pin.view(),code_max))).map_err(|_|why("the stored version could not be read whole"))?;
             match r.summary{Some(want) if got!=want=>return Err(why("the stored version's summary is not the sealed one")),None if r.flags&F_SLIM==0=>return Err(why("a stored version without its summary")),_=>{}}
         }
-        blocks.insert(e.hash,e);
+        blocks.insert(e.hash,Box::new(e));
     }
     if !blocks.contains_key(&s.head){return Err("the snapshot's head is not one of its entries".into())}
     if blocks.values().any(|e|e.import_seq>=s.next_seq&&e.height>0){return Err("an import sequence at or beyond next_seq".into())}
     let evicted:std::collections::HashSet<[u8;32]>=s.evicted_order.iter().copied().collect();
     if evicted.len()!=s.evicted_order.len(){return Err("evicted hashes repeat".into())}
     if s.unslimmed.iter().chain(&s.evicted_order).any(|h|*h==[0u8;32]){return Err("a zero hash".into())}
-    c.blocks=blocks.into_iter().map(|(h,e)|(h,Box::new(e))).collect();c.head=s.head;c.rebuild_canonical();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
+    c.blocks=blocks;c.head=s.head;c.rebuild_canonical();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
     c.unslimmed=s.unslimmed.clone();c.evicted_order=s.evicted_order.iter().copied().collect();c.evicted=evicted;
     Ok(())
 }

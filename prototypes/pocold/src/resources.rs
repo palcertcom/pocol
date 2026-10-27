@@ -172,10 +172,11 @@ pub fn batch_max(cp:&ConsensusParams)->Option<u128>{
 /// The keys of a state within the caps: (accounts, slots). Accounts: ACCT_CAP user accounts and the 5
 /// programs; slots: SLOT_CAP and SYS_SLOT_MAX (as `derive`'s snapshot).
 pub fn state_keys(cp:&ConsensusParams)->Option<(u128,u128)>{Some((u128::from(cp.ACCT_CAP).checked_add(5)?,u128::from(cp.SLOT_CAP).checked_add(u128::from(cp.SYS_SLOT_MAX))?))}
-/// C-1 E4: entries that hold a stored version at once: genesis, the K_hist canonical window, side_max side
-/// states, a rolling re-execution's entry, and during an adopting import, until `settle`, the abandoned
-/// window (K_hist more). The pool's base and production share an entry's handle.
-pub fn stored_versions(k_hist:u32,side_max:u32)->u128{2*u128::from(k_hist)+u128::from(side_max)+2}
+/// C-1 E4: the stored versions with a handle at once: every version `held_runs` lists, each with its own handle.
+/// The pool's base and production share an entry's handle. (Review 2026-10-27: this count once listed the runs
+/// apart from `held_versions_bytes` and left out the block being imported and the rolling re-execution's next
+/// version; both now read `held_runs`.)
+pub fn stored_versions(k_hist:u32,side_max:u32)->u128{held_runs(k_hist,side_max).iter().sum()}
 /// One stored version's handle (`chain::Pinned` behind its `Arc`) and its BLOCKHASH window (257 entries).
 pub fn pinned_bytes()->u128{size_of::<chain::Pinned>() as u128+16+257*memory::entry_bytes(64)+memory::table_bytes(64)}
 /// C-1 E4.4: a checkpoint being written: its bytes (every entry at most `checkpoint::REC_MAX`, the
@@ -224,14 +225,17 @@ pub fn chain_versions_bytes(cp:&ConsensusParams,n:u128)->Option<u128>{
     let (ka,ks)=state_keys(cp)?;let (wa,ws)=block_writes(cp)?;let whole=version_bytes(ka,ks)?;
     Some(mul(n,whole)?.min(add(&[whole,mul(n-1,block_bytes(wa,ws,ka,ks)?)?])?))
 }
-/// The versions held at once (C-1 E4, `stored_versions` and the block being imported), as runs of
-/// consecutive versions: genesis; the K_hist canonical window with the block being imported (K_hist + 1);
-/// during an adopting import, until `settle`, the abandoned window (K_hist, on the old branch); side_max
-/// side states (one each); a rolling re-execution's version with the next one it commits (2). A kept
-/// checkpoint pins versions its entries held, at most as many again. Each run is `chain_versions_bytes`.
+/// The versions held at once (C-1 E4, the `stored_versions` inventory), as runs of consecutive versions:
+/// genesis; the K_hist canonical window with the block being imported (K_hist + 1); during an adopting import,
+/// until `settle`, the abandoned window (K_hist, on the old branch); side_max side states (one each); a rolling
+/// re-execution's version with the next one it commits (2).
+pub fn held_runs(k_hist:u32,side_max:u32)->Vec<u128>{
+    let k=u128::from(k_hist);let mut v=vec![1,k+1,k];v.extend(std::iter::repeat_n(1,side_max as usize));v.push(2);v
+}
+/// The bytes of the versions `held_runs` lists, each run `chain_versions_bytes`. A kept checkpoint pins
+/// versions its entries held, at most as many again.
 pub fn held_versions_bytes(cp:&ConsensusParams,k_hist:u32,side_max:u32)->Option<u128>{
-    let k=u128::from(k_hist);let one=chain_versions_bytes(cp,1)?;
-    add(&[one,chain_versions_bytes(cp,k+1)?,chain_versions_bytes(cp,k)?,mul(u128::from(side_max),one)?,chain_versions_bytes(cp,2)?])
+    held_runs(k_hist,side_max).into_iter().try_fold(0u128,|t,n|add(&[t,chain_versions_bytes(cp,n)?]))
 }
 /// `state_file_max`'s parts: (versions' nodes, key preimages, code, checkpoint snapshots), each at
 /// STATE_FILE_FACTOR times its bytes. The entries' versions and the KEPT checkpoints' are counted apart.
