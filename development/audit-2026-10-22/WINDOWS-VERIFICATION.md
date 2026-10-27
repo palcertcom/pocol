@@ -385,6 +385,8 @@ Their artifacts are not copied.
 | 40550009922 | b8fb7ab | PASS on every step (lp4 209/0 with the eight MODEXP tests, pocold 238/0): the trivial powers handed to revm; PACER close 1 ms after s_v; evidence/windows-b8fb7ab/ |
 | 40550825203 | beed0d2 (evidence only; node code as b8fb7ab) | PASS on every step (artifact id 12757853501, sha256 b7d8e186…fc3b; not copied) |
 | 40557534874 | 7e565b7 (contains 3705559) | PASS on every step (lp4 209/0, pocold 238/0): the first Windows run of the strengthened pacer test; the client saw 0.508 s from its first byte to the close, its first byte 517 ms after the request against an honest reader's 504 ms; evidence/windows-7e565b7/ |
+| 40558373933 | d104891 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.509 s, first byte 732 ms against an honest reader's 783 ms, pacer lateness 10 ms; evidence/windows-d104891/ |
+| 40561773086 | b47fb85 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.506 s, first byte 741 ms against an honest reader's 746 ms, pacer lateness 3 ms; evidence/windows-b47fb85/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the

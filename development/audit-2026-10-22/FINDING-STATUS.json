@@ -285,6 +285,16 @@
     "run": "palcertcom/pocol 40557534874",
     "commit": "7e565b7",
     "result": "PASS on every step (lp4 209/0, pocold 238/0), the first with 3705559's pacer test: client window 0.508 s (bounds 0.45 to 1.0), first byte 517 ms against an honest reader's 504 ms, pacer lateness 7 ms; evidence/windows-7e565b7/"
+   },
+   {
+    "run": "palcertcom/pocol 40558373933",
+    "commit": "d104891",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab): client window 0.509 s, first byte 732 ms against an honest reader's 783 ms, pacer lateness 10 ms; evidence/windows-d104891/"
+   },
+   {
+    "run": "palcertcom/pocol 40561773086",
+    "commit": "b47fb85",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab): client window 0.506 s, first byte 741 ms against an honest reader's 746 ms, pacer lateness 3 ms; evidence/windows-b47fb85/"
    }
   ],
   "defectsFoundAndFixed": [
