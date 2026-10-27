@@ -96,8 +96,17 @@ async function main() {
     const stC = await rpc(8542, 'pocol_status');
     ok('heal: c reorganized onto the heavier branch (D133)', stC.stats.reorgs >= 1, JSON.stringify(stC.stats));
     await wait(async () => { const v = await Promise.all([0, 1, 2].map((i) => currentVersion(i, S))); return v.every((x) => x === v[0]) && v; }, 120000, 'site state agrees');
-    const afterHeal = await Promise.all(['a', 'b', 'c'].map((l) => chromeView(b, 'node-' + l, S)));
-    const canon = await currentVersion(0, S);
+    // The transactions c returns include its v2 publication, which the healed network can include a block or two
+    // later, so the canonical version can move between two reads (accept-8d80354: v2 included at heights 76-77,
+    // after the Chrome reads and before the version was read). The views count only when every node's version is
+    // the same before and after them.
+    const versions = () => Promise.all([0, 1, 2].map((i) => currentVersion(i, S)));
+    let afterHeal = [], after = [];
+    await wait(async () => {
+      const before = await versions(); afterHeal = await Promise.all(['a', 'b', 'c'].map((l) => chromeView(b, 'node-' + l, S))); after = await versions();
+      return [...before, ...after].every((x) => x === before[0]);
+    }, 120000, 'one canonical version on every node across the Chrome reads');
+    const canon = after[0];
     ok('reorg recovery: Chrome via c now shows the canonical version, identical on all nodes', afterHeal.every((x) => x.h1 === afterHeal[0].h1 && x.ver === afterHeal[0].ver) && afterHeal[0].h1 === `LP10 site v${canon + 1}`, `${afterHeal.map((x) => x.h1).join(' | ')} (canonical index ${canon})`);
     // c returns the transactions of its abandoned branch to its pool (consensus.md: excluded transactions return
     // after they are checked again); they carry the publisher's next nonces. v3 is published once every pool has
