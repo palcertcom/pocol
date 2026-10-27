@@ -1227,6 +1227,8 @@ fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_0
 ///   again.
 /// - "verify": opens it once more, checks that the head is the branch's tip (which "reopen" wrote beside the
 ///   directory, JM_SCALE_DIR.tip), and prints them.
+/// - "ckpt": opens it, times the checkpoint snapshot's encoding, then three checkpoints in a row with the store's
+///   node count before and after each (what each one's release of the oldest checkpoint frees).
 /// Checkpoints are every JM_SCALE_CKPT journal records (the node's default, checkpoint::EVERY = 1,024).
 /// Every phase also prints JM-SCALE-A13: the bound `resources::check` computes for this profile at boot (the
 /// caps', not the live state's) and state.redb's computed file bound. The process holds the node only (the node
@@ -1263,6 +1265,8 @@ fn jm_store_scale(){
             "journalBytes":size("blocks.journal"),"historyBytes":size("history.redb"),"extra":extra}));
     };
     let alice=devnet::account_key("alice");
+    // How the open's checkpoint restore read the stored versions (whole, or through the parent's diff).
+    let read=|n:&Node|serde_json::json!({"whole":n.stats.versions_read.whole,"byDiff":n.stats.versions_read.by_diff});
     match phase.as_str(){
         "grow"=>{
             assert!(!dir.exists(),"JM_SCALE_DIR must not exist for the grow phase");
@@ -1286,7 +1290,7 @@ fn jm_store_scale(){
             }
         }
         "reopen"=>{
-            let (mut n,open_s)=open();figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from}));
+            let (mut n,open_s)=open();figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n)}));
             let fork=env_n("JM_SCALE_FORK",8);let tip=n.chain.head;let tip_work=n.chain.get(&tip).unwrap().total_work;
             let mut p=tip;for _ in 0..fork{p=n.chain.get(&p).unwrap().header.parent_hash;}
             let (mut side,t)=(0u32,Instant::now());let mut imp=vec![];
@@ -1298,7 +1302,23 @@ fn jm_store_scale(){
             let (n,open_s)=open();
             let tip=std::fs::read(dir.with_extension("tip")).expect("the reopen phase's tip");
             assert_eq!(&n.chain.head[..],&tip[..],"the head after reopening is the reorg's tip");
-            figures(&n,"reopened after the reorg",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"head":format!("{:x?}",&n.chain.head[..8])}));
+            figures(&n,"reopened after the reorg",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n),"head":format!("{:x?}",&n.chain.head[..8])}));
+        }
+        "ckpt"=>{
+            // What a checkpoint costs at this size (the import stalls the grow phase showed at each checkpoint):
+            // the snapshot's encoding alone, then three checkpoints in a row. KEPT = 2, so each of the first two drops
+            // a checkpoint whose versions date from about a thousand blocks back and releases the nodes only they
+            // held; the third drops the one the first wrote, which holds what the node holds now.
+            let (mut n,open_s)=open();figures(&n,"opened for the checkpoint timing",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n)}));
+            let t=Instant::now();let (bytes,roots)=pocold::checkpoint::encode(&n.chain,&pocold::checkpoint::Binding{records:0,end:0,hash:[0u8;32]}).unwrap();
+            let encode_ms=t.elapsed().as_secs_f64()*1e3;
+            let mut calls=vec![];
+            for i in 0..3{
+                let before=n.state_store().unwrap().node_count().unwrap();let t=Instant::now();n.checkpoint_now().unwrap();let ms=t.elapsed().as_secs_f64()*1e3;
+                let after=n.state_store().unwrap().node_count().unwrap();
+                calls.push(serde_json::json!({"call":i,"ms":ms,"nodesBefore":before,"nodesAfter":after,"nodesReleased":before.saturating_sub(after)}));
+            }
+            figures(&n,"after three checkpoints",serde_json::json!({"encodeMs":encode_ms,"snapshotBytes":bytes.len(),"roots":roots.len(),"entries":n.chain.blocks.len(),"checkpointNow":calls}));
         }
         p=>panic!("JM_SCALE_PHASE {p}"),
     }
