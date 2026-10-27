@@ -75,8 +75,8 @@ const HISTORY_SYNC:u64=256;
 /// which the R14/R19 gate bounds by t_exec).
 pub const POOL_SLICE:Duration=Duration::from_millis(50);
 /// D-6 (2026-10-27): the owed references one release step works off (`StateStore::release_step`). At the
-/// network's state caps a step, fsynced, held the consensus thread about 45 ms (153 ms at most), against
-/// 8-11 s for the whole release inside a checkpoint's write.
+/// network's state caps a step, fsynced, held the consensus thread 32-45 ms on average (180 ms at most, two
+/// runs), against 8-11 s for the whole release inside a checkpoint's write.
 pub const RELEASE_SLICE:usize=256;
 /// Default memory budget of one single-host devnet node.
 pub const MEM_BUDGET:u64=6<<30;

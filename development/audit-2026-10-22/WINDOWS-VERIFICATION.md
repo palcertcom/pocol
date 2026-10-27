@@ -388,6 +388,9 @@ Their artifacts are not copied.
 | 40558373933 | d104891 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.509 s, first byte 732 ms against an honest reader's 783 ms, pacer lateness 10 ms; evidence/windows-d104891/ |
 | 40561773086 | b47fb85 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.506 s, first byte 741 ms against an honest reader's 746 ms, pacer lateness 3 ms; evidence/windows-b47fb85/ |
 | 40572992585 | bc38d41 (node code as b6d57e8: review fixes 1 and 4, stored versions read by diff at open; e6d07b2's D-7 test) | PASS on every step (lp4 211/0, pocold 239/0), the new diff, checkpoint, A13 and D-7 tests included; client window 0.504 s, first byte 583 ms against an honest reader's 562 ms, pacer lateness 3 ms; evidence/windows-bc38d41/ |
+| 40575426466 | fbe6062 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 721 ms against an honest reader's 721 ms, pacer lateness 1 ms; evidence/windows-fbe6062/ |
+| 40578404549 | 71eb650 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 737 ms against an honest reader's 795 ms, pacer lateness 1 ms; evidence/windows-71eb650/ |
+| 40583789163 | 206eaa4 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 751 ms against an honest reader's 784 ms, pacer lateness 3 ms; evidence/windows-206eaa4/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the

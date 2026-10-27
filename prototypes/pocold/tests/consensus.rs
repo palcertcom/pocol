@@ -2497,6 +2497,35 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     drop(n);drop(g);for d in [a,gd]{let _=std::fs::remove_dir_all(&d);}
 }
 
+/// D-6 deferred release: what a dropped checkpoint owes is worked off at open by a node that stopped owing
+/// it, and between a running node's events (`Node::run` takes a release step whenever no event waits), not
+/// at its next checkpoint. A node imports every block but the last, a checkpoint every 7 records and no
+/// release step, and stops owing. It reopens owing nothing, writes one more checkpoint (owing again), runs
+/// its event loop with no event but its ticks until the store owes nothing, then imports the last block from
+/// its channel, which stops it. The counts recount at each stage.
+#[test] fn e4_checkpoint_release_runs_at_open_and_between_events(){
+    use pocold::{net::{Msg,NetEvent},node::Event};use std::time::{Duration,Instant};
+    let blocks=e44_blocks();let (last,rest)=blocks.split_last().unwrap();let a=e44_dir("release");let every=7u64;
+    {let mut n=reopen(&e44_conf(&a,every));for b in rest{n.import(b.clone(),None).unwrap();}
+     assert!(n.stats.checkpoints_written>=3&&n.release_pending(),"positive control: the node stops owing a dropped checkpoint's nodes");}
+    let owed=pocold::state_store::StateStore::open(&a).unwrap().owed_refs().unwrap().len();assert!(owed>0,"the store owes work when it reopens");
+    let mut n=reopen(&e44_conf(&a,every));
+    assert!(n.stats.released_at_open>0&&!n.release_pending(),"open works off what is owed ({} released, {owed} owed)",n.stats.released_at_open);
+    let (st,opened)=(n.state_store().unwrap().clone(),n.stats.released_at_open);assert!(st.owed_refs().unwrap().is_empty());st.recount().unwrap();
+    n.checkpoint_now().unwrap();assert!(n.release_pending(),"positive control: the checkpoint dropped the oldest, whose nodes are owed");
+    // The last block is at the head's height (it reorgs back), so it stops the loop.
+    n.cfg.stop_at=Some(n.chain.head().height);let (tx,steps)=(n.tx.clone(),n.stats.release_steps);
+    let run=std::thread::Builder::new().stack_size(64<<20).spawn(move||{n.run();n}).unwrap();
+    let t=Instant::now();
+    while st.release_pending(){assert!(t.elapsed()<Duration::from_secs(120),"the running node works off what is owed");std::thread::sleep(Duration::from_millis(20));}
+    st.recount().unwrap();
+    tx.send(Event::Net(NetEvent::Message(1,Msg::Block{header:last.header.encoded.clone(),body:last.body.encode()}))).unwrap();
+    let n=run.join().unwrap();
+    println!("E44-RELEASE rows owed at reopen {owed}, rows worked off at open {opened}, steps in the event loop {}",n.stats.release_steps-steps);
+    assert!(n.stats.release_steps>steps,"the release steps ran in the event loop");assert_eq!(n.chain.head,last.hash(),"the last block was imported after the release");
+    st.recount().unwrap();drop(st);drop(n);let _=std::fs::remove_dir_all(&a);
+}
+
 /// The child of `e4_checkpoint_survives_kills`: imports the blocks of `POCOLD_E44_BLOCKS` into the node
 /// at `POCOLD_E44_CHILD`, a checkpoint after every record, until it is killed. Not a test on its own.
 #[test] #[ignore="the child process of e4_checkpoint_survives_kills"]

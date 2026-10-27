@@ -928,7 +928,8 @@ normative changes.
     owed at a time. A13's file term counts that set (`state_file_parts`).
   - A release step is fsynced: a crash loses the step, never part of it, and the work stays owed. Unsynced
     steps were measured too: each block's durable commit then wrote their pages, and imports during a release
-    took up to 905 ms, against 209 ms with fsynced steps.
+    took up to 905 ms, against 155–209 ms with fsynced steps (two runs), and state.redb grew to 4.3–8.6 GB, since
+    pages freed by unsynced transactions are not reused before a durable commit.
 - When it is written: every `checkpoint_every` = 1024 journal records (`Limits`, local), by a running
   node and by replay. Replay first makes its history.redb writes durable.
 

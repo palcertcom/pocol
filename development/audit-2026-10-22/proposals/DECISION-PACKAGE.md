@@ -223,6 +223,9 @@ acceptance criterion changed.
 
 - **Result:** network store mode **5.086 GiB, gate 5.81 GiB**, under the 5.25 GiB model cap and the 6 GiB
   budget. Whole-state mode is 24.98 GiB; the devnet in store mode is 2.44 GiB.
+  - *Updated 2026-10-27 (R3):* **5.198 GiB, gate 5.94 GiB**, still under the cap. `5abbaf3` adds two
+    stored-version handles. `93a40d0`'s deferred checkpoint release adds the owed checkpoint and its release
+    rows (A13-DERIVATION §3c).
 - **Two undercounts found and fixed on the way:**
   - the file bound left out the abandoned window and the rolling re-execution, which `stored_versions`
     lists;

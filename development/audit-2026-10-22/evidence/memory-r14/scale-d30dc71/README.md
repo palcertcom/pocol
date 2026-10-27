@@ -28,6 +28,10 @@ host and one workload is not a bound, and a computed bound is not acceptance.
 | `open-instrumented.log` | `b47fb85` + review fixes 1 and 4 + timing prints (scratch build) | the verify phase with each step of open timed. A pocold suite ran beside it, so its times are under load |
 | `verify-bc38d41.log` | `bc38d41` (clean tree) | open after `b6d57e8` (stored versions read through their diffs) and `5abbaf3` (fix 1) |
 | `ckpt-instrumented.log` | `bc38d41` + timing prints in `write_checkpoint` and `reset_pins` (scratch build), on a copy of the directory | the ckpt phase: what a checkpoint costs at this size |
+| `ckpt-93a40d0.log` | `93a40d0` (clean tree), on a fresh copy | the ckpt phase after the deferred release; steps not fsynced, run back to back |
+| `ckpt-live.log` | `93a40d0` + the ckpt phase's live variant (the test change committed in `22a82c2`), on a fresh copy | the first release's steps between imports, 20 at a time; steps not fsynced |
+| `ckpt-live-durable.log` | the tree committed as `22a82c2` (steps fsynced), on a fresh copy | the same, steps fsynced |
+| `ckpt-22a82c2.log` | `22a82c2` (clean tree), on a fresh copy | the same, on the commit |
 
 ## Computed (A13, `resources::check` for this profile in store mode)
 
@@ -114,10 +118,52 @@ It encoded the snapshot alone, then wrote three checkpoints in a row:
     10–14 s no event is handled.
 - **The same cost at open:** `reset_pins` took 12.0 s to release the 29 pins of the stopped node's entries.
 - **No rule depends on this.** It is D-6's local mechanism, and it is still open; see the PR's "Still open".
+  *(Fixed later the same day in `93a40d0` and `22a82c2`: § After the deferred release.)*
   - Releasing the dropped checkpoint later, in slices between events, would end the stall.
   - But then the store briefly holds one more checkpoint's versions than A13's file term counts
     ((KEPT + 1) sets). The file term and the redb allocator term that depends on it would have to be
     re-derived first.
+
+## After the deferred release (`93a40d0`, `22a82c2`)
+
+`93a40d0` owes a dropped checkpoint's nodes in a `release` table; `release_step` works off 256 owed references
+at a time between the node's events, and the next checkpoint's write finishes what is left first.
+`22a82c2` fsyncs each step. The ckpt phase was rerun on fresh copies of the directory, after the same open
+(275–322 s; 2 versions read whole, 31 by diff; VmHWM 476.7–477.1 MB). Call 0 drops a checkpoint about 1,000
+blocks old; in the live runs its release runs 20 steps between imports of empty blocks.
+
+| run | call | the write | release steps (max) | release in all | nodes released | imports during the release: median / max (n) |
+|---|---:|---:|---:|---:|---:|---|
+| `93a40d0`, back to back | 0 | 0.354 s | 1,399 (61 ms) | 29.8 s | 40,251 | |
+| | 1 | 2.465 s | 1,276 (72 ms) | 21.5 s | 35,829 | |
+| | 2 | 3.442 s | 1 (3 ms) | 0.003 s | 0 | |
+| live, not fsynced | 0 | 0.267 s | 1,399 (28 ms) | 47.2 s | 38,718 | 379 / 905 ms (70) |
+| | 1 | 0.231 s | 1,276 (42 ms) | 17.9 s | 35,829 | |
+| | 2 | 3.159 s | 130 (23 ms) | 1.7 s | 3,359 | |
+| live, fsynced (tree of `22a82c2`) | 0 | 0.358 s | 1,399 (153 ms) | 62.3 s | 38,718 | 137 / 209 ms (70) |
+| | 1 | 0.261 s | 1,276 (70 ms) | 48.8 s | 35,829 | |
+| | 2 | 0.158 s | 130 (60 ms) | 4.8 s | 3,359 | |
+| **`22a82c2`** | 0 | **0.235 s** | 1,399 (50 ms) | 50.0 s | 38,718 | **120 / 155 ms (70)** |
+| | 1 | 0.195 s | 1,276 (180 ms) | 40.3 s | 35,829 | |
+| | 2 | 0.133 s | 130 (41 ms) | 4.0 s | 3,359 | |
+
+- **The stall is gone.** The write that held the consensus thread 10.3–13.7 s now takes 0.13–0.36 s. The release
+  runs as steps of 32–45 ms on average, 180 ms at most, with events handled between them.
+- **Why the steps are fsynced.** A step not fsynced leaves its pages for the next durable commit to write:
+  - the imports during the release took 379 ms median and 905 ms max;
+  - a write right after a release took 2.5–3.4 s (calls 1 and 2 of the back-to-back run, call 2 of the live one);
+  - state.redb grew to 8.59 GB (back to back) and 4.30 GB (live): freed pages are not reused before a durable
+    commit.
+
+  Fsynced, the imports took 120–137 ms median and 155–209 ms max, and the empty-block imports at the end of the
+  grow phase took 179 ms median. The file stayed at 2,156,408,832 B.
+- **Fewer nodes released in the live runs** (38,718 against 40,251): the 70 blocks imported during the release
+  pin new versions, which share some of the nodes the dropped checkpoint held.
+- **Computed for this profile after `93a40d0`** (the file term counts the owed checkpoint and its release rows;
+  A13-DERIVATION §3c): 5,374,647,145 B (5.005 GiB), 6,142,453,880 B required against the 6 GiB budget. The file
+  bound is 3,350,848,730,760 B.
+- `reset_pins` at open (12.0 s at this size) is unchanged: it releases the stopped node's entry pins, not a
+  dropped checkpoint.
 
 ## Computed against measured
 
