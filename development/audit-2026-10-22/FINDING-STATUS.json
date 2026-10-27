@@ -265,6 +265,11 @@
     "run": "palcertcom/pocol 40538722157",
     "commit": "b66ba65",
     "result": "PASS on every step (lp4 205/0 with the four modexp tests, pocold 238/0): the first Windows run of the MODEXP precompile (b46658a); PACER close 10 ms after s_v; evidence/windows-b66ba65/"
+   },
+   {
+    "run": "palcertcom/pocol 40546902481",
+    "commit": "d45dfe2",
+    "result": "PASS on every step (lp4 208/0 with the seven modexp tests, pocold 238/0): the first Windows run of the wide even path (0c2ad75); PACER close 2 ms after s_v; evidence/windows-d45dfe2/"
    }
   ],
   "defectsFoundAndFixed": [

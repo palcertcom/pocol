@@ -381,6 +381,7 @@ Their artifacts are not copied.
 | 40533664638, 40537362826 | 1babbc7, b46658a | cancelled: replaced by newer pushes |
 | 40535963171 | 563a0c3 | PASS on every step (lp4 201/0, pocold 238/0); evidence/windows-563a0c3/ |
 | 40538722157 | b66ba65 | PASS on every step (lp4 205/0 with the four MODEXP tests, pocold 238/0): the first Windows run of the MODEXP precompile (`b46658a`'s one-word path); evidence/windows-b66ba65/ |
+| 40546902481 | d45dfe2 | PASS on every step (lp4 208/0 with the seven MODEXP tests, pocold 238/0): the first Windows run of the wide even path (`0c2ad75`); PACER close 2 ms after s_v; evidence/windows-d45dfe2/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
