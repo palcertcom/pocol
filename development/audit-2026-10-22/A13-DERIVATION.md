@@ -655,6 +655,16 @@ evidence/memory-r14/a13-models.log):
 | everything else | 0.887 | 0.887 |
 | **total** | **7.605** | **5.086** |
 
+**Mutation controls** (evidence/memory-r14/mutants.log): 25 mutants of the new code, 24 killed, one
+equivalent.
+- P6 drops the `min(n·whole, …)` of `chain_versions_bytes`. Every term of `block_bytes` is at most the same
+  term of `version_bytes`, so the `min` never picks its first argument, and no test can tell.
+- N11 (`ROW` 36 → 32 bytes) survived the node_trie tests: their bounds have slack for a row 4 bytes short.
+  It is killed by `state_store::a13_row_is_what_state_redb_keeps_per_node` (`8d80354`), which checks `ROW`
+  plus each node's encoding against the rows state.redb keeps, exactly.
+- P8 (the map slot of a block entry at ×3) survived `network_budget` and is killed by
+  `a13_bound_breakdown`, which pins the devnet total.
+
 **What this does and does not establish:**
 - The store-mode model of the network profile is now under the 5.25 GiB model cap. Its gate (5.81 GiB) is
   under the 6 GiB budget.
