@@ -6,9 +6,12 @@ impl Rng{fn next(&mut self)->u64{self.0^=self.0<<13;self.0^=self.0>>7;self.0^=se
 fn word32(v:u64)->[u8;32]{let mut w=[0u8;32];w[24..].copy_from_slice(&v.to_be_bytes());w}
 fn input(b:&[u8],e:&[u8],m:&[u8])->Vec<u8>{[&word32(b.len() as u64)[..],&word32(e.len() as u64),&word32(m.len() as u64),b,e,m].concat()}
 fn bytes(r:&mut Rng,n:usize)->Vec<u8>{(0..n).map(|_|r.next() as u8).collect()}
-/// A modulus of `len` bytes whose value is one of the shapes the fast path must get right.
+/// A modulus of `len` bytes: a value of all its bytes (more than one word when len > 8, which the fast path must
+/// leave to revm), or one of the one-word shapes the fast path must get right.
 fn modulus(r:&mut Rng,len:usize)->Vec<u8>{
     let mut m=vec![0u8;len];if len==0{return m}
+    // Every fifth modulus uses all its bytes (more than one word when len > 8): revm's path, not the fast one.
+    if r.below(5)==0{let mut b=bytes(r,len);b[0]|=1;return b}
     let v:u64=match r.below(10){0=>0,1=>1,2=>2,3=>1u64<<r.below(64),4=>u64::MAX,5=>3,6=>(r.next()|1)>>r.below(64),
         7=>((r.next()|1)>>r.below(60))<<r.below(5),8=>r.next()&!1,_=>r.next()};
     let k=len.min(8);let be=v.to_be_bytes();m[len-k..].copy_from_slice(&be[8-k..]);m
