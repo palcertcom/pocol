@@ -635,7 +635,7 @@ pocold `node::admit_tx`).
 - Slimmed, offloaded and side metadata: 0.786 → 0.524 GiB.
 
 **Result** (tests/network_budget.rs; the computed bound, not measured RAM;
-evidence/memory-r14-892dca6/a13-models.log):
+evidence/memory-r14/a13-models.log):
 
 | profile | whole-state mode | store mode |
 |---|---:|---:|
@@ -703,6 +703,87 @@ evidence/memory-r14-892dca6/a13-models.log):
     state: max 1,068.5 ms whole-state and 1,045.1 ms store; small store: one outlier at 4,841.8 ms).
     Whether the calibration should include a state-heavy workload is a decision. If it did, this host
     would refuse both modes at t_exec = 1 s.
+
+### 3b. The calibration workload against the slowest blocks (2026-10-27)
+
+`journal_measure::jm_r14_workload_gap` (ignored; evidence/memory-r14/r14-gap-*.log) runs in one
+process:
+- the boot calibration, in memory and through a scratch store;
+- for a whole-state node and a store-mode node, the validate time (median of 3) and the import time of one
+  full-gas block of each kind;
+- each kind first on the devnet genesis state, then after the state is grown to 18,787 accounts and 47,704
+  slots, near the devnet caps (ACCT_CAP 20,000, SLOT_CAP 50,000).
+
+Each kind block is followed by an empty block. It is a measurement on this host (4 vCPU KVM, ext4 on
+virtio), not a bound, and it gates nothing.
+
+**A correction first: the test-only root checks.**
+- pocold's tests build lp4 with the `root-check` feature, and `POCOL_ROOT_CHECK` defaults to on.
+- Under it, every block is also run on the full reference path:
+  - a whole-state copy, with the state root recomputed from every key;
+  - in store mode, whole-state scans of the views.
+- The node binary does not have the feature.
+- The first run left the checks on. Building the grown state took 499 s with them and 8.5 s without.
+- On the grown state, the calibration's own compute block validated in:
+  - 1,475 ms with the checks against 17 ms without (whole-state mode);
+  - 330 ms against 38 ms (store mode).
+- The figures below are with `POCOL_ROOT_CHECK=0`, as C-1 E1 prescribes for timing runs.
+- **The state-heavy times cited in DECISION-PACKAGE.md and §3 above came from journal_measure runs that do
+  not show the setting** (evidence/c1-e4/disk-impact-final.md: up to 1,068.5 / 1,045.1 / 4,841.8 ms). So they
+  likely include this work. They are kept as recorded, and this run supersedes them for the decision.
+
+**Times with the checks off** (ms, validate median / import; store-mode imports before the fix below):
+
+| kind (one full-gas block) | whole-state, genesis | whole-state, grown | store, genesis | store, grown |
+|---|---:|---:|---:|---:|
+| GAS_LIMIT compute loop (the calibration's workload) | 12 / 12 | 17 / 25 | 11 / 28 | 38 / 72 |
+| 380 transfers | 68 / 95 | 76 / 78 | 71 / 132 | 94 / 255 |
+| **MODEXP, 8-byte even modulus, 1,024-byte exponent** | **1,572 / 1,625** | **1,285 / 1,182** | **1,230 / 2,432** | **1,441 / 2,609** |
+| **MODEXP, 8-byte even modulus, 4,096-byte exponent** | **1,417 / 1,535** | **1,261 / 1,397** | **1,381 / 2,569** | **1,315 / 2,535** |
+| BN pairing, one pair | 411 / 279 | 315 / 303 | 277 / 666 | 367 / 621 |
+| keccak over 32 KiB | 240 / 232 | 178 / 188 | 191 / 437 | 192 / 404 |
+| ecrecover | 135 / 192 | 149 / 178 | 159 / 336 | 151 / 304 |
+| cold CALLs | 22 / 25 | 43 / 56 | 68 / 136 | 300 / 465 |
+| CREATE2 loop | 11 / 13 | 18 / 25 | 47 / 112 | 215 / 246 |
+| fresh accounts (value CALLs) | 7 / 8 | 15 / 22 | 20 / 51 | 130 / 202 |
+| fresh SSTOREs, LOG0, memory growth | ≤ 7 / ≤ 14 | ≤ 13 / ≤ 20 | ≤ 18 / ≤ 44 | ≤ 30 / ≤ 72 |
+
+Calibration on the same run: 8–10 ms per phase in memory and 15–19 ms through the store; t_exec is 1,000 ms.
+Repeated runs on this host vary by up to about 2× (the MODEXP block took 2.5 s in the first run).
+
+**The difference between the calibration and the blocks that exceed t_exec.**
+- **The calibration's workload is the cheapest per gas there is:** about 1.5–2.5 ns per gas.
+  - It is one transaction looping JUMPDEST/PUSH/JUMP, so it measures the interpreter's dispatch only.
+  - It reads no state, writes almost none, calls no precompile and verifies one signature.
+- **The only blocks over t_exec are MODEXP with an even modulus:** 160–200 ns per gas, about 100× the
+  calibration.
+  - EIP-2565 prices MODEXP from the input lengths and the exponent's bits.
+  - revm 19.7 takes a slower path for an even modulus, which that pricing does not reflect.
+  - This is D-2: per-gas pricing, not state.
+- **Next per gas:** BN pairing (≈ 40), keccak over large inputs (≈ 22–24), ecrecover (≈ 19), and many
+  transfers (≈ 10–12: a signature per transaction).
+  - All of them are under t_exec here, in both modes and on both states.
+- **State size adds little when the checks are off:**
+  - the compute block goes from 12 to 17 ms in whole-state mode and from 11 to 38 ms in store mode;
+  - state-heavy kinds read accounts from state.redb in store mode, so cold CALLs, CREATE2 and fresh
+    accounts are slower there (130–300 ms on the grown state), but well under t_exec.
+- **So the gap is in what the workload costs per gas, not in the state:** a calibration on the compute loop
+  measures the fastest block and calls it the slowest.
+
+**A store-mode import defect found by this measurement, and fixed.**
+- Store-mode imports took about twice their validation (MODEXP: 2.6 s against 1.4 s).
+- The cause: `Chain::restore_canonical` re-executes every canonical block above the K_hist cut that has no
+  S3a diff, so that the diff links the head to a retained state.
+- A store-mode entry has no diff. Its state is a stored version, and a re-executed one is only rolled and
+  released.
+- So every import that moved the head executed the old head and the new one once more, and committed and
+  released a rolling version.
+- The fix limits that condition to whole-state mode: the diffs are whole-state mode's. Offloaded blocks are
+  still restored in both modes.
+- Test `consensus::store_mode_imports_on_the_head_execute_each_block_once`:
+  - store mode: 9 re-executions in 6 imports before the fix, 0 after;
+  - whole-state mode: 0 before and after.
+- The times after the fix are in evidence/memory-r14/r14-gap-after-fix.log.
 
 ### 3a. EVM execution memory (`resources::memory::execution`, round 2, corrected)
 

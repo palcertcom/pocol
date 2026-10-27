@@ -908,9 +908,12 @@ impl Chain{
         // re-executed too when a retained canonical state lies below it, so that its diff links the head to
         // that state. (After a fork below the cut no retained state lies below the adopted blocks.)
         // C-1 S1: below the resident window a canonical block stays offloaded (its receipts are stored).
+        // C-1 E4: the diffs are whole-state mode's. A stored entry has none and needs none (its state is a stored
+        // version, and a re-executed one is only rolled), so in store mode only offloaded blocks are re-executed:
+        // otherwise every import that moved the head re-executed the old head and the new one.
         let (cut,resident)=(head_h.saturating_sub(self.k_hist),self.history_window.map_or(1,|w|head_h.saturating_sub(w)+1));
         let lowest_kept=(cut+1..=head_h).find(|h|self.canonical_at(*h).map_or(false,|e|!e.pruned));
-        let off=|c:&Chain,h:u64|c.canonical_at(h).map_or(false,|e|(e.offloaded&&h>=resident)||(!c.keep_full_states&&h>cut&&e.diff.is_none()&&lowest_kept.map_or(false,|k|k<h)));
+        let off=|c:&Chain,h:u64|c.canonical_at(h).map_or(false,|e|(e.offloaded&&h>=resident)||(!c.keep_full_states&&c.trie_store.is_none()&&h>cut&&e.diff.is_none()&&lowest_kept.map_or(false,|k|k<h)));
         let window_start=resident.min(cut+1);
         let Some(first)=(from_h.max(1).max(window_start)..=head_h).find(|h|off(self,*h)) else{return Ok(0)};
         let last=(first..=head_h).rev().find(|h|off(self,*h)).unwrap_or(first);

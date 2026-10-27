@@ -982,6 +982,22 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
 /// contract of the head, the contract's entry holds its code hash only; "pending" still answers its code,
 /// and later pool transactions run it. A contract the pool creates keeps its code in the layer's own code,
 /// read back the same way.
+#[test] fn store_mode_imports_on_the_head_execute_each_block_once(){
+    // R14/R19 (2026-10-27): `restore_canonical` re-executed every canonical block above the K_hist cut that had
+    // no S3a diff, so that its diff links the head to a retained state. A store-mode entry has no diff (its state
+    // is a stored version, read in place), so each import that moved the head re-executed the old head and the
+    // new one, and committed a rolling version only to release it. Whole-state mode keeps its diffs.
+    use pocold::node::{Config,Limits,Node};
+    let mut h=net();let g=h.chain.head;let blocks=branch(&mut h,g,6,&[]);
+    for store in [true,false]{
+        let dir=std::env::temp_dir().join(format!("pocold-once-{store}-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);
+        let mut n=Node::open(Config{dir:dir.clone(),name:"once".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:store,..Default::default()}},admitted(&cfg(&["a","b","c"]))).unwrap();
+        for b in &blocks{assert!(n.import(b.clone(),None).unwrap());}
+        assert_eq!(n.chain.head,blocks[5].hash());
+        assert_eq!(n.chain.restore_reexecs,0,"store {store}: no block re-executed on a chain that only grew");
+        drop(n);let _=std::fs::remove_dir_all(&dir);
+    }
+}
 #[test] fn d7_the_store_mode_pool_layer_keeps_no_code_copies(){
     use pocold::node::{Config,Limits,Node};
     let dir=std::env::temp_dir().join(format!("pocold-d7-code-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);

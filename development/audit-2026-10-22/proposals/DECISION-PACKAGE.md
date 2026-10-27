@@ -195,6 +195,14 @@ Measured on 9bd9bc0, not bounds (evidence/d7-bound/README.md):
   - With a state-heavy calibration this host would refuse both modes at t_exec = 1 s. The alternatives are a
     larger local t_exec, which is the P11 value of option (a) above, or keeping the condition
     `timing-not-a-bound` as it is.
+  - **Correction (2026-10-27, A13-DERIVATION §3b).** The state-heavy figures above were very likely measured
+    with pocold's test-only root checks on (`POCOL_ROOT_CHECK` defaults to on in test builds; the runs do not
+    show the setting). Each block was then also run on a whole-state reference path.
+    - With the checks off, state-heavy blocks stay well under t_exec in both modes: at most 0.42 s on a
+      near-cap state, except MODEXP.
+    - The only blocks over 1 s are MODEXP with an even modulus (1.2–1.6 s), which is D-2.
+    - The same measurement found a store-mode import that executed blocks twice; it is fixed.
+    - The decision now reads as row 2 of [OPEN-DECISIONS.md](OPEN-DECISIONS.md), together with D-2 (row 1).
 
 No combination of local, non-normative options reaches 5.25 GiB. The remaining terms are the redb
 allocator over the adversarial file (1.81), the execution's code set (1.125), the EVM execution at 30M gas
