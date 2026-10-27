@@ -953,6 +953,39 @@ Validation:
   They are delivered to the owner in the private review package (`evidence/PRIVATE-REVIEW-PACKAGE.md`
   lists the files and hashes). The public tests do not replace them.
 
+### 3c. A store-mode node at the network's state caps, measured against this bound (2026-10-27)
+
+Evidence: evidence/memory-r14/scale-d30dc71/README.md (`jm_store_scale`, release, ignored). It is a measurement
+on one host under one synthetic workload, not a bound.
+
+- **Profile:** the devnet profile with the network's state caps (ACCT_CAP 10^6, SLOT_CAP 4·10^6, CODE_CAP 1 GiB,
+  TXBYTES_CAP 8 GiB, H_END 129,600), in store mode. **This section's bound** for it: 5,255,359,885 B (4.894 GiB);
+  5,255,514,985 B after `5abbaf3`.
+- **Grown** to 950,000 accounts and 3,800,300 slots:
+  - VmHWM 474 MiB; after an open from a checkpoint 539 MB, and 477 MB after `5abbaf3`;
+  - state.redb 2,056 MiB, with 638 MiB allocated;
+  - the stored versions and checkpoints 0.20 of one version's `version_bytes` at the same counts;
+  - the node cache at NODE_CACHE.
+- **The terms this workload exercises behave as counted:** the stored versions, the node cache, the entries.
+  The largest terms are worst cases it does not reach: the pool at its gas bound, CODE_CAP code sets, a
+  maximal batch, RPC, peers, a deep reorg's abandoned window. So the measurement does not close the bound.
+- **Open time (D-6):**
+  - an open from a checkpoint read each of 33 stored versions whole, 16–17 s each, 783–801 s in all;
+  - `b6d57e8` reads a version whose parent's was read through `NodeTrie::diff` (§ condition
+    `open-replay-transient`), and the open took 262 s;
+  - the touched set it holds is one block's writes at most, as an import's write set, so it adds no term.
+- **Checkpoint stalls (open):**
+  - a checkpoint that drops the oldest one spends 8–11 s releasing what only the dropped one held, and 2.1–2.5 s
+    committing, inside its transaction on the consensus thread.
+  - Releasing them later, in slices, would leave one more checkpoint's versions in the store until done. The
+    file term would then count (KEPT + 2) sets of held versions instead of (KEPT + 1).
+  - Computed for the network profile in store mode (`a13_store_model_at_the_network_profile` with that factor,
+    scratch build):
+    - the largest file would grow from 2.20 to 2.86 TiB;
+    - the redb allocator term from 0.2789 to 0.3626 GiB;
+    - the total from 5.086 to **5.170 GiB** (5.908 GiB required, against the 6 GiB budget and the 5.25 GiB cap).
+  - Not implemented.
+
 ## 4. Assumptions, one by one (round 2)
 
 Each assumption of the bound and of the R14/R18/R19/R21/R25/R26 facts, with what was done:
