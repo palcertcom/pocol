@@ -1057,3 +1057,68 @@ fn jm_r14_import_by_mode(){
         assert!(c.phase_ms.iter().zip(m.phase_ms).all(|(c,m)|*c>=m));
     }
 }
+/// R14/R19: the calibration workload against the blocks that take longest per gas (P2 of the 2026-10-27 request;
+/// a measurement on this host, not a bound, and it gates nothing). In one process: the admission calibration in
+/// memory and through a scratch state store (what a boot measures); then, for a whole-state node and a store-mode
+/// node, the validate time (median of 3) and the import time of one full-gas block of each kind in
+/// JM_GAP_KINDS, built on the devnet genesis state, and again after the state is grown towards the devnet caps
+/// (JM_GAP_SLOTS fresh slots, JM_GAP_ACCTS fresh accounts). Each kind block is followed by an empty block, so the
+/// base fee stays within the senders' fee cap. Prints JM-R14-CAL and JM-R14-GAP lines beside t_exec.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_r14_workload_gap(){
+    use pocol_lp4_execution::admission;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let kinds:Vec<String>=std::env::var("JM_GAP_KINDS").map(|s|s.split(',').map(str::to_string).collect()).unwrap_or_else(|_|["full_gas_compute","full_gas_transfers",
+        "modexp_b8_e1024_m8_even","modexp_b8_e4096_m8_even","bn_pair_1","ecrecover","keccak_32KiB","mem_grow_mstore","sstore_fresh","create2_loop","cold_call","log0_loop","fill_accts"]
+        .map(str::to_string).to_vec());
+    let (slots_t,accts_t)=(env_n("JM_GAP_SLOTS",48_000),env_n("JM_GAP_ACCTS",19_000));
+    let t_exec_ms=u64::from(pocold::single_host_local().t_exec)*1000;
+    // The calibration a boot measures, for the profile these blocks run on.
+    let c=cfg();let d=devnet::build(&c).unwrap();
+    let m=admission::measure(&d.spec_bytes,&d.alloc,1).unwrap();
+    let sd=tmp("gap-cal");std::fs::create_dir_all(&sd).unwrap();let st=pocold::state_store::StateStore::open(&sd).unwrap();
+    let s=admission::measure_on_store(&d.spec_bytes,&d.alloc,1,&st).unwrap();drop(st);let _=std::fs::remove_dir_all(&sd);
+    println!("JM-R14-CAL {}",serde_json::json!({"workload":"GAS_LIMIT compute loop (admission::measure)","memoryPhaseMs":m.phase_ms,"storePhaseMs":s.phase_ms,"tExecMs":t_exec_ms}));
+    // The blocks: genesis-state kind blocks, the growth, then the kind blocks again.
+    let alice=devnet::account_key("alice");let mut h=net();let mut nonce=0u64;
+    let p0=fallback(&h,h.chain.head,0);import(&mut h,&p0);let mut seq:Vec<(Option<(String,String)>,Block)>=vec![(None,p0)];
+    let tk=pack_transfers(&h,h.chain.head,&alice).len() as u64;
+    let fill_slots=sstore_fresh_loop();
+    let sys:Vec<Address>=(0..5).map(pocol_lp4_execution::apply::program_address).collect();
+    let live=|h:&Net|{let st=&h.chain.head().state;let (mut sl,mut ac)=(0u64,0u64);
+        for (a,x) in &st.accounts{if sys.contains(a)||x.info().is_none(){continue}ac+=1;sl+=x.storage.values().filter(|v|!v.is_zero()).count() as u64;}(sl,ac)};
+    let kind_round=|h:&mut Net,nonce:&mut u64,seq:&mut Vec<(Option<(String,String)>,Block)>,state:&str,fills:&mut u64|{
+        for k in &kinds{
+            let b=if k=="fill_accts"{*fills+=1;let b=signed(h,h.chain.head,Body{txs:vec![deploy(&alice,*nonce,FULL_GAS,1_000_000,fill_accts_init((*fills+1)<<40))],evidence:vec![]});*nonce+=1;b}
+                else{kind_block(h,h.chain.head,k,&alice,nonce,tk,0)};
+            import(h,&b);seq.push((Some((state.to_string(),k.clone())),b));
+            let f=fallback(h,h.chain.head,0);import(h,&f);seq.push((None,f));
+        }
+    };
+    let mut fills=0u64;
+    kind_round(&mut h,&mut nonce,&mut seq,"genesis",&mut fills);
+    let t0=Instant::now();
+    loop{
+        let (sl,ac)=live(&h);let fill_s=sl+400<=slots_t;let fill_a=!fill_s&&ac+400<=accts_t;if !fill_s&&!fill_a{break}
+        let init=if fill_s{fill_slots.clone()}else{fills+=1;fill_accts_init((fills+1)<<40)};
+        let b=signed(&h,h.chain.head,Body{txs:vec![deploy(&alice,nonce,FULL_GAS,1_000_000,init)],evidence:vec![]});nonce+=1;import(&mut h,&b);seq.push((None,b));
+        let f=fallback(&h,h.chain.head,0);import(&mut h,&f);seq.push((None,f));
+    }
+    let (gs,ga)=live(&h);println!("JM-R14-GROWTH {}",serde_json::json!({"liveUserSlots":gs,"liveUserAccounts":ga,"height":h.chain.head().height,"buildSeconds":t0.elapsed().as_secs_f64()}));
+    kind_round(&mut h,&mut nonce,&mut seq,"grown",&mut fills);
+    for mode in ["whole-state","store"]{
+        let dir=tmp(&format!("gap-{mode}"));
+        let mut n=Node::open(Config{dir:dir.clone(),name:"jm".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:mode=="store",..Default::default()}},admitted()).unwrap();
+        for (tag,b) in &seq{
+            if let Some((state,kind))=tag{
+                let (min,med,gas)=validate_ms(&n.chain,b,3);
+                let t=Instant::now();n.import(b.clone(),None).unwrap();let im=t.elapsed().as_secs_f64()*1e3;
+                assert_eq!(n.chain.head,b.hash(),"{kind}: imported as the head");
+                println!("JM-R14-GAP {}",serde_json::json!({"mode":mode,"state":state,"kind":kind,"txs":b.body.txs.len(),"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"importMs":im,
+                    "nsPerGas":if gas>0{med*1e6/gas as f64}else{0.0},"tExecMs":t_exec_ms,"overTExec":med.max(im)/t_exec_ms as f64}));
+            }else{n.import(b.clone(),None).unwrap();}
+        }
+        drop(n);let _=std::fs::remove_dir_all(&dir);
+    }
+}

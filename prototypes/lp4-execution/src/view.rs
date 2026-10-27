@@ -108,8 +108,26 @@ impl Layer{
     /// Account entries and slot entries held (A13, D-7: a created account keeps every slot it loaded).
     pub fn entries(&self)->(usize,usize){(self.top.accounts.len(),self.top.accounts.values().map(|x|x.storage.len()).sum())}
     pub fn is_empty(&self)->bool{self.top.accounts.is_empty()&&self.top.contracts.is_empty()&&!self.hashes_set}
+    /// Entries that hold a copy of nonempty code (A13, D-7: none after `drop_code_copies`).
+    pub fn code_copies(&self)->usize{self.top.accounts.values().filter(|x|x.info.code.as_ref().map_or(false,|c|!c.is_empty())).count()}
+    /// D-7 (A13 store mode): the entries of `addresses` keep their code hash and not their code. A store-mode
+    /// account brings a copy of its code from the store (`TrieState::info`), which an entry would hold for
+    /// as long as the layer is kept (the pool's pending state). Every entry's code can be read again: an
+    /// entry made from the base's account has the base's code; a commit or `insert_info` puts code the base
+    /// lacks in the layer's own code (`contract_of`); and a base never loses code (a store keeps code for
+    /// good, a whole state is not changed under the layer). `account` and `merge` read it back.
+    pub fn drop_code_copies(&mut self,addresses:&[Address]){
+        for a in addresses{if let Some(x)=self.top.accounts.get_mut(a){if x.info.code_hash!=KECCAK_EMPTY&&!x.info.code_hash.is_zero(){x.info.code=None;}}}
+    }
+    /// An entry's info as its account reads: with its code, from the layer's code or the base's when the
+    /// entry holds the hash only (`drop_code_copies`).
+    fn info(&self,base:&(impl View+?Sized),info:&AccountInfo)->AccountInfo{
+        let mut i=info.clone();
+        if i.code.is_none()&&i.code_hash!=KECCAK_EMPTY&&!i.code_hash.is_zero(){i.code=self.contract(base,&i.code_hash);}
+        i
+    }
     fn account(&self,base:&(impl View+?Sized),a:&Address)->Option<Acc>{
-        match self.top.accounts.get(a){Some(x)=>(!self.deleted.contains(a)).then(||Acc{info:x.info.clone(),state:x.account_state.clone()}),None=>base.account(a)}
+        match self.top.accounts.get(a){Some(x)=>(!self.deleted.contains(a)).then(||Acc{info:self.info(base,&x.info),state:x.account_state.clone()}),None=>base.account(a)}
     }
     fn slot(&self,base:&(impl View+?Sized),a:&Address,k:&U256)->U256{
         if let Some(x)=self.top.accounts.get(a){if let Some(v)=x.storage.get(k){return *v}if self.cleared.contains(a){return U256::ZERO}}
@@ -126,7 +144,7 @@ impl Layer{
     }
     fn each_account(&self,base:&(impl View+?Sized),f:&mut dyn FnMut(&Address,Acc)){
         base.each_account(&mut |a,x|{if !self.top.accounts.contains_key(a){f(a,x)}});
-        for (a,x) in &self.top.accounts{if !self.deleted.contains(a){f(a,Acc{info:x.info.clone(),state:x.account_state.clone()})}}
+        for (a,x) in &self.top.accounts{if !self.deleted.contains(a){f(a,Acc{info:self.info(base,&x.info),state:x.account_state.clone()})}}
     }
 }
 macro_rules! layered_view{($t:ident)=>{impl<B:View+?Sized> View for $t<'_,B>{
@@ -183,8 +201,8 @@ impl Overlay<'_,InMemoryDB>{
         let mut full=self.base.clone();let l=&self.l;
         for (a,x) in &l.top.accounts{
             if l.deleted.contains(a){full.accounts.remove(a);continue}
-            let e=full.accounts.entry(*a).or_default();
-            e.info=x.info.clone();e.account_state=x.account_state.clone();
+            let info=l.info(self.base,&x.info);let e=full.accounts.entry(*a).or_default();
+            e.info=info;e.account_state=x.account_state.clone();
             if l.cleared.contains(a){e.storage=x.storage.clone();}else{e.storage.extend(x.storage.iter().map(|(k,v)|(*k,*v)));}
             if l.retain.contains(a){e.storage.retain(|_,v|*v!=U256::ZERO);if e.storage.capacity()>2*e.storage.len()+8{e.storage.shrink_to_fit()}}
         }

@@ -89,7 +89,7 @@ pub fn snapshot_of(c:&Chain,b:&Binding)->Result<Snapshot,String>{
         evicted_total:c.evicted_total,unslimmed:c.unslimmed.clone(),evicted_order:c.evicted_order.iter().copied().collect(),protect:protect_of(c),entries})
 }
 fn protect_of(c:&Chain)->Option<Vec<[u8;32]>>{c.replaying.then(||{let mut v:Vec<[u8;32]>=c.protect.iter().copied().collect();v.sort();v})}
-fn sorted(c:&Chain)->Vec<&Entry>{let mut es:Vec<&Entry>=c.blocks.values().collect();es.sort_by_key(|e|(e.height,e.hash));es}
+fn sorted(c:&Chain)->Vec<&Entry>{let mut es:Vec<&Entry>=c.blocks.values().map(|e|&**e).collect();es.sort_by_key(|e|(e.height,e.hash));es}
 fn rec_of(e:&Entry)->Result<Rec,String>{
     if !e.state.accounts.is_empty()||e.diff.is_some()||e.trie.is_some(){return Err(format!("entry {} holds more than a stored version",B256::from(e.hash)))}
     let mut f=0u16;
@@ -187,7 +187,7 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
         if r.flags&F_STORED!=0&&r.flags&F_WORLD==0{return Err(why("a stored empty state"))}
         let e=if i==0{
             if r.hash!=gh||r.body_off.is_some(){return Err(why("the first entry is not genesis"))}
-            let mut g=c.blocks[&gh].clone();
+            let mut g=(*c.blocks[&gh]).clone();
             if g.summary.as_deref()!=r.summary.as_ref(){return Err(why("genesis summary"))}
             // Genesis's version is the one `enable_store` just built from the admitted genesis state.
             if r.root!=g.stored.as_ref().and_then(|p|p.trie.world){if r.root.is_some(){return Err(why("genesis root"))}g.stored=None;}
@@ -244,7 +244,7 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
     let evicted:std::collections::HashSet<[u8;32]>=s.evicted_order.iter().copied().collect();
     if evicted.len()!=s.evicted_order.len(){return Err("evicted hashes repeat".into())}
     if s.unslimmed.iter().chain(&s.evicted_order).any(|h|*h==[0u8;32]){return Err("a zero hash".into())}
-    c.blocks=blocks;c.head=s.head;c.rebuild_canonical();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
+    c.blocks=blocks.into_iter().map(|(h,e)|(h,Box::new(e))).collect();c.head=s.head;c.rebuild_canonical();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
     c.unslimmed=s.unslimmed.clone();c.evicted_order=s.evicted_order.iter().copied().collect();c.evicted=evicted;
     Ok(())
 }

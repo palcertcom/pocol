@@ -139,6 +139,46 @@ fn node_ref(n:&Node,d:usize)->Ref{
     }
 }
 
+/// A13 (C-1 E4.5): the largest serialization of each node kind (`Node::encode`): an account leaf (its
+/// storage trie's top included), a slot leaf, a branch without its children, and one child of a branch.
+pub const ACCT_LEAF_ENC:u128=1+32+1+8+32+32+32+1+32+20;
+pub const SLOT_LEAF_ENC:u128=1+32+1+32+32;
+pub const BRANCH_ENC:u128=1+1+2+32+1+33;
+pub const KID_ENC:u128=32+1+33;
+/// What a stored row adds to a node's serialization: its 32-byte id and its 4-byte reference count
+/// (pocold `state_store`).
+pub const ROW:u128=32+4;
+/// Branches on the path from a trie's top to a leaf, at most: one at each of the 64 nibbles of a key.
+pub const PATH_BRANCHES:u128=64;
+/// A13: the most bytes a store keeps for one version of a state of `accounts` accounts and `slots` nonzero
+/// slots, every key and value. A leaf per account and per slot; at most one branch per leaf (every branch
+/// has two children or more: `build` and `finish` make no other); at most one child per node, since each
+/// node but the world trie's top hangs from one branch (a storage trie's top hangs from its account's leaf,
+/// which ACCT_LEAF_ENC counts). A node that occurs more than once is stored once.
+pub fn version_bytes(accounts:u128,slots:u128)->Option<u128>{
+    let keys=accounts.checked_add(slots)?;
+    [accounts.checked_mul(ACCT_LEAF_ENC+ROW)?,slots.checked_mul(SLOT_LEAF_ENC+ROW)?,keys.checked_mul(BRANCH_ENC+ROW)?,keys.checked_mul(2*KID_ENC)?].iter().try_fold(0u128,|a,b|a.checked_add(*b))
+}
+/// A13: the most nodes an update puts in its batch, (branches, leaves, children of those branches), when it
+/// changes `accounts` accounts and `slots` slots and its child version holds at most `child_accounts`
+/// accounts and `child_slots` slots. Every node an update puts in the batch is a node of the child: the top
+/// of the subtree it returns, or below one. Branches: PATH_BRANCHES on each changed key's path, and at most
+/// one per leaf of the child. Leaves: each changed key's, and the leaf it displaces (`update` rebuilds a
+/// leaf's place with the old leaf in it, unchanged), and at most the child's. Children: at most 16 a branch,
+/// and at most one per node of the child.
+pub fn batch_nodes(accounts:u128,slots:u128,child_accounts:u128,child_slots:u128)->Option<(u128,u128,u128)>{
+    let (keys,child)=(accounts.checked_add(slots)?,child_accounts.checked_add(child_slots)?);
+    let branches=keys.checked_mul(PATH_BRANCHES)?.min(child);
+    Some((branches,keys.checked_mul(2)?.min(child),branches.checked_mul(16)?.min(child.checked_mul(2)?)))
+}
+/// A13: the most bytes a block's version adds to a store that holds its parent's: the batch's nodes that are
+/// not stored yet, which are among its branches and the changed keys' leaves (a displaced leaf is the
+/// parent's, unchanged), with their children. Arguments as `batch_nodes`.
+pub fn block_bytes(accounts:u128,slots:u128,child_accounts:u128,child_slots:u128)->Option<u128>{
+    let (branches,_,kids)=batch_nodes(accounts,slots,child_accounts,child_slots)?;
+    [accounts.min(child_accounts).checked_mul(ACCT_LEAF_ENC+ROW)?,slots.min(child_slots).checked_mul(SLOT_LEAF_ENC+ROW)?,branches.checked_mul(BRANCH_ENC+ROW)?,kids.checked_mul(KID_ENC)?].iter().try_fold(0u128,|a,b|a.checked_add(*b))
+}
+
 /// Where nodes and code are read from. (C-1 E5: a leaf keeps its key's preimage.)
 pub trait NodeStore{
     fn node(&self,id:&Id)->Option<Arc<Node>>;

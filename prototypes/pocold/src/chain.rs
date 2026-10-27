@@ -264,7 +264,9 @@ fn blk<T>(s:impl Into<String>)->Result<T,Reject>{Err(Reject::Block(s.into()))}
 
 pub struct Chain{
     pub spec:Spec,
-    pub blocks:HashMap<[u8;32],Entry>,
+    /// Boxed (A13): a table keeps spare buckets, up to 24/7 per entry while it grows, and an entry inline
+    /// would make each a whole Entry.
+    pub blocks:HashMap<[u8;32],Box<Entry>>,
     pub head:[u8;32],
     pub canonical:Vec<[u8;32]>,
     pub(crate) next_seq:u64,
@@ -327,7 +329,7 @@ impl Chain{
             receipts:vec![],tx_hashes:vec![],cum_txs:0,cum_tx_bytes:0,cum_log_bytes:0,pruned:false,full:true,diff:None,slim:false,drawn:Address::ZERO,ranges:vec![],body_off:None,offloaded:false,
             trie:Some(pocol_lp4_execution::state_trie::StateTrie::build(spec.genesis().state())),
             summary:Some(Box::new(pocol_lp4_execution::state_summary::Summary::scan(spec.genesis().state(),cp.B_code_max))),stored:None};
-        let mut blocks=HashMap::new();blocks.insert(gh,genesis);
+        let mut blocks=HashMap::new();blocks.insert(gh,Box::new(genesis));
         let k_hist=u64::from(spec.local().k_hist);
         Self{spec,blocks,head:gh,canonical:vec![gh],next_seq:1,k_hist,rebuilds:0,materializations:Default::default(),keep_full_states:false,slim_depth:None,slim_cursor:1,unslimmed:Vec::new(),incremental_root:true,trie_derived:Default::default(),trie_built:Default::default(),trie_refused:Default::default(),history_window:None,history_cursor:1,restore_reexecs:0,invalid:HashMap::new(),invalid_order:Default::default(),seen_templates:BTreeMap::new(),evicted:Default::default(),evicted_order:Default::default(),evicted_total:0,
             r_keep:R_KEEP,side_cap:SIDE_BLOCKS_MAX,protect:Default::default(),replaying:false,trie_store:None}
@@ -368,8 +370,8 @@ impl Chain{
         }
         Ok(next)
     }
-    pub fn get(&self,h:&[u8;32])->Option<&Entry>{self.blocks.get(h)}
-    pub fn canonical_at(&self,height:u64)->Option<&Entry>{self.canonical.get(height as usize).and_then(|h|self.blocks.get(h))}
+    pub fn get(&self,h:&[u8;32])->Option<&Entry>{self.blocks.get(h).map(|e|&**e)}
+    pub fn canonical_at(&self,height:u64)->Option<&Entry>{self.canonical.get(height as usize).and_then(|h|self.get(h))}
 
     // ---------------- child context ----------------
     pub fn target_for_child(&self,p:&Entry)->Result<Fixed,Reject>{
@@ -392,7 +394,7 @@ impl Chain{
     }
     pub fn ancestors(&self,p:&Entry)->Vec<(u64,B256)>{
         let mut out=Vec::new();let mut cur=Some(p);
-        while let Some(e)=cur{ if p.height+1-e.height>256{break} out.push((e.height,B256::from(e.hash))); cur=e.parent.and_then(|x|self.blocks.get(&x)); }
+        while let Some(e)=cur{ if p.height+1-e.height>256{break} out.push((e.height,B256::from(e.hash))); cur=e.parent.and_then(|x|self.get(&x)); }
         out
     }
     pub fn child_ctx(&self,p:&Entry,attempt:u32)->Result<ChildCtx,Reject>{
@@ -619,7 +621,7 @@ impl Chain{
         }
         let _=cp;Ok(out)
     }
-    fn ancestor_at<'a>(&'a self,p:&'a Entry,height:u64)->Option<&'a Entry>{let mut cur=Some(p);while let Some(e)=cur{if e.height==height{return Some(e)}if e.height<height{return None}cur=e.parent.and_then(|x|self.blocks.get(&x));}None}
+    fn ancestor_at<'a>(&'a self,p:&'a Entry,height:u64)->Option<&'a Entry>{let mut cur=Some(p);while let Some(e)=cur{if e.height==height{return Some(e)}if e.height<height{return None}cur=e.parent.and_then(|x|self.get(&x));}None}
     fn evidence_type1(&self,p:&Entry,a:&crate::rlp::Item<'_>,b:&crate::rlp::Item<'_>,h_incl:u64)->Result<(Address,Option<u64>),Reject>{
         // ST = [UT, sig]; reuse the strict header codec by wrapping ST in a header shell.
         let parse=|it:&crate::rlp::Item<'_>|->Result<(Header,Vec<u8>),Reject>{
@@ -666,14 +668,14 @@ impl Chain{
                 if owner.0.0!=a1{return blk("ev2 signer not owner(nonce)")}
                 return Ok((addr(&a1),Some(e.height)));
             }
-            cur=e.parent.and_then(|x|self.blocks.get(&x));
+            cur=e.parent.and_then(|x|self.get(&x));
         }
         blk("ev2 no ancestor with TemplateID")
     }
 
     // ---------------- import and D133 fork choice ----------------
     pub fn insert(&mut self,mut e:Entry)->bool{
-        e.import_seq=self.next_seq;self.next_seq+=1;let hash=e.hash;self.blocks.insert(hash,e);
+        e.import_seq=self.next_seq;self.next_seq+=1;let hash=e.hash;self.blocks.insert(hash,Box::new(e));
         let better=self.better(&hash,&self.head.clone());
         if better{self.head=hash;self.rebuild_canonical();}
         better
@@ -830,7 +832,7 @@ impl Chain{
     /// A copy of a stored block with its full state (materialized when it is not held full). A pruned
     /// block is copied as it is (its state is empty).
     pub fn full_entry(&self,h:&[u8;32])->Option<Entry>{
-        let e=self.blocks.get(h)?;if e.full||e.pruned{return Some(e.clone())}
+        let e=self.get(h)?;if e.full||e.pruned{return Some(e.clone())}
         let mut x=e.meta_clone();x.pruned=false;x.state=self.materialize(h)?.into();x.full=true;Some(x)
     }
     /// C-1 E4: a stored block's state read in place (`view`), by hash.

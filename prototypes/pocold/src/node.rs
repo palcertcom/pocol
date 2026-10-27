@@ -737,8 +737,10 @@ impl Node{
         let before=pocol_lp4_execution::code_caps::code_of(&view,&touched);
         // C-1 E3: committed into the layer (no early return between taking it and putting it back). The
         // code drop of a whole pending state is not needed: the layer holds only the code written here.
+        // D-7: nor does an entry keep the copy of its code the transaction read (A13 store mode).
         let mut ov=pocol_lp4_execution::view::Overlay::from_layer(&base,std::mem::take(&mut self.pool.pending));
         user_phase::commit_tx_on(&mut ov,r.state,true);let after=pocol_lp4_execution::code_caps::code_of(&ov,&touched);self.pool.pending=ov.into_layer();
+        self.pool.pending.drop_code_copies(&touched);
         // The running total follows the commit; any failure (unreachable for an engine result) falls back to full checks.
         self.pool.code_total=match(self.pool.code_total,before,after){
             (Some(t),Ok(b),Ok(a))=>t.checked_sub(b).and_then(|t|t.checked_add(a)),_=>None};

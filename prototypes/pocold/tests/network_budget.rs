@@ -37,8 +37,8 @@ fn print(tag:&str,b:&pocold::resources::Bound){
         "partsTiB":{"versionsNodes":p[0] as f64/(1u128<<40) as f64,"preimages":p[1] as f64/(1u128<<40) as f64,"code":p[2] as f64/(1u128<<40) as f64,"checkpoints":p[3] as f64/(1u128<<40) as f64},"factor":pocold::resources::STATE_FILE_FACTOR.to_string()}));
 }
 /// D-7 (A13-DERIVATION §2d): the pool's terms follow its gas bound. The layer holds what that gas can write
-/// (`layer_writes`); its code is, in whole-state mode, its creations, and in store mode also its touched accounts'
-/// code, at most CODE_CAP (which binds at the devnet profile, not at the network one). A bound past POOL_MAX_TXS ×
+/// (`layer_writes`); its code is its creations in both modes (in store mode its entries keep no copy of the code
+/// they were read with, `Layer::drop_code_copies`). A bound past POOL_MAX_TXS ×
 /// GAS_LIMIT counts as that (the count bound binds first). The block overlay is the layer of 5/4 GAS_LIMIT with
 /// the SYSTEM phase's accounts and keys.
 #[test] fn d7_a13_pool_terms_follow_the_gas_bound(){
@@ -55,15 +55,13 @@ fn print(tag:&str,b:&pocold::resources::Bound){
             assert_eq!(item(&b,"diffs/the pool's pending layer"),r::layer_bytes(pa,ps).unwrap());
             let spent=gl*5/4;let (oa,os)=r::layer_writes(spent).unwrap();
             assert_eq!(item(&b,"diffs/the overlay of the block being applied"),r::layer_bytes(oa+u128::from(cp.SYS_ACCT_BLOCK_MAX)+1,os+u128::from(cp.SYS_KEYS_BLOCK_MAX)).unwrap());
-            let code=if store{code_bytes((pa*u128::from(cp.B_code_max)).min(u128::from(cp.CODE_CAP))+g/r::CODE_DEPOSIT,pa+g/r::CREATE_GAS)}else{code_bytes(g/r::CODE_DEPOSIT,g/r::CREATE_GAS)};
-            assert_eq!(item(&b,"code/the pool's pending layer"),code.unwrap(),"store {store}");
+            assert_eq!(item(&b,"code/the pool's pending layer"),code_bytes(g/r::CODE_DEPOSIT,g/r::CREATE_GAS).unwrap(),"store {store}");
             let b2=at(Some(8*cp.GAS_LIMIT));assert!(item(&b2,"diffs/the pool's pending layer")>item(&b,"diffs/the pool's pending layer")&&b2.total>b.total,"a larger bound counts more");
             assert_eq!(at(Some(u64::MAX)).total,at(Some(POOL_MAX_TXS as u64*cp.GAS_LIMIT)).total,"capped by the count bound");
             let body=u128::from(cp.BODY_MAX);assert_eq!(item(&b,"queues/an abandoned block's transactions"),body+body/r::MIN_TX_BYTES*80,"one abandoned body in revalidation");
             let e=r::check(cp,32,l.side_max,&Limits{state_store:store,pool_gas_max:Some(cp.GAS_LIMIT-1),..Default::default()},2).unwrap_err();assert!(e.contains("below GAS_LIMIT"),"{e}");
         }
     }
-    assert!(32768*17935>u128::from(dev.CODE_CAP)&&32768*17935<u128::from(net.CODE_CAP),"CODE_CAP binds the store-mode pool code at the devnet profile only");
 }
 #[test] fn a13_model_at_the_network_profile(){
     let d=devnet::build(&network()).expect("network-profile candidate");let cp=d.profile.cp().clone();
@@ -82,4 +80,33 @@ fn print(tag:&str,b:&pocold::resources::Bound){
     let (m,s)=(pocold::node::Limits::default(),pocold::node::Limits{state_store:true,..Default::default()});
     let bm=pocold::resources::check(&cp,l.k_hist,l.side_max,&m,0).expect("whole-state mode boots");let bs=pocold::resources::check(&cp,l.k_hist,l.side_max,&s,0).expect("store mode boots");
     print("A13-DEVNET-MEM",&bm);print("A13-DEVNET-STORE",&bs);
+}
+
+/// C-1 E4.5 (2026-10-27): state.redb's versions and a block's batch, re-derived from node_trie's bounds. The file
+/// counts the versions held at once (genesis; the K_hist window and the block being imported; the abandoned window
+/// until settle; side_max side states; a rolling re-execution and the version it commits next), once for the
+/// entries and once for each kept checkpoint. A run of n consecutive versions is the oldest whole and n − 1 blocks'
+/// additions, at most n whole versions.
+#[test] fn a13_store_file_and_batch_terms_follow_the_node_trie_bounds(){
+    use pocol_lp4_execution::node_trie::{batch_nodes,block_bytes,version_bytes,Id,Node};use pocold::resources as r;
+    let net=devnet::build(&network()).unwrap().profile.cp().clone();
+    let dev=devnet::build(&DevnetConfig::new(777910,1_700_000_000,&["a","b","c"])).unwrap().profile.cp().clone();let l=pocold::single_host_local();
+    for cp in [&net,&dev]{
+        let (ka,ks)=(u128::from(cp.ACCT_CAP)+5,u128::from(cp.SLOT_CAP)+u128::from(cp.SYS_SLOT_MAX));assert_eq!(r::state_keys(cp),Some((ka,ks)));
+        let (wa,ws)=r::block_writes(cp).unwrap();let (whole,add)=(version_bytes(ka,ks).unwrap(),block_bytes(wa,ws,ka,ks).unwrap());
+        let run=|n:u128|(n*whole).min(whole+(n-1)*add);
+        for n in [1u128,2,5,33]{assert_eq!(r::chain_versions_bytes(cp,n),Some(run(n)),"a run of {n}");}
+        let k=32u128;let sm=u128::from(l.side_max);
+        let held=whole+run(k+1)+run(k)+sm*whole+run(2);assert_eq!(r::held_versions_bytes(cp,32,l.side_max),Some(held));
+        let lim=pocold::node::Limits{state_store:true,..Default::default()};let p=r::state_file_parts(cp,32,l.side_max,&lim).unwrap();
+        assert_eq!(p[0],r::STATE_FILE_FACTOR*(pocold::checkpoint::KEPT as u128+1)*held,"the entries' versions and each kept checkpoint's");
+        // The batch: its branches and leaves behind their Arcs and map slots, every branch's children, the write set.
+        let (b,lv,kids)=batch_nodes(wa,ws,ka,ks).unwrap();let slot=|n:usize|pocol_lp4_execution::resources::memory::entry_bytes(n as u128);
+        let node=(2*std::mem::size_of::<usize>()+std::mem::size_of::<Node>()) as u128+slot(std::mem::size_of::<(Id,std::sync::Arc<Node>)>());
+        let ws_bytes=wa*slot(std::mem::size_of::<(revm::primitives::Address,Option<Vec<revm::primitives::U256>>)>())+ws*pocol_lp4_execution::resources::memory::VEC*32;
+        assert_eq!(r::batch_max(cp),Some((b+lv)*node+kids*std::mem::size_of::<(Id,pocol_lp4_execution::state_trie::Ref)>() as u128+ws_bytes));
+        assert!(b<=64*(wa+ws)&&lv<=2*(wa+ws)&&kids<=16*b,"within the paths");
+    }
+    // At the network profile the window's run is the oldest version and its blocks' additions, not K_hist + 1 whole versions.
+    assert!(r::chain_versions_bytes(&net,33).unwrap()<33*r::chain_versions_bytes(&net,1).unwrap());
 }

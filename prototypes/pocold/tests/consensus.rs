@@ -977,6 +977,42 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     let _=std::fs::remove_dir_all(&dir);
 }
 
+/// D-7 (A13 store mode): the pool's layer keeps no copy of the code of the accounts it touched. A store-mode
+/// node reads an account's code from state.redb with the account; after a pool transaction calls a
+/// contract of the head, the contract's entry holds its code hash only; "pending" still answers its code,
+/// and later pool transactions run it. A contract the pool creates keeps its code in the layer's own code,
+/// read back the same way.
+#[test] fn d7_the_store_mode_pool_layer_keeps_no_code_copies(){
+    use pocold::node::{Config,Limits,Node};
+    let dir=std::env::temp_dir().join(format!("pocold-d7-code-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);
+    let mut n=Node::open(Config{dir:dir.clone(),name:"d7c".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:true,..Default::default()}},admitted(&cfg(&["a","b","c"]))).unwrap();
+    // A counter: slot 0 += 1, and the new value returned.
+    let runtime=[0x60,0x00,0x54,0x60,0x01,0x01,0x80,0x60,0x00,0x55,0x60,0x00,0x52,0x60,0x20,0x60,0x00,0xf3];
+    let mut init=vec![0x71];init.extend(runtime);init.extend([0x60,0x00,0x52,0x60,0x12,0x60,0x0e,0xf3]);
+    let alice=devnet::account_key("alice");
+    let tx=|nonce:u64,to:Option<Address>,data:Vec<u8>|Tx{chain_id:777910,nonce,max_priority:U256::from(1_000_000_000u64),max_fee:U256::from(100_000_000_000u64),gas:200_000,to,value:U256::ZERO,data:data.into()}.sign_1559(&alice);
+    let (head_c,pool_c)=(alice.address().create(0),alice.address().create(2));
+    let mut h=net();let g=h.chain.head;let b=branch(&mut h,g,1,&[Body{txs:vec![tx(0,None,init.clone())],evidence:vec![]}]);
+    assert!(n.import(b[0].clone(),None).unwrap());
+    n.submit_tx(tx(1,Some(head_c),vec![]),false).unwrap();n.submit_tx(tx(2,None,init),false).unwrap();
+    let hex=|b:&[u8]|format!("0x{}",b.iter().map(|x|format!("{x:02x}")).collect::<String>());let word=|v:u8|{let mut w=[0u8;32];w[31]=v;hex(&w)};
+    let at=|n:&mut Node,m:&str,p:serde_json::Value|rpc_local(n,m,p);
+    let s=|a:Address|format!("{a:#x}");
+    // Positive controls: the layer wrote the head's contract (its slot) and holds the pool's creation.
+    assert_eq!(at(&mut n,"eth_getStorageAt",json!([s(head_c),"0x0","pending"])),json!(word(1)),"the pool's call wrote the head's contract");
+    assert_eq!(at(&mut n,"eth_getStorageAt",json!([s(head_c),"0x0","latest"])),json!(word(0)));
+    assert!(n.pool_layer_entries().0>=3,"entries for alice and both contracts");
+    assert_eq!(n.pool_view().layer.code_copies(),0,"no entry keeps a copy of its code");
+    for c in [head_c,pool_c]{assert_eq!(at(&mut n,"eth_getCode",json!([s(c),"pending"])),json!(hex(&runtime)),"pending code of {c}");}
+    // Pool transactions run both contracts from entries that hold their code hash only.
+    n.submit_tx(tx(3,Some(head_c),vec![]),false).unwrap();n.submit_tx(tx(4,Some(pool_c),vec![]),false).unwrap();
+    for (c,v) in [(head_c,2),(pool_c,1)]{assert_eq!(at(&mut n,"eth_getStorageAt",json!([s(c),"0x0","pending"])),json!(word(v)),"the pool ran the code of {c}");}
+    assert_eq!(n.pool_view().layer.code_copies(),0);
+    assert_eq!(at(&mut n,"eth_getCode",json!([s(head_c),"latest"])),json!(hex(&runtime)));
+    assert_eq!(at(&mut n,"eth_getCode",json!([s(pool_c),"latest"])),json!("0x"),"the pool's creation is pending only");
+    let _=std::fs::remove_dir_all(&dir);
+}
+
 // ---------------- review finding (A05): range sync continues after a truncated response ----------------
 #[test] fn range_sync_reaches_the_peer_head_through_truncated_responses(){
     use pocold::node::{Config,Limits,Node};
@@ -1121,10 +1157,11 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     // stored version, 8 B, -> 3,187,591,348 B; C-1 E5: entries without a state share one empty state,
     // -> 3,154,465,633 B; D-7: the pool's layer from its gas bound in place of a whole state, its code from its
     // creations, the block overlay with the slots a created account keeps, one abandoned body in revalidation,
-    // -> 3,287,955,262 B). Some terms are type
+    // -> 3,287,955,262 B; 2026-10-27: the chain's entries boxed in their map, each counted as its slot at the
+    // table's growth peak and the Entry once, -> 3,233,597,728 B). Some terms are type
     // sizes (Entry, Block), so the exact value is pinned for the target the evidence is produced on; every
     // target checks that it boots within the budget with its reserve.
-    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_287_955_262,"the A13 model total changed");}
+    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_233_597_728,"the A13 model total changed");}
     // C-1 S1: a window of the whole chain is the model before S1, plus history.redb's cache and allocator.
     let all=pocold::resources::derive(admitted(&cfg(&["a","b","c"])).cp(),l.k_hist,l.side_max,&Limits{history_window:Some(u64::MAX),..Default::default()},2).unwrap();
     // (C-1 E5: and the one empty state entries share, which each entry counted before.)
