@@ -235,6 +235,11 @@
     "run": "palcertcom/pocol 40516277272, 40516762578",
     "commit": "8d80354, 799e809",
     "result": "cancelled: replaced by a newer push (the workflow keeps one pending run per PR)"
+   },
+   {
+    "run": "palcertcom/pocol 40518244446",
+    "commit": "69d5794",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0, both new tests included; node code as 2839f2a); evidence/windows-69d5794/"
    }
   ],
   "defectsFoundAndFixed": [
