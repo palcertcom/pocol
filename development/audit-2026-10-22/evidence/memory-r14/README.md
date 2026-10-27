@@ -2,7 +2,12 @@
 
 Branch `claude/memory-r14-followup` (palcertcom/pocol#2, draft), from the merged `13f1eac`. Commits:
 - `892dca6`: the four A13 reductions and their tests;
-- `2839f2a`: the store-mode import fix, the R14/R19 measurement and its documents.
+- `2839f2a`: the store-mode import fix, the R14/R19 measurement and its documents;
+- `8d80354`: the `ROW` test (kills N11) and the mutation evidence;
+- `69d5794`: the P6 premise test and the proof below;
+- `073923f`: the e2e_integrated race fix (test only).
+
+The other commits add documents and evidence only.
 
 Host: 4 vCPU KVM, ext4 on virtio; rustc 1.99.1; release builds. Nothing else ran during the timing runs.
 The mutation runs used a separate worktree.
@@ -20,6 +25,9 @@ The mutation runs used a separate worktree.
 | r14-gap-after-fix.log | the same on `2839f2a` (the restore fix) | 113 s; store-mode imports equal their validation |
 | d2-gate.log | admission of the pocold devnet and a P11-shaped devnet at t_exec = 1 and 2 s (a throwaway test, not committed) | at 2 s: R2, R3 and R7 fail; with Δ_rel and Γ raised, R3 and R7 still fail; admitted only with dFbWait and D_att (CP) raised |
 | mutants.log | mutation controls (the runner is kept outside the repository) | 24 of 25 killed, 1 equivalent; see below |
+| accept-8d80354/ | e2e in both modes on `8d80354`: devnet, site, browser, integrated ×2, boot timing | all PASS except integrated whole-state run 1 (FAIL 1 of 20, a test race); see below |
+| witnesses-8d80354.log | the security witnesses on `8d80354` (their programs are kept outside the repository) | 9 NOT_REPRODUCED, controls OK |
+| integrated-race/ | the failing integrated run's log, the three node logs, the analysis | a race in the test, fixed in `073923f` |
 
 ## What the measurement shows (A13-DERIVATION §3b)
 
@@ -89,6 +97,36 @@ The outputs are therefore the same for every input the types allow, and no test 
 `min` is kept as a clamp. `node_trie::tests::a_blocks_addition_is_at_most_a_whole_version` pins the premise
 of point 1: 200,000 random and edge counts up to u64::MAX + 2^32, with n = 2^32. A change to `block_bytes`
 that broke the premise would fail that test, so the clamp cannot start to bind unnoticed.
+
+## Acceptance on 8d80354 (accept-8d80354/, witnesses-8d80354.log)
+
+Run in a separate worktree, on local nodes, local RPC and a test Chrome profile only. `HEAD` records the
+prototypes tree `3a037212` and the two usual symlinks (target, node_modules). The node code is `2839f2a`'s;
+`8d80354` adds tests only.
+
+| step | whole-state mode | store mode (`--state-store`) |
+|---|---|---|
+| pocold-bins, ext-build | built | (same binaries) |
+| jm-boot-timing (`jm_r14_boot_timing_by_mode`, 10 runs) | in memory 8–18 ms per phase | through the store 11–24 ms; t_exec 1,000 ms |
+| e2e_devnet | **PASS 44/44** | **PASS 44/44** |
+| e2e_site | **PASS 21/21** | **PASS 21/21** |
+| e2e_browser (Chrome) | **PASS 80/80** | **PASS 80/80** |
+| e2e_integrated | run 1 **FAIL 1 of 20**; run 2 **PASS 20/20** | **PASS 20/20**, two runs |
+
+- **Security witnesses** (rust and live parts): A01, A02 (R9, R13, SYS_SLOT_MAX), A03, A04, A05, A10 and A11
+  are **NOT_REPRODUCED**, and every positive control is OK.
+- The extension witnesses (A06–A09, A12, A14) were not rerun. The extension's source is unchanged since
+  `8584283`, where they ran: `git diff 8584283 073923f` outside its tests is empty.
+- **The integrated failure** is a race in the test, not a node defect (integrated-race/README.md).
+  - After the heal, c's returned transactions, which carried the v2 publication, were included at heights
+    76–77.
+  - That happened between the Chrome reads, which showed v1 on all three nodes, and the version read.
+  - The fixed test (`073923f`) was rerun three times per mode (accept-int-073923f/).
+- In every integrated run, node c offered all 7 transactions it returned after the heal, and none was left
+  unoffered.
+- **The boot calibration's pass does not close the R14/R19 gap.** It times the cheapest block per gas. A
+  full block of MODEXP with an even modulus is still 1.2–1.6 s on this host (A13-DERIVATION §3b, D-2,
+  OPEN-DECISIONS rows 1–2).
 
 ## Not established here
 
