@@ -926,7 +926,9 @@ normative changes.
   - A node's stored count is the stored nodes naming it, plus its pins, plus what it owes.
   - The next checkpoint's write first finishes what is still owed, so at most one dropped checkpoint is
     owed at a time. A13's file term counts that set (`state_file_parts`).
-  - A release step is not fsynced: a crash loses the step, never part of it, and the work stays owed.
+  - A release step is fsynced: a crash loses the step, never part of it, and the work stays owed. Unsynced
+    steps were measured too: each block's durable commit then wrote their pages, and imports during a release
+    took up to 905 ms, against 209 ms with fsynced steps.
 - When it is written: every `checkpoint_every` = 1024 journal records (`Limits`, local), by a running
   node and by replay. Replay first makes its history.redb writes durable.
 

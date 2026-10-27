@@ -190,8 +190,7 @@ fn dir(tag:&str)->std::path::PathBuf{let d=std::env::temp_dir().join(format!("po
 /// `release_step` works them off a few at a time. After every step the counts recount (what is owed
 /// included) and every pinned version reads as its state. When nothing is owed, the store holds exactly
 /// what the pins reach, as a release inside the write left it. The next write finishes what is still owed
-/// before it owes more; a store that owes work reopens owing it; a step that is never made durable is
-/// simply owed again.
+/// before it owes more; a store that owes work reopens owing it, with its counts whole.
 #[test] fn a_dropped_checkpoint_is_released_in_steps_and_ends_as_a_release_in_the_write(){
     let c=codes();let mut r=Rng(0xd6);let d=dir("owed");let pool=800;
     let mut db=state(&mut r,200,&c);let mut versions:Vec<(Option<Id>,InMemoryDB)>=vec![];
@@ -236,9 +235,9 @@ fn dir(tag:&str)->std::path::PathBuf{let d=std::env::temp_dir().join(format!("po
         let c2_nodes=reach(&s,&roots(&versions[20..25]));
         assert!(s.owed_refs().unwrap().iter().all(|(id,_)|c2_nodes.contains(id)),"only the checkpoint c4's write dropped is owed");
         assert!(owed>0,"positive control: c1's drop was still owed at c4's write");
-        // A step never made durable: the store is closed before any durable commit follows it.
-        let durable_owed=s.owed_refs().unwrap();s.release_step(2).unwrap();
-        (steps,durable_owed.len())
+        // One more step, then the store is closed with work still owed.
+        s.release_step(2).unwrap();let owed=s.owed_refs().unwrap();
+        (steps,owed.len())
     };
     let s=StateStore::open(&d).unwrap();assert!(!s.rebuilt);
     assert!(s.release_pending(),"a store that owes work reopens owing it");assert!(owed_at_reopen>0);

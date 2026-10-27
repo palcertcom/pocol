@@ -9,7 +9,7 @@
 //!
 //! D-6 (2026-10-27): a checkpoint's write drops the oldest checkpoint's pins without releasing its nodes in
 //! the same transaction. It owes each of its roots one reference in the `release` table, and
-//! `release_step` works that list off in bounded transactions between the node's events. At the network's
+//! `release_step` works that list off in bounded, durable transactions between the node's events. At the network's
 //! state caps the release took 8-11 s on the consensus thread (evidence/memory-r14/scale-d30dc71). At most one
 //! dropped checkpoint is owed at a time: the next checkpoint's write finishes what is left first, and open
 //! finishes it before anything else.
@@ -261,15 +261,17 @@ impl StateStore{
     }
     /// D-6: whether a dropped checkpoint's nodes are still owed (`release_step` has work).
     pub fn release_pending(&self)->bool{self.owed.load(Ordering::SeqCst)}
-    /// D-6: works off at most `budget` owed references in one transaction, not fsynced (as an entry's
-    /// release: a crash loses the step, never part of it, and the work is still owed). Each takes one
-    /// reference off a node's count and, when none is left, deletes the node and owes one for each of its
-    /// children. Returns the references worked off. A step that fails marks the store damaged (the next open
-    /// rebuilds it) and nothing more is tried.
+    /// D-6: works off at most `budget` owed references in one durable transaction (a crash loses the step,
+    /// never part of it, and the work is still owed). Each takes one reference off a node's count and, when
+    /// none is left, deletes the node and owes one for each of its children. Returns the references worked
+    /// off. A step that fails marks the store damaged (the next open rebuilds it) and nothing more is tried.
+    /// Fsynced, unlike an entry's release: measured at the network's state caps, steps left unsynced made
+    /// each block's durable commit write their pages (imports during a release up to 905 ms, against 209 ms
+    /// with each step fsynced; evidence/memory-r14/scale-d30dc71).
     pub fn release_step(&self,budget:usize)->Result<usize,StateStoreError>{
         let mut gone=Vec::new();
         let n=self.guard(||{
-            let mut w=self.db.begin_write().map_err(err)?;w.set_durability(Durability::None);let n;
+            let w=self.db.begin_write().map_err(err)?;let n;
             {let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
              n=work(&mut t,&mut o,budget.max(1),&mut gone)?;if o.is_empty().map_err(err)?{self.owed.store(false,Ordering::SeqCst);}}
             crate::crash_point("release-step");

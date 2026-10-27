@@ -1230,7 +1230,8 @@ fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_0
 /// - "ckpt": opens it, times the checkpoint snapshot's encoding, then three checkpoints in a row with the store's
 ///   node count before and after each (what each one's release of the oldest checkpoint frees). Since D-6's
 ///   deferred release (2026-10-27) each checkpoint's time is its write alone; the release steps that follow
-///   are timed apart (their count, the longest, and their total).
+///   are timed apart (their count, the longest, and their total). The first checkpoint's release runs between
+///   imports of empty blocks, as a live node's would, and those imports are timed.
 /// Checkpoints are every JM_SCALE_CKPT journal records (the node's default, checkpoint::EVERY = 1,024).
 /// Every phase also prints JM-SCALE-A13: the bound `resources::check` computes for this profile at boot (the
 /// caps', not the live state's) and state.redb's computed file bound. The process holds the node only (the node
@@ -1320,11 +1321,21 @@ fn jm_store_scale(){
                 // D-6 (2026-10-27): the dropped checkpoint's nodes are owed; release steps work them off, as the
                 // event loop runs them between events.
                 let (s0,r0)=(n.stats.release_steps,n.stats.released_refs);n.stats.release_step_max_ms=0;let t=Instant::now();
-                while n.release_pending(){n.release_step();}
+                // The first checkpoint's release runs as a live node runs it: release steps (JM_SCALE_STEPS_PER_IMPORT,
+                // 20) between imports of empty blocks, whose times are recorded (each import's durable commit also
+                // writes the pages the steps before it left). The others run their steps back to back.
+                let mut imports=vec![];let per=env_n("JM_SCALE_STEPS_PER_IMPORT",20);
+                while n.release_pending(){
+                    if i==0{for _ in 0..per{if n.release_pending(){n.release_step();}}
+                        let b=fallback_on(&n.chain,&keys,n.chain.head,0);let t=Instant::now();n.import(b,None).unwrap();imports.push(t.elapsed().as_secs_f64()*1e3);}
+                    else{n.release_step();}
+                }
                 let release_ms=t.elapsed().as_secs_f64()*1e3;
+                let imp=if imports.is_empty(){serde_json::json!(null)}else{let mut v=imports.clone();v.sort_by(|a,b|a.partial_cmp(b).unwrap());
+                    serde_json::json!({"n":v.len(),"medianMs":v[v.len()/2],"maxMs":v[v.len()-1],"stepsBetween":per})};
                 let after=n.state_store().unwrap().node_count().unwrap();
                 calls.push(serde_json::json!({"call":i,"ms":ms,"nodesBefore":before,"nodesAfter":after,"nodesReleased":before.saturating_sub(after),
-                    "releaseSteps":n.stats.release_steps-s0,"releaseStepMaxMs":n.stats.release_step_max_ms,"releaseMs":release_ms,"refsReleased":n.stats.released_refs-r0}));
+                    "releaseSteps":n.stats.release_steps-s0,"releaseStepMaxMs":n.stats.release_step_max_ms,"releaseMs":release_ms,"refsReleased":n.stats.released_refs-r0,"importsDuringRelease":imp}));
             }
             figures(&n,"after three checkpoints",serde_json::json!({"encodeMs":encode_ms,"snapshotBytes":bytes.len(),"roots":roots.len(),"entries":n.chain.blocks.len(),"checkpointNow":calls}));
         }
