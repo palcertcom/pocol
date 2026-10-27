@@ -89,8 +89,8 @@ async function main() {
     // Fork choice (D133) compares total work, not height. The taller branch can be the lighter one: in
     // accept-int-073923f store run 2, ab was at 60 with work 0x245033 and c at 55 with 0x27aa15 (c's uninterrupted
     // blocks had raised its difficulty, ab's early fallback blocks had eased its own), so a and b adopted c's branch.
-    const work = async (i) => BigInt((await rpc(8540 + i, 'pocol_status')).head.totalWork);
-    await wait(async () => { const [ha, , hc] = await heights(); return ha > hc + 4 && (await work(0)) > (await work(2)); }, 240000, 'majority branch heavier');
+    const totalWork = async (i) => BigInt((await rpc(8540 + i, 'pocol_status')).head.totalWork);
+    await wait(async () => { const [ha, , hc] = await heights(); return ha > hc + 4 && (await totalWork(0)) > (await totalWork(2)); }, 240000, 'majority branch heavier');
     const cTip = (await rpc(8542, 'pocol_status')).head, aTip = (await rpc(8540, 'pocol_status')).head;
     ok('partition: branches diverged', cTip.hash !== aTip.hash, `c=${cTip.height} ab=${aTip.height} base=${base}`);
     // ---- heal ----
