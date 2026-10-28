@@ -406,6 +406,8 @@ Their artifacts are not copied.
 | 40711254355 | 719da04 (e2e_integrated test) | **PASS** |
 | 40725594174 | 051dfaa | cancelled (replaced by the next push) |
 | 40728995184 | 5cd7d43 (87d2392 + 5cd7d43: the side set, tries cleared where given) | **PASS**: the side set's node code on Windows |
+| 40737560413 | b375d4c (50f9207: REC_MIN, e2e_browser harness) | **PASS** |
+| 40744711022 | 1bba829 (the second review's F-A, F-B, F-C) | **PASS** (conclusion success; artifact not copied) |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
