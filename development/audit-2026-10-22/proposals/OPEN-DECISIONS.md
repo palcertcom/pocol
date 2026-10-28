@@ -1,5 +1,11 @@
 # Open decisions (2026-10-27)
 
+**2026-10-28: the full table is [DECISION-TABLE-2026-10-28.md](DECISION-TABLE-2026-10-28.md)** (Arabic:
+[DECISION-TABLE-2026-10-28-AR.md](DECISION-TABLE-2026-10-28-AR.md)). It gives every open decision below, each consensus
+proposal and each sub-decision (N1–N8, P1–P4) with its current behaviour, proposed change, alternatives, effect on
+security, performance and compatibility, recommendation, and exactly what work it blocks. This file is kept as it
+was on 2026-10-27; where the two differ, the 2026-10-28 table is the current one. Nothing in either is approved.
+
 Every decision below waits for the owner. None is adopted; the code runs each one's current behaviour
 (the "now" column). Approved earlier, for reference: D-1 (a) storage conformance S1–S5, D-6 (a) local
 checkpoints with the history the spec requires, D-7 at 4 × GAS_LIMIT. Detail:
