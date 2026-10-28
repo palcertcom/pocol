@@ -834,6 +834,7 @@ impl Chain{
     fn shed_full_states(&mut self){
         // C-1 E4: every retained state is a stored version, read in place: nothing to shed or materialize.
         if self.keep_full_states||self.trie_store.is_some(){return}
+        debug_assert!(self.prune_holds(),"shed starts at prune_cursor: every canonical block below it is pruned");
         let head=self.head;
         // Canonical blocks below prune_cursor are pruned (`prune_holds`): none is full.
         let canon:Vec<[u8;32]>=self.canonical.iter().skip(self.prune_cursor.max(1) as usize).copied().filter(|h|*h!=head).collect();

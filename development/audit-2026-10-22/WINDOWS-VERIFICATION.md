@@ -399,6 +399,13 @@ Their artifacts are not copied.
 | 40608577150 | 260d021 (evidence only; node code as e453851) | PASS (conclusion success; artifact not copied) |
 | 40662875687 | 22543cf (round 4; node code as 3adc356: Reject::Local, streamed journal open) | PASS on every step (lp4 211/0, pocold 250/0, **pocold-io-fault 106/0**, the new step with the deterministic I/O fault tests); client window 0.509 s, pacer lateness 4 ms; evidence/windows-22543cf/ |
 | 40680583220 | 1074b47 (round 4: checkpoint open, the review's fixes) | **FAIL, one test:** pocold 252/1, `a_store_mode_boot_is_timed_through_a_scratch_state_store_in_its_data_directory`: the whole-state boot timing gate refused (R14, R19) with no times recorded; pocold-io-fault 110/0. Cause not established; the test now prints the times with a refusal. evidence/windows-1074b47/ |
+| 40683933211 | eed8309 (documents and logs) | **PASS**; the 1074b47 failure did not recur, which does not explain it |
+| 40688067254 | 748b16d (a refused admission prints a calibration run's times) | **PASS** |
+| 40697654215 | a136f27 (JM_HEND_LOG) | **PASS** |
+| 40706925600 | b4f13f3 (eb85bed: canonical path from the fork point) | **PASS** |
+| 40711254355 | 719da04 (e2e_integrated test) | **PASS** |
+| 40725594174 | 051dfaa | cancelled (replaced by the next push) |
+| 40728995184 | 5cd7d43 (87d2392 + 5cd7d43: the side set, tries cleared where given) | **PASS**: the side set's node code on Windows |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the

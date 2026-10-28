@@ -81,7 +81,7 @@ pub mod io_fault{
     pub(crate) struct Faulty{inner:redb::backends::FileBackend,file:PathBuf}
     impl redb::StorageBackend for Faulty{
         fn len(&self)->std::io::Result<u64>{self.inner.len()}
-        fn read(&self,offset:u64,len:usize)->std::io::Result<Vec<u8>>{self.inner.read(offset,len)}
+        fn read(&self,offset:u64,len:usize)->std::io::Result<Vec<u8>>{take(&self.file,Op::Read)?;self.inner.read(offset,len)}
         fn set_len(&self,len:u64)->std::io::Result<()>{self.inner.set_len(len)}
         fn sync_data(&self,eventual:bool)->std::io::Result<()>{take(&self.file,Op::Sync)?;self.inner.sync_data(eventual)}
         fn write(&self,offset:u64,data:&[u8])->std::io::Result<()>{take(&self.file,Op::Write)?;self.inner.write(offset,data)}

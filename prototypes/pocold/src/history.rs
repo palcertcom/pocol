@@ -37,6 +37,10 @@ pub struct History{db:Database,path:PathBuf,dir:PathBuf,pub rebuilt:bool,damaged
 #[derive(Debug)]
 pub struct HistoryError(pub String);
 fn err(e:impl std::fmt::Display)->HistoryError{HistoryError(e.to_string())}
+/// A redb error, marked when it is an I/O failure (as `state_store` marks them): open keeps the file then.
+const IO:&str="I/O failure: ";
+fn rerr(e:impl Into<redb::Error>)->HistoryError{let e:redb::Error=e.into();if crate::state_store::disk_failed(&e){HistoryError(format!("{IO}{e}"))}else{HistoryError(e.to_string())}}
+impl HistoryError{pub fn is_io(&self)->bool{self.0.starts_with(IO)}}
 fn seal(block:&[u8;32],rec:&[u8])->B256{let mut b=Vec::with_capacity(32+rec.len());b.extend_from_slice(block);b.extend_from_slice(rec);keccak256(&b)}
 
 impl History{
@@ -49,13 +53,15 @@ impl History{
     pub fn open(dir:&Path)->Result<Self,HistoryError>{
         let path=dir.join(FILE);let marker=dir.join(DAMAGED);
         let create=|p:&Path|->Result<Database,HistoryError>{
-            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(HISTORY_CACHE);b.create(p)})).map_err(|_|HistoryError("redb panicked at open".into()))?.map_err(err)?;
+            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(HISTORY_CACHE);b.create(p)})).map_err(|_|HistoryError("redb panicked at open".into()))?.map_err(rerr)?;
             // Ok(false): redb found damage and repaired what it could; the store is not trusted.
-            match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}_=>return Err(HistoryError("integrity check failed".into()))}
+            match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}Ok(Err(e))=>{let e=rerr(e);if e.is_io(){return Err(e)}return Err(HistoryError("integrity check failed".into()))}_=>return Err(HistoryError("integrity check failed".into()))}
             catch_unwind(AssertUnwindSafe(||->Result<(),HistoryError>{let w=db.begin_write().map_err(err)?;{w.open_table(RECEIPTS).map_err(err)?;w.open_table(TXIDX).map_err(err)?;w.open_table(RANGES).map_err(err)?;}w.commit().map_err(err)}))
                 .map_err(|_|HistoryError("redb panicked at open".into()))??;
             Ok(db)};
         let first=if marker.exists(){Err(HistoryError("marked damaged".into()))}else{create(&path)};
+        // An I/O failure keeps the file and fails the open (review 2026-10-28, F-A); only a damaged store is set aside.
+        if let Err(e)=&first{if e.is_io(){return Err(HistoryError(e.0.clone()))}}
         let (db,rebuilt)=match first{
             Ok(db)=>(db,false),
             Err(_)=>{let aside=dir.join(format!("{FILE}.aside"));let _=std::fs::remove_file(&aside);let _=std::fs::rename(&path,&aside);

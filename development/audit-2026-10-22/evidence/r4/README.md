@@ -135,6 +135,7 @@ per-allocation headers). The network profile in store mode, computed:
 |---|---:|---:|---|
 | store mode, on 1074b47 | 5,581,321,485 B (5.198 GiB) | 6,378,653,126 B | passes, 0.052 GiB under 5.25 |
 | store mode, with the side set below (+294,912 B: 6,144 side entries × 48 B) | 5,581,616,397 B (5.198 GiB) | 6,378,990,168 B | passes, 0.052 GiB under 5.25 |
+| store mode, the side set as its own term after review F-C ((side entries + r_keep) × 76 B) | 5,581,944,077 B (5.199 GiB) | 6,379,364,660 B | passes, 0.051 GiB under 5.25 |
 | store mode at the O2 caps (decision row 3) | 5,617,166,961 B (5.231 GiB) | 6,419,619,384 B | passes, 0.019 GiB under 5.25 |
 | whole-state mode (the default) | 26,819,799,029 B | 30,651,198,891 B | refused |
 
@@ -178,7 +179,7 @@ reorg of R_keep depth at the caps, Windows.
     old set) and S10 (shed skips the lowest kept height) survived, and were killed after a test was added for
     each. S11 was shown equivalent (shed runs after settle has pruned or made full every side state), and the
     redundant code was removed.
-  - Not yet measured: an H_END run on the commit with the side set.
+  - Measured since: an H_END run on b375d4c, which has the side set (below).
 - The first reopen at H_END did not use its checkpoints and replayed from genesis. Why is not known: its
   node log was off, and the store was started over. The second run (eb85bed, node log on) was stopped at h ≈ 114,901 by
   the session's 2-hour limit on a background command ([hend/grow2-eb85bed.log](hend/grow2-eb85bed.log)). Its reopen
@@ -197,6 +198,12 @@ reorg of R_keep depth at the caps, Windows.
   without the fix.
 - **That run on 5cd7d43:** grow to H_END in 2,184 s, median import 10–12 ms in every segment (165 ms at the end of
   the first run). VmHWM 601 MB at H_END (486 MB on the first run, which held fewer side and trie entries).
+- **Verified at H_END on b375d4c** (the `REC_MIN` fix, 50f9207, plus evidence only;
+  [hend/hend-b375d4c-grow-and-reopen.log](hend/hend-b375d4c-grow-and-reopen.log)): grow to 129,600 in 2,304 s, median
+  import 10–15 ms in every segment, VmHWM 600 MB. The reopen **resumed from checkpoint 129,024** and replayed 576
+  records: open 13.3 s (journal 1.9 s, restore 5.4 s, replay 5.5 s), VmHWM after open 391 MB. On 5cd7d43 the same
+  reopen was refused and replayed from genesis (about 1,272 s). Files at H_END: journal 260.6 MB (2,011 B per empty
+  record), state.redb 101.5 MB, history.redb 81.7 MB. Empty blocks only: not a worst load.
 
 ## 6. Boot and performance
 

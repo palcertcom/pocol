@@ -171,8 +171,8 @@ pub fn roots(s:&Snapshot)->Vec<Id>{s.entries.iter().filter_map(|e|e.root).collec
 /// What marks a restore error that is the node's own storage failing, not the checkpoint (2026-10-28).
 pub const LOCAL:&str="local storage failure: ";
 pub trait Source{
-    /// Ok(None): no record of the bound prefix there, or one that fails its check (a refusal). Err: the journal
-    /// could not be read (a local failure, never a refusal: `LOCAL`).
+    /// Ok(None): no record of the bound prefix there (a refusal). Err: the journal could not be read, or a record
+    /// open verified no longer verifies (a local failure, never a refusal: `LOCAL`).
     fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>;
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>;
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>;
@@ -282,7 +282,9 @@ impl Source for JournalSource<'_>{
     /// Read back from the journal file and verified again (open no longer holds the payloads).
     fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>{
         if self.by_off.get(&off).filter(|i|**i<self.records).is_none(){return Ok(None)}
-        match self.journal.payload_at(off){Ok(p)=>Ok(Some(p)),Err(crate::store::StoreError::Corrupt(_))=>Ok(None),Err(e)=>Err(format!("{LOCAL}the journal at offset {off}: {e:?}"))}}
+        // Every offset here was verified by open's first pass, so a record that no longer verifies is the local file
+        // changing (review 2026-10-28, F-B): a local failure, never a refusal that would drop the checkpoint.
+        match self.journal.payload_at(off){Ok(p)=>Ok(Some(p)),Err(e)=>Err(format!("{LOCAL}the journal at offset {off}: {e:?}"))}}
     // history.redb that cannot be read is a local failure (review F2), never a refusal of the checkpoint.
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}

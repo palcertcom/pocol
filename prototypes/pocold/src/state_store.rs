@@ -65,7 +65,12 @@ pub struct StateStoreError(pub String);
 /// What marks a redb I/O failure in an error's text (`StateStoreError::is_io`).
 const IO:&str="I/O failure: ";
 fn err(e:impl Into<redb::Error>)->StateStoreError{let e:redb::Error=e.into();
-    match e{redb::Error::Io(_)|redb::Error::PreviousIo=>StateStoreError(format!("{IO}{e}")),e=>StateStoreError(e.to_string())}}
+    if disk_failed(&e){StateStoreError(format!("{IO}{e}"))}else{StateStoreError(e.to_string())}}
+/// Whether a redb error is the disk failing. redb also reports a file that is not a database it can read (a wrong
+/// magic number) as `Io(InvalidData)`, and a short file as `UnexpectedEof`: those are damage, not a failing disk
+/// (2026-10-28: with them counted as I/O, an open of a damaged history.redb failed instead of rebuilding it).
+pub(crate) fn disk_failed(e:&redb::Error)->bool{
+    match e{redb::Error::Io(x)=>!matches!(x.kind(),std::io::ErrorKind::InvalidData|std::io::ErrorKind::UnexpectedEof),redb::Error::PreviousIo=>true,_=>false}}
 impl StateStoreError{
     /// redb could not read or write the file (2026-10-28): the node's own storage failed. Never a verdict on what
     /// the store holds; redb refuses the store until it is opened again (`StateStore::io_failed`).
@@ -110,7 +115,8 @@ impl StateStore{
         let create=|p:&Path|->Result<Database,StateStoreError>{
             let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(STATE_PAGE_CACHE);
                 #[cfg(feature="io-fault")] let db=crate::io_fault::create(&b,p);#[cfg(not(feature="io-fault"))] let db=b.create(p);db})).map_err(|_|StateStoreError("redb panicked at open".into()))?.map_err(err)?;
-            match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}_=>return Err(StateStoreError("integrity check failed".into()))}
+            // An I/O error is the disk failing, not the store: it is returned (review 2026-10-28, F-A), not set aside.
+            match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}Ok(Err(e))=>{let e=err(e);if e.is_io(){return Err(e)}return Err(StateStoreError("integrity check failed".into()))}_=>return Err(StateStoreError("integrity check failed".into()))}
             catch_unwind(AssertUnwindSafe(||->Result<(),StateStoreError>{let w=db.begin_write().map_err(err)?;
                 {let nodes=w.open_table(NODES).map_err(err)?;w.open_table(CODE).map_err(err)?;w.open_table(PINS).map_err(err)?;
                  w.open_table(CKPT).map_err(err)?;w.open_table(CKPT_ROOTS).map_err(err)?;w.open_table(RELEASE).map_err(err)?;let mut m=w.open_table(META).map_err(err)?;
@@ -120,6 +126,9 @@ impl StateStore{
                 w.commit().map_err(err)})).map_err(|_|StateStoreError("redb panicked at open".into()))??;
             Ok(db)};
         let first=if marker.exists(){Err(StateStoreError("marked damaged".into()))}else{create(&path)};
+        // A store that cannot be read because the disk fails is kept for the next open: the open fails (the node's own
+        // storage failing, as e028068 makes every other I/O failure). Only a store found damaged is set aside.
+        if let Err(e)=&first{if e.is_io(){return Err(StateStoreError(e.0.clone()))}}
         let (db,rebuilt)=match first{
             Ok(db)=>(db,false),
             Err(_)=>{let aside=dir.join(format!("{FILE}.aside"));let _=std::fs::remove_file(&aside);let _=std::fs::rename(&path,&aside);

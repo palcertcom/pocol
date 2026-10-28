@@ -1241,10 +1241,11 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     // creations, the block overlay with the slots a created account keeps, one abandoned body in revalidation,
     // -> 3,287,955,262 B; 2026-10-27: the chain's entries boxed in their map, each counted as its slot at the
     // table's growth peak and the Entry once, -> 3,233,597,728 B; 2026-10-28: each side entry's slot in the chain's
-    // side set, 32 + 16 B, -> 3,233,892,640 B). Some terms are type
+    // side set, 32 + 16 B, -> 3,233,892,640 B; the independent review's F-C, the set as its own term: (side entries
+    // + r_keep) × 76 B, -> 3,234,220,320 B). Some terms are type
     // sizes (Entry, Block), so the exact value is pinned for the target the evidence is produced on; every
     // target checks that it boots within the budget with its reserve.
-    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_233_892_640,"the A13 model total changed");}
+    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_234_220_320,"the A13 model total changed");}
     // C-1 S1: a window of the whole chain is the model before S1, plus history.redb's cache and allocator.
     let all=pocold::resources::derive(admitted(&cfg(&["a","b","c"])).cp(),l.k_hist,l.side_max,&Limits{history_window:Some(u64::MAX),..Default::default()},2).unwrap();
     // (C-1 E5: and the one empty state entries share, which each entry counted before.)
@@ -2800,7 +2801,10 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
 #[test] fn e4_an_open_that_cannot_read_its_storage_fails_and_keeps_the_store(){
     use pocold::io_fault::{self,Op};
     let blocks=e44_blocks();let every=7u64;
-    for (what,arm) in [("journal read",0u8),("state.redb write while pinning a stored version",1),("state.redb write while dropping a refused checkpoint",2)]{
+    for (what,arm) in [("journal read",0u8),("state.redb write while pinning a stored version",1),("state.redb write while dropping a refused checkpoint",2),
+        // Review 2026-10-28 (F-A): a state.redb read that fails when the store is opened. Before, the store was set aside
+        // as if damaged (state.redb.aside), its checkpoints lost, and the node replayed from genesis.
+        ("state.redb read at open",3)]{
         let d=e44_dir(&format!("open-io-{arm}"));
         {let mut n=reopen(&e44_conf(&d,every));for b in blocks{n.import(b.clone(),None).unwrap();}}
         let ck=||{let st=pocold::state_store::StateStore::open(&d).unwrap();st.checkpoints().unwrap().iter().map(|c|c.0).collect::<Vec<_>>()};
@@ -2813,13 +2817,13 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
              let (seq,bytes)={let (k,v)=t.last().unwrap().unwrap();(k.value(),v.value().to_vec())};let mut s=pocold::checkpoint::decode(&bytes).unwrap();
              s.binding.hash=[1;32];t.insert(seq,pocold::checkpoint::encode_snapshot(&s).as_slice()).unwrap();}
             w.commit().unwrap();}
-        match arm{0=>io_fault::arm_now(&jr,Op::Read),1=>io_fault::arm_at(&st,"state-txn",Op::Write,2),_=>io_fault::arm(&st,"drop-checkpoint",Op::Write)}
+        match arm{0=>io_fault::arm_now(&jr,Op::Read),1=>io_fault::arm_at(&st,"state-txn",Op::Write,2),2=>io_fault::arm(&st,"drop-checkpoint",Op::Write),_=>io_fault::arm_now(&st,Op::Read)}
         let r=pocold::node::Node::open(e44_conf(&d,every)(),admitted(&cfg(&["a","b","c"])));
         let fired=if arm==0{io_fault::fired(&jr)}else{io_fault::fired(&st)};io_fault::disarm(&jr);io_fault::disarm(&st);
         assert!(!fired.is_empty(),"{what}: positive control: the fault fired");
         let e=match r{Err(e)=>e,Ok(n)=>panic!("{what}: the open succeeded (resumed from {:?}, {} refused)",n.stats.resumed_from,n.stats.checkpoints_refused)};
-        assert!(e.contains(if arm==2{"dropping checkpoint"}else{"could not be read"}),"{what}: {e}");
-        assert!(st.exists(),"{what}: state.redb is kept");assert_eq!(ck(),before,"{what}: no checkpoint is dropped");
+        assert!(e.contains(match arm{2=>"dropping checkpoint",3=>"I/O failure",_=>"could not be read"}),"{what}: {e}");
+        assert!(st.exists(),"{what}: state.redb is kept");assert!(!d.join(format!("{}.aside",pocold::state_store::FILE)).exists(),"{what}: nothing is set aside");assert_eq!(ck(),before,"{what}: no checkpoint is dropped");
         let (mut g,gd)=e44_reference(&d,&format!("open-io-ref-{arm}"));
         let newest=(blocks.len() as u64/every)*every;
         let mut n=reopen(&e44_conf(&d,every));
