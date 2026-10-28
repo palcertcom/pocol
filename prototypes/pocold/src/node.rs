@@ -637,6 +637,9 @@ impl Node{
     /// unsolicited block retention removed is not validated, journaled or requested again
     /// (chain::EVICTED_MAX, a churn guard); a solicited one is taken again (consensus.md §10: a branch
     /// that becomes heavier is fetched by sync) and, while non-canonical, protected from the side cap.
+    /// `h`'s state made available as an import's rebuild makes it (the journal and history.redb supplying the
+    /// blocks' bytes). For tests and measurements that build blocks on an arbitrary parent.
+    pub fn ensure_state(&mut self,h:&[u8;32])->Result<(),Reject>{let src=Src{journal:&self.journal,history:&self.history};self.chain.ensure_state_with(h,Some(&src))}
     pub fn import_with(&mut self,b:Block,from:Option<PeerId>,solicited:bool)->Result<bool,Reject>{
         let hash=b.hash();
         let was_evicted=self.chain.was_evicted(&hash);

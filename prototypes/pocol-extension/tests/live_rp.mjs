@@ -21,14 +21,20 @@ export async function runLiveRp(dist, endpoint, profile) {
   // Freeze one window, then mutate a single field of one header. The timestamp and target mutations
   // (items 4, 5) need an unsigned (fallback) header: on a signed one they first break the proposer's
   // signature (item 3). With every proposer up most blocks are signed, so the window is frozen to end
-  // at the latest fallback header of the chain; without one, the tip (and the check below fails).
-  const tip = BigInt(await rpc('eth_blockNumber', []));
+  // at the latest fallback header of the chain at height 14 or more; without one, the tip (and the check below fails).
+  // Fallback headers come when a proposer is late, so the chain may have none yet: the test waits for one, up to
+  // 180 s (acceptance on 719da04, whole-state: the only fallback headers were at heights 3, 5 and 12 when the
+  // check ran, and the next came at 55; evidence/r4/accept-719da04/).
   const isSignedRaw = (x) => R.decode(H.fromHex(x))[0][1].length === 65;
-  let fallbackAt = null;
-  for (let top = tip; top >= 14n && fallbackAt === null; top -= 64n) {
-    const start = top - 63n > 14n ? top - 63n : 14n;
-    const xs = await rpc('pocol_getHeaders', ['0x' + start.toString(16), '0x' + (top - start + 1n).toString(16)]);
-    for (let i = xs.length - 1; i >= 0; i--) if (!isSignedRaw(xs[i])) { fallbackAt = start + BigInt(i); break; }
+  let fallbackAt = null, tip = 0n;
+  for (const until = Date.now() + 180000; fallbackAt === null && Date.now() < until; ) {
+    tip = BigInt(await rpc('eth_blockNumber', []));
+    for (let top = tip; top >= 14n && fallbackAt === null; top -= 64n) {
+      const start = top - 63n > 14n ? top - 63n : 14n;
+      const xs = await rpc('pocol_getHeaders', ['0x' + start.toString(16), '0x' + (top - start + 1n).toString(16)]);
+      for (let i = xs.length - 1; i >= 0; i--) if (!isSignedRaw(xs[i])) { fallbackAt = start + BigInt(i); break; }
+    }
+    if (fallbackAt === null) await new Promise((r) => setTimeout(r, 2000));
   }
   ok('RP mutation window ends at a fallback header (items 4 and 5 are reachable)', fallbackAt !== null, fallbackAt === null ? 'no fallback header in the chain' : 'height ' + fallbackAt + ' of tip ' + tip);
   const h = fallbackAt ?? tip; const b = h - 12n; const from = b - 1n;

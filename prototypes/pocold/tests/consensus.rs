@@ -909,18 +909,19 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     let mut p=main[9].hash();let mut side=vec![];
     while b.chain.get(&p).unwrap().total_work<=target{let x=signed(&b,p,Body::default(),0);import(&mut b,&x);p=x.hash();side.push(x);}
     let (last,rest)=side.split_last().unwrap();assert!(rest.len()>=2&&b.chain.get(&p).unwrap().height<36,"positive control: the branch's tip is below the cut");
-    n.chain.ensure_state(&main[9].hash()).unwrap();for x in rest{assert!(!import(&mut n,x),"positive control: lighter until its last block");}
+    n.chain.ensure_state(&main[9].hash()).unwrap();for x in rest{assert!(!import(&mut n,x),"positive control: lighter until its last block");assert!(side_matches(&n.chain));}
     n.chain.retain();let cut=n.chain.head().height-4;assert_eq!(n.chain.prune_cursor,cut+1);
     let tip=n.chain.get(&rest.last().unwrap().hash()).unwrap();assert!(!tip.pruned&&tip.height<cut,"positive control: the side tip below the cut kept its state (side_max)");
     // Its last block makes the branch canonical with no rebuild: only the canonical change lowers the cursor.
     assert!(import(&mut n,last),"positive control: adopted");assert!(n.chain.is_canonical(&rest[0].hash()));
+    assert!(side_matches(&n.chain)&&n.chain.side_counts().0>=30,"the old main chain from 11 up is in the side set: {:?}",n.chain.side_counts());
     assert!(n.chain.prune_cursor<=11,"the canonical change lowered the cursor: {}",n.chain.prune_cursor);
     n.chain.retain();assert!(n.chain.prune_holds(),"retain pruned them");
     let cut=n.chain.head().height.saturating_sub(4);
     assert!((1..=cut).all(|h|n.chain.canonical_at(h).map_or(false,|e|e.pruned&&e.stored.is_none()&&!e.full&&e.diff.is_none())));
     // The old main chain from 11 up is now a side branch; R_keep removes its deep blocks, and their descendants go too.
     let before=n.chain.blocks.len();n.chain.r_keep=8;n.chain.retain();
-    assert!(n.chain.blocks.len()<before,"positive control: blocks were removed");
+    assert!(n.chain.blocks.len()<before,"positive control: blocks were removed");assert!(side_matches(&n.chain),"side set after the removals: {:?}",n.chain.side_counts());
     assert!(n.chain.blocks.values().all(|e|e.parent.map_or(true,|x|n.chain.blocks.contains_key(&x))),"no block is left whose parent is gone");
     assert!(main[10..].iter().all(|b|n.chain.get(&b.hash()).is_none()),"the old main chain went with its removed blocks");
 }
@@ -1229,10 +1230,11 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     // -> 3,154,465,633 B; D-7: the pool's layer from its gas bound in place of a whole state, its code from its
     // creations, the block overlay with the slots a created account keeps, one abandoned body in revalidation,
     // -> 3,287,955,262 B; 2026-10-27: the chain's entries boxed in their map, each counted as its slot at the
-    // table's growth peak and the Entry once, -> 3,233,597,728 B). Some terms are type
+    // table's growth peak and the Entry once, -> 3,233,597,728 B; 2026-10-28: each side entry's slot in the chain's
+    // side set, 32 + 16 B, -> 3,233,892,640 B). Some terms are type
     // sizes (Entry, Block), so the exact value is pinned for the target the evidence is produced on; every
     // target checks that it boots within the budget with its reserve.
-    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_233_597_728,"the A13 model total changed");}
+    if cfg!(all(target_os="linux",target_arch="x86_64")){assert_eq!(d.total,3_233_892_640,"the A13 model total changed");}
     // C-1 S1: a window of the whole chain is the model before S1, plus history.redb's cache and allocator.
     let all=pocold::resources::derive(admitted(&cfg(&["a","b","c"])).cp(),l.k_hist,l.side_max,&Limits{history_window:Some(u64::MAX),..Default::default()},2).unwrap();
     // (C-1 E5: and the one empty state entries share, which each entry counted before.)
@@ -1317,6 +1319,10 @@ fn heavier(h:&mut Net,parent:[u8;32],than:U256,extra:usize)->Vec<Block>{
     out
 }
 /// Non-canonical blocks the side cap applies to (not protected by a session).
+/// 2026-10-28: the chain keeps its side blocks as a set (`Chain::side`, read by `side_counts`); it must be what a
+/// walk over every entry finds, in release builds too (debug builds also assert it inside retain).
+fn side_matches(c:&Chain)->bool{let walk:Vec<&pocold::chain::Entry>=c.blocks.values().filter(|e|e.height>0&&!c.is_canonical(&e.hash)).map(|e|&**e).collect();
+    c.side_counts()==(walk.len(),walk.iter().filter(|e|!e.pruned).count())}
 fn unprotected(n:&pocold::node::Node)->usize{n.chain.blocks.keys().filter(|h|n.chain.blocks[*h].height>0&&!n.chain.is_canonical(h)&&!n.chain.protect.contains(*h)).count()}
 fn rpc_local(n:&mut pocold::node::Node,method:&str,params:serde_json::Value)->serde_json::Value{
     let body=json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}).to_string();let (t,_r)=std::sync::mpsc::channel();
@@ -1471,7 +1477,8 @@ fn e4_store_node_at_the_spec_depth_2048_and_2049_answers_as_a_whole_state_node()
     let mut b=net();let theirs=heavier(&mut b,g,a.chain.head().total_work,0);
     let (mut n,dir,conf)=rnode("cap",rk,cap);
     for x in &ours{n.import(x.clone(),None).unwrap();}
-    for x in &theirs{let _=n.import(x.clone(),None);assert!(unprotected(&n)<=cap,"{} unprotected side blocks after h={}",unprotected(&n),x.header.h);}
+    assert!(side_matches(&n.chain));
+    for x in &theirs{let _=n.import(x.clone(),None);assert!(unprotected(&n)<=cap,"{} unprotected side blocks after h={}",unprotected(&n),x.header.h);assert!(side_matches(&n.chain),"side set after h={}",x.header.h);}
     let head=theirs.last().unwrap().hash();assert_eq!(n.chain.head,head);
     assert!(n.chain.evicted_total>=(depth-cap) as u64,"evicted {}",n.chain.evicted_total);
     let tip=ours.last().unwrap();assert!(!n.chain.blocks.contains_key(&tip.hash()),"the lowest-work leaf went first");
@@ -1479,10 +1486,10 @@ fn e4_store_node_at_the_spec_depth_2048_and_2049_answers_as_a_whole_state_node()
     assert!(matches!(n.import(tip.clone(),None),Err(Reject::Evicted)),"an evicted block received unsolicited is refused");
     assert_eq!(n.journal_records(),records,"and not journaled again");
     for x in &ours{let _=n.import_with(x.clone(),None,true);}
-    assert!(n.stats.refetched>0&&n.chain.blocks.contains_key(&tip.hash()),"a session takes evicted blocks again (refetched {})",n.stats.refetched);
+    assert!(n.stats.refetched>0&&n.chain.blocks.contains_key(&tip.hash()),"a session takes evicted blocks again (refetched {})",n.stats.refetched);assert!(side_matches(&n.chain));
     assert_eq!(n.chain.head,head,"the lighter branch stays a side branch");assert_eq!(n.chain.head,best_of(&n.chain));
-    n.chain.protect.clear();n.chain.retain();assert!(unprotected(&n)<=cap);
-    drop(n);let r=reopen(&conf);assert_eq!(r.chain.head,head,"replay reproduces the live head");assert_eq!(r.stats.replay_skipped,0);assert!(r.chain.canonical_resident());
+    n.chain.protect.clear();n.chain.retain();assert!(unprotected(&n)<=cap);assert!(side_matches(&n.chain)&&n.chain.side_counts().0>0,"positive control: side blocks are left");
+    drop(n);let r=reopen(&conf);assert_eq!(r.chain.head,head,"replay reproduces the live head");assert!(side_matches(&r.chain));assert_eq!(r.stats.replay_skipped,0);assert!(r.chain.canonical_resident());
     let _=std::fs::remove_dir_all(&dir);
 }
 
@@ -3102,6 +3109,9 @@ fn e4_checkpoint_kill_child(){
     assert!(fl(pocold::checkpoint::flags::SLIM)>50&&fl(pocold::checkpoint::flags::OFFLOADED)>50,"positive control: slimmed {} and offloaded {} entries",fl(pocold::checkpoint::flags::SLIM),fl(pocold::checkpoint::flags::OFFLOADED));
     assert!(!f.evicted_order.is_empty()&&n.chain.evicted_total>0,"positive control: side blocks were evicted");
     e44_same(&mut n,&mut r0,"resumed with slimmed, offloaded and evicted entries");
+    // 2026-10-28: a restored chain rebuilds its side set (`retention_reset`); the resumed node counts the side
+    // blocks the node replayed from genesis counts.
+    assert!(side_matches(&n.chain)&&side_matches(&r0.chain),"side sets: resumed {:?}, replayed {:?}",n.chain.side_counts(),r0.chain.side_counts());
     // A history.redb that lost the records of one old block whose entry is offloaded and slimmed (restore
     // reads neither its receipts nor its ranges): neither checkpoint is used, and replay from genesis
     // refills the records (C-1 E4.4 retest K11b).
@@ -3114,7 +3124,12 @@ fn e4_checkpoint_kill_child(){
      w.commit().unwrap();}
     let mut n=reopen(&e44_conf_with(&h,every,lim));assert_eq!(n.stats.resumed_from,None,"no checkpoint naming a block history.redb lost is used");assert!(n.stats.checkpoints_refused>=1);
     e44_same(&mut n,&mut r0,"after history.redb lost an offloaded block's records");
-    drop(n);drop(r0);for d in [a,g,c,h]{let _=std::fs::remove_dir_all(&d);}
+    // A checkpoint written while the node holds side blocks: the node that resumes from it has them in its side set.
+    drop(n);let k=e44_dir("kinds-side");copy_dir(&c,&k);
+    {let mut n=reopen(&e44_conf_with(&k,every,lim));assert!(n.chain.side_counts().0>0,"positive control: side blocks before the checkpoint");n.checkpoint_now().unwrap();}
+    let n=reopen(&e44_conf_with(&k,every,lim));assert_eq!(n.stats.resumed_from,Some(n.journal_records()),"resumed from that checkpoint");
+    assert!(side_matches(&n.chain)&&n.chain.side_counts().0>0,"the restored side set: {:?}",n.chain.side_counts());
+    drop(n);drop(r0);for d in [a,g,c,h,k]{let _=std::fs::remove_dir_all(&d);}
 }
 
 /// D-6 and replay's protect set (D-REORG-REDB: replay keeps a block whose next journal event is a child

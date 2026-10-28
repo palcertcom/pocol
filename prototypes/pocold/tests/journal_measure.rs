@@ -1215,7 +1215,7 @@ fn jm_r14_workload_gap(){
 fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_000_000;c.code_cap=1<<30;c.txbytes_cap=1<<33;c.tx_cap=10_000_000;
     c.h_end=129_600;c.h_close=129_440;c.t_end_offset=10_368_000;c.t_close_offset=10_368_000-9_600;c.z_close=160;c}
 /// R3-4 (2026-10-27): a store-mode node grown to the network's state caps, measured beside what A13 computes for
-/// it. Three processes on one directory, JM_SCALE_DIR, chosen by JM_SCALE_PHASE:
+/// it. Separate processes on one directory, JM_SCALE_DIR, chosen by JM_SCALE_PHASE:
 /// - "grow" (the directory must not exist): a store-mode node of scale_cfg() builds and imports full-gas blocks of
 ///   fresh slots and of fresh accounts, each followed by an empty block, until JM_SCALE_ACCTS (950,000) user
 ///   accounts and JM_SCALE_SLOTS (3,800,000) user slots, whichever kind is further behind first. At JM_SCALE_STEPS
@@ -1232,6 +1232,10 @@ fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_0
 ///   deferred release (2026-10-27) each checkpoint's time is its write alone; the release steps that follow
 ///   are timed apart (their count, the longest, and their total). The first checkpoint's release runs between
 ///   imports of empty blocks, as a live node's would, and those imports are timed.
+/// - "load" (R4-4, 2026-10-28; on a copy, it changes the directory): opens it, fills the pool to its gas bound
+///   with full-gas creations of fresh slots, imports a full-gas block of fresh slots from another sender (the pool
+///   is revalidated), then reorganizes onto a branch of such blocks from JM_SCALE_LOAD_FORK (24) blocks below the
+///   head; it prints the figures after each step and A13's items for the profile.
 /// Checkpoints are every JM_SCALE_CKPT journal records (the node's default, checkpoint::EVERY = 1,024).
 /// Every phase also prints JM-SCALE-A13: the bound `resources::check` computes for this profile at boot (the
 /// caps', not the live state's) and state.redb's computed file bound. The process holds the node only (the node
@@ -1339,9 +1343,50 @@ fn jm_store_scale(){
             }
             figures(&n,"after three checkpoints",serde_json::json!({"encodeMs":encode_ms,"snapshotBytes":bytes.len(),"roots":roots.len(),"entries":n.chain.blocks.len(),"checkpointNow":calls}));
         }
+        "load"=>{
+            // R4-4 (2026-10-28): the heaviest local loads this test can drive, at the store's size. Each step prints the
+            // figures and VmHWM; the A13 items for the terms it reaches are printed beside them.
+            let l=pocold::single_host_local();let lim=Limits{state_store:true,..Default::default()};
+            let b=pocold::resources::derive(spec().cp(),l.k_hist,l.side_max,&lim,2).unwrap();
+            println!("JM-SCALE-A13-ITEMS {}",serde_json::json!(b.items.iter().map(|(k,v)|serde_json::json!([k,v.to_string()])).collect::<Vec<_>>()));
+            let (mut n,open_s)=open();figures(&n,"opened for the load",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from}));
+            // 1. The pool at its gas bound (POOL_GAS_BLOCKS × GAS_LIMIT): full-gas creations that each write fresh
+            // slots, so the pool's layer holds the most writes that gas can make.
+            let bound=pocold::node::pool_gas_bound(n.chain.spec.cp(),&lim).unwrap();let alice_nonce=nonce_of(&n,&alice);
+            let (mut pooled,mut refused)=(0u64,vec![]);let t=Instant::now();
+            for i in 0..bound/FULL_GAS+1{match n.submit_tx(deploy(&alice,alice_nonce+i,FULL_GAS,0,sstore_fresh_loop()),false){Ok(_)=>pooled+=1,Err(e)=>refused.push(e)}}
+            n.pool_settle();
+            figures(&n,"pool at its gas bound",serde_json::json!({"poolGasBound":bound,"pooled":pooled,"refused":refused,"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries(),"poolWritten":n.pool_written(),"seconds":t.elapsed().as_secs_f64()}));
+            // 2. A block at full gas of fresh slots from another sender: the pool is revalidated on the new head.
+            let bob=devnet::account_key("bob");let bob_nonce=nonce_of(&n,&bob);
+            let blk=signed_on(&n.chain,&keys,n.chain.head,Body{txs:vec![deploy(&bob,bob_nonce,FULL_GAS,0,sstore_fresh_loop())],evidence:vec![]});
+            let t=Instant::now();n.import(blk,None).unwrap();let imp=t.elapsed().as_secs_f64()*1e3;let t=Instant::now();n.pool_settle();
+            figures(&n,"a full-write block, pool revalidated",serde_json::json!({"importMs":imp,"revalidateMs":t.elapsed().as_secs_f64()*1e3,"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries()}));
+            // 3. A deep reorg: from JM_SCALE_LOAD_FORK (24, inside K_hist) blocks below the head, a branch of full-gas fresh-slot blocks
+            // from bob (between fallback blocks) until it has more work. The node rebuilds the branch's states and abandons the old window.
+            let fork=env_n("JM_SCALE_LOAD_FORK",24);let tip=n.chain.head;let tip_work=n.chain.get(&tip).unwrap().total_work;
+            let mut p=tip;for _ in 0..fork{p=n.chain.get(&p).unwrap().header.parent_hash;}
+            let mut nonce=nonce_at(&n,&bob,&p);let (mut side,mut imps)=(0u32,vec![]);let t=Instant::now();
+            // As in the grow phase, signed blocks and fallback blocks alternate.
+            let signed_parent=|n:&Node,p:&[u8;32]|n.chain.get(p).unwrap().signed;
+            // The builders read the parent's state: a pruned one (below the R21 cut) is rebuilt first, as the node's
+            // import does on NeedsRebuild (a pruned entry's own state is the shared empty one).
+            while n.chain.get(&p).unwrap().total_work<=tip_work{
+                n.ensure_state(&p).unwrap();
+                let blk=if signed_parent(&n,&p){fallback_on(&n.chain,&keys,p,0)}else{
+                    let b=signed_on(&n.chain,&keys,p,Body{txs:vec![deploy(&bob,nonce,FULL_GAS,0,sstore_fresh_loop())],evidence:vec![]});nonce+=1;b};p=blk.hash();
+                let ti=Instant::now();n.import(blk,None).unwrap();imps.push(ti.elapsed().as_secs_f64()*1e3);side+=1;}
+            assert_eq!(n.chain.head,p,"the heavier branch is the head");n.pool_settle();
+            imps.sort_by(|a,b|a.partial_cmp(b).unwrap());
+            figures(&n,"after a deep reorg of full-write blocks",serde_json::json!({"forkDepth":fork,"sideBlocks":side,"reorgSeconds":t.elapsed().as_secs_f64(),
+                "importMedianMs":imps[imps.len()/2],"importMaxMs":imps[imps.len()-1],"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries()}));
+        }
         p=>panic!("JM_SCALE_PHASE {p}"),
     }
 }
+fn nonce_of(n:&Node,k:&Key)->u64{nonce_at(n,k,&n.chain.head)}
+fn nonce_at(n:&Node,k:&Key,at:&[u8;32])->u64{
+    n.chain.view_of(at).expect("a retained state").v().account(&k.address()).map(|x|x.info.nonce).unwrap_or(0)}
 
 // ============================ R4-4: the journal and the stores up to H_END (2026-10-28) ============================
 /// The journal, history.redb and state.redb of a store-mode node of `scale_cfg()` (the network's state caps and its

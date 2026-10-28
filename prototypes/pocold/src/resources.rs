@@ -441,13 +441,13 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
     // Side blocks (D-REORG-REDB): every journaled non-canonical block is offloaded to metadata at the
     // retain() that follows its import (Chain::retain): its encoded header and body (evidence included),
     // receipts and tx hashes are dropped, so an entry is the per-block term less one header and the
-    // evidence, plus its protect-set slot. Live: <= side_cap unprotected + protect_max (2·r_keep) held
+    // evidence, plus its protect-set slot and its slot in the chain's side set (`Chain::side`, 2026-10-28). Live: <= side_cap unprotected + protect_max (2·r_keep) held
     // by a sync session. Replay: all <= side_cap + protect_max (Chain::replaying). One full block is
     // resident between its insert and that retain (or while restore_canonical re-executes it): its
     // transactions are bounded by its body and by its gas.
     let side_block=add(&[per_block,mul(u128::from(cp.E_max),u128::from(cp.EVID_BYTES_MAX))?,u128::from(cp.BODY_MAX),mul(side_txs,per_tx)?,u128::from(caps::LOG_BLOCK_MAX)/32*33])?;
     let side_entries=add(&[limits.side_cap as u128,mul(2,u128::from(limits.r_keep))?])?;
-    let side_entry=per_block.checked_sub(hdr)?.checked_sub(mul(u128::from(cp.E_max),24)?)?.checked_add(32+16)?;
+    let side_entry=per_block.checked_sub(hdr)?.checked_sub(mul(u128::from(cp.E_max),24)?)?.checked_add(2*(32+16))?;
     let side_meta=mul(side_entries,side_entry)?;let side_full=side_block;
     let evicted=mul(chain::EVICTED_MAX as u128,2*(32+16))?;
     let side_blocks=add(&[side_meta,side_full,evicted])?;

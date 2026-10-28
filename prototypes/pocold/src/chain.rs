@@ -295,6 +295,15 @@ pub struct Chain{
     /// The first `retain_unsettled` of a chain (a new or restored one) looks for orphans although it removed
     /// nothing; later ones only after a removal (every removal's orphans are removed with it).
     orphan_check:bool,
+    /// The non-canonical entries (height > 0), kept as entries and the canonical path change: `insert`, the
+    /// suffix `rebuild_canonical` replaces, and every removal in `retain_unsettled`. A restore rebuilds it
+    /// (`retention_reset`). Before (2026-10-28), each retain found them by walking every entry, and the
+    /// entries are the whole chain: an import was O(H), growth to H_END O(H²) (evidence/r4 § 4). Debug
+    /// builds check it against that walk.
+    side:std::collections::HashSet<[u8;32]>,
+    /// Entries given a trie since the last `settle` (only `insert` gives one; genesis has one from `new`):
+    /// what `settle` clears, the head's excepted, instead of visiting every entry.
+    tried:Vec<[u8;32]>,
     /// C-1 E1: state roots from the parent's trie (false: built from the whole state, a test reference),
     /// and how parents' tries were obtained: derived from the head's through the diffs, built from the
     /// whole state, or derived but refused because the root did not match the committed one.
@@ -346,7 +355,7 @@ impl Chain{
         let mut blocks=HashMap::new();blocks.insert(gh,Box::new(genesis));
         let k_hist=u64::from(spec.local().k_hist);
         Self{spec,blocks,head:gh,canonical:vec![gh],next_seq:1,k_hist,rebuilds:0,materializations:Default::default(),keep_full_states:false,slim_depth:None,slim_cursor:1,unslimmed:Vec::new(),prune_cursor:1,orphan_check:true,incremental_root:true,trie_derived:Default::default(),trie_built:Default::default(),trie_refused:Default::default(),history_window:None,history_cursor:1,restore_reexecs:0,invalid:HashMap::new(),invalid_order:Default::default(),seen_templates:BTreeMap::new(),evicted:Default::default(),evicted_order:Default::default(),evicted_total:0,
-            r_keep:R_KEEP,side_cap:SIDE_BLOCKS_MAX,protect:Default::default(),replaying:false,trie_store:None}
+            r_keep:R_KEEP,side_cap:SIDE_BLOCKS_MAX,protect:Default::default(),replaying:false,trie_store:None,side:Default::default(),tried:vec![gh]}
     }
     pub fn head(&self)->&Entry{&self.blocks[&self.head]}
     /// C-1 E4: keeps states in `store` from now on, starting with genesis's (Node::open calls it on a chain
@@ -689,9 +698,9 @@ impl Chain{
 
     // ---------------- import and D133 fork choice ----------------
     pub fn insert(&mut self,mut e:Entry)->bool{
-        e.import_seq=self.next_seq;self.next_seq+=1;let hash=e.hash;self.blocks.insert(hash,Box::new(e));
+        e.import_seq=self.next_seq;self.next_seq+=1;let hash=e.hash;if e.trie.is_some(){self.tried.push(hash);}self.blocks.insert(hash,Box::new(e));
         let better=self.better(&hash,&self.head.clone());
-        if better{self.head=hash;self.rebuild_canonical();}
+        if better{self.head=hash;self.rebuild_canonical();}else if !self.is_canonical(&hash){self.side.insert(hash);}
         better
     }
     pub fn mark_invalid(&mut self,hash:[u8;32],why:String){
@@ -728,33 +737,34 @@ impl Chain{
             if let Some(h)=self.canonical.get(self.prune_cursor as usize).copied(){if let Some(e)=self.blocks.get_mut(&h){if !e.pruned{e.state=empty_state();e.pruned=true;}e.stored=None;e.full=false;e.diff=None;}}
             self.prune_cursor+=1;
         }
-        // The side blocks, found once: nothing below makes a block canonical, and orphans and evicted blocks
-        // are side blocks (a canonical block's parent is canonical), so what is left is this list less what
-        // was removed.
-        let side:Vec<[u8;32]>=self.blocks.values().filter(|e|e.height>0&&!self.is_canonical(&e.hash)).map(|e|e.hash).collect();
+        // The side blocks: nothing below makes a block canonical, and orphans and evicted blocks are side
+        // blocks (a canonical block's parent is canonical), so what is left is this list less what was removed.
+        debug_assert!(self.side==self.side_scan(),"the side set is the non-canonical entries");
+        let side:Vec<[u8;32]>=self.side.iter().copied().collect();
         let r_keep=self.r_keep;
         let mut gone:Vec<[u8;32]>=side.iter().filter(|h|self.blocks[*h].height+r_keep<=head_h).copied().collect();
-        for h in &gone{self.blocks.remove(h);}
-        // Descendants of a removed block go too (their parent is gone).
+        for h in &gone{self.blocks.remove(h);self.side.remove(h);}
+        // Descendants of a removed block go too (their parent is gone). Only a side block can lose its parent.
         if !gone.is_empty()||self.orphan_check{self.orphan_check=false;
-            loop{let orphaned:Vec<[u8;32]>=self.blocks.values().filter(|e|e.parent.map_or(false,|p|!self.blocks.contains_key(&p))).map(|e|e.hash).collect();
-                if orphaned.is_empty(){break}for h in orphaned{self.blocks.remove(&h);gone.push(h);}}}
+            loop{let orphaned:Vec<[u8;32]>=self.side.iter().filter(|h|self.blocks[*h].parent.map_or(false,|p|!self.blocks.contains_key(&p))).copied().collect();
+                if orphaned.is_empty(){break}for h in orphaned{self.blocks.remove(&h);self.side.remove(&h);gone.push(h);}}}
         debug_assert!(self.blocks.values().all(|e|e.parent.map_or(true,|p|self.blocks.contains_key(&p))),"an orphan was left");
         let side_now:Vec<[u8;32]>=side.into_iter().filter(|h|self.blocks.contains_key(h)).collect();
         let unprotected=side_now.iter().filter(|h|!self.protect.contains(*h)).count();
         // Live: unprotected <= side_cap (a session holds <= protect_max more). Replay: all <= their sum.
         let (count,limit)=if self.replaying{(side_now.len(),self.side_cap+self.protect_max())}else{(unprotected,self.side_cap)};
         if count>limit{
-            // Children over all blocks: a block with a (protected) child is never a leaf.
+            // Children: a block with a (protected) child is never a leaf. A side block's children are side
+            // blocks (a canonical block's parent is canonical), so the side blocks give every count used here.
             let mut children:HashMap<[u8;32],usize>=HashMap::new();
-            for e in self.blocks.values(){if let Some(p)=e.parent{*children.entry(p).or_insert(0)+=1;}}
+            for h in &side_now{if let Some(p)=self.blocks[h].parent{*children.entry(p).or_insert(0)+=1;}}
             let evictable:std::collections::HashSet<[u8;32]>=side_now.iter().filter(|h|!self.protect.contains(*h)).copied().collect();
             let key=|c:&Chain,h:&[u8;32]|{let e=&c.blocks[h];std::cmp::Reverse((e.total_work,e.import_seq,*h))};
             let mut leaves:std::collections::BinaryHeap<_>=evictable.iter().filter(|h|!children.contains_key(*h)).map(|h|key(self,h)).collect();
             let mut n=count;
             while n>limit{
                 let Some(std::cmp::Reverse((_,_,h)))=leaves.pop() else{break};
-                let parent=self.blocks.remove(&h).and_then(|e|e.parent);gone.push(h);n-=1;
+                let parent=self.blocks.remove(&h).and_then(|e|e.parent);self.side.remove(&h);gone.push(h);n-=1;
                 if let Some(p)=parent{if let Some(c)=children.get_mut(&p){*c-=1;if *c==0&&evictable.contains(&p){children.remove(&p);leaves.push(key(self,&p));}}}
             }
         }
@@ -793,7 +803,8 @@ impl Chain{
     /// The end of `retain`: at most side_max non-canonical blocks keep a state (unprotected and lowest-work
     /// first are pruned); then the C-1 S3a shedding of full states.
     pub fn settle(&mut self){
-        let side_left:Vec<[u8;32]>=self.blocks.values().filter(|e|e.height>0&&!self.is_canonical(&e.hash)).map(|e|e.hash).collect();
+        debug_assert!(self.side==self.side_scan(),"the side set is the non-canonical entries");
+        let side_left:Vec<[u8;32]>=self.side.iter().copied().collect();
         let mut with_state:Vec<(bool,U256,u64,[u8;32])>=side_left.into_iter().filter(|h|!self.blocks[h].pruned).map(|h|{let e=&self.blocks[&h];(self.protect.contains(&h),e.total_work,e.import_seq,h)}).collect();
         let side_max=self.spec.local().side_max as usize;
         with_state.sort();let over=with_state.len().saturating_sub(side_max);
@@ -811,7 +822,9 @@ impl Chain{
         for h in &drop{if let Some(e)=self.blocks.get_mut(h){e.diff=None;}}
         self.shed_full_states();
         // C-1 E1: only the head keeps its trie; any other parent's is derived from it when needed.
-        let head=self.head;for e in self.blocks.values_mut(){if e.hash!=head{e.trie=None;}}
+        let head=self.head;let tried=std::mem::take(&mut self.tried);
+        for h in tried{if h==head{self.tried.push(h)}else if let Some(e)=self.blocks.get_mut(&h){e.trie=None;}}
+        debug_assert!(self.blocks.values().all(|e|e.hash==head||e.trie.is_none()),"only the head keeps its trie");
     }
     /// C-1 S3a: drops the full state of every canonical block above the K_hist cut but the head (its diff
     /// is kept) and makes the head's state full. After it the full states are the head, genesis and the
@@ -822,11 +835,14 @@ impl Chain{
         // C-1 E4: every retained state is a stored version, read in place: nothing to shed or materialize.
         if self.keep_full_states||self.trie_store.is_some(){return}
         let head=self.head;
-        let canon:Vec<[u8;32]>=self.canonical.iter().skip(1).copied().filter(|h|*h!=head).collect();
+        // Canonical blocks below prune_cursor are pruned (`prune_holds`): none is full.
+        let canon:Vec<[u8;32]>=self.canonical.iter().skip(self.prune_cursor.max(1) as usize).copied().filter(|h|*h!=head).collect();
         for h in canon{if let Some(e)=self.blocks.get_mut(&h){if e.full&&!e.pruned{
             if e.diff.is_some(){e.state=empty_state();e.full=false;}else{e.state=empty_state();e.full=false;e.pruned=true;}}}}
         if self.blocks.get(&head).map_or(false,|e|!e.full&&!e.pruned){if let Some(s)=self.materialize(&head){let e=self.blocks.get_mut(&head).unwrap();e.state=s.into();e.full=true;self.materializations.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}}
-        let open:Vec<[u8;32]>=self.blocks.values().filter(|e|!e.pruned&&!e.full).map(|e|e.hash).collect();
+        // A state held as a diff: a canonical block from prune_cursor up, or a side block.
+        let open:Vec<[u8;32]>=self.canonical.iter().skip(self.prune_cursor.max(1) as usize).chain(self.side.iter()).filter(|h|self.blocks.get(*h).map_or(false,|e|!e.pruned&&!e.full)).copied().collect();
+        debug_assert!({let mut a=open.clone();a.sort();let mut b:Vec<[u8;32]>=self.blocks.values().filter(|e|!e.pruned&&!e.full).map(|e|e.hash).collect();b.sort();a==b},"the diff-held states are found");
         for h in open{if self.state_path(&h).is_none(){let side=!self.is_canonical(&h);let e=self.blocks.get_mut(&h).unwrap();e.pruned=true;if side{e.diff=None;}}}
     }
     /// The diffs that lead from the full state `from` to `to`: `down` (apply_before, in order: `from` back
@@ -974,7 +990,7 @@ impl Chain{
     /// Whether retention removed this block recently (it is then not taken again).
     pub fn was_evicted(&self,hash:&[u8;32])->bool{self.evicted.contains(hash)}
     /// Non-canonical blocks, and those holding a state (A13 accounting, status).
-    pub fn side_counts(&self)->(usize,usize){let side=self.blocks.values().filter(|e|e.height>0&&!self.is_canonical(&e.hash));let (mut n,mut s)=(0,0);for e in side{n+=1;if !e.pruned{s+=1}}(n,s)}
+    pub fn side_counts(&self)->(usize,usize){(self.side.len(),self.side.iter().filter(|h|self.blocks.get(*h).map_or(false,|e|!e.pruned)).count())}
     /// C-1 S4: a slimmed entry's header (the journal record's header bytes), ParentResult (its result
     /// bytes) and nonce ranges (history.redb), each checked against the entry it restores.
     fn restored_fields(&self,e:&Entry,src:&dyn BlockBytes)->Result<(Header,Option<ParentResult>,Vec<(Address,u128,u128)>),Reject>{
@@ -1078,7 +1094,10 @@ impl Chain{
             if self.canonical.get(e.height as usize)==Some(&h){break e.height+1}
             path.push(h);cur=e.parent;
         };
-        path.reverse();self.canonical.truncate(fork as usize);self.canonical.extend(path);
+        path.reverse();
+        for h in self.canonical.drain((fork as usize).min(self.canonical.len())..){if self.blocks.contains_key(&h){self.side.insert(h);}}
+        for h in &path{self.side.remove(h);}
+        self.canonical.extend(path);
         debug_assert!({let mut full=Vec::new();let mut c=Some(self.head);while let Some(h)=c{full.push(h);c=self.blocks[&h].parent;}full.reverse();full==self.canonical},"the canonical path is the head's");
         // The first height whose canonical block changed: the prune below it still holds.
         self.unprune(fork);
@@ -1087,7 +1106,9 @@ impl Chain{
     pub(crate) fn unprune(&mut self,h:u64){self.prune_cursor=self.prune_cursor.min(h.max(1));}
     /// A chain whose entries were replaced (a checkpoint's): the next `retain_unsettled` prunes and looks
     /// for orphans from the start.
-    pub(crate) fn retention_reset(&mut self){self.prune_cursor=1;self.orphan_check=true;}
+    pub(crate) fn retention_reset(&mut self){self.prune_cursor=1;self.orphan_check=true;self.side=self.side_scan();}
+    /// The non-canonical entries by a walk over every entry (what `side` holds).
+    fn side_scan(&self)->std::collections::HashSet<[u8;32]>{self.blocks.values().filter(|e|e.height>0&&!self.is_canonical(&e.hash)).map(|e|e.hash).collect()}
     /// `prune_cursor`'s invariant: every canonical block at a height in 1..prune_cursor is pruned.
     pub fn prune_holds(&self)->bool{
         (1..self.prune_cursor).all(|h|self.canonical.get(h as usize).and_then(|x|self.blocks.get(x)).map_or(true,|e|e.pruned&&e.stored.is_none()&&!e.full&&e.diff.is_none()))
