@@ -63,6 +63,10 @@ bound (condition `timing-not-a-bound`, decision row 2); the slowest measured blo
 | A13, store mode (`--state-store`) | 5,581,321,485 B model (5.198 GiB); 6,378,653,126 B required | 6,442,450,944 B | passes, computed |
 | R21 (above) | 59,619,697,068 B / 26,269,409,781 B | 1,717,986,918 B | refused |
 
+After 719da04 (the chain's side set, counted at 32 + 16 B per side entry, evidence/r4 § 4) the store-mode model is
+5,581,616,397 B (5.198 GiB), 6,378,990,168 B required, and the whole-state model 26,819,799,029 B, 30,651,198,891 B
+required; the verdicts are unchanged.
+
 The model cap and the budget are one condition: A13 requires model × 8/7 ≤ budget, that is model ≤ budget × 7/8 =
 5.25 GiB for a 6 GiB budget. The 1/8 headroom is for what the model does not count (allocator fragmentation,
 per-allocation headers). The store-mode model is 5.198 GiB against that 5.25 GiB cap (0.05 GiB to spare; at the O2 caps of decision row 3 it is 5.231 GiB, evidence/r4/boot/store-model-o2.log). What a node measured

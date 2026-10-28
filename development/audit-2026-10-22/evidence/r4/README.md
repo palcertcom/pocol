@@ -122,7 +122,62 @@ after the test was strengthened; the earlier survivors are kept in the log).
 
 ## 4. Memory and storage
 
-SECTION_MEMORY
+**Two different quantities.** A13's model is a computed bound: `resources::derive` adds a worst case for every term
+(the pool at its gas bound, a code set at CODE_CAP, the largest execution, a block's batch at the most writes,
+RPC and peers at their caps, the abandoned window of a deep reorg). What a node measured (RSS, VmHWM) is one
+host and one workload. Neither stands in for the other, and nothing below is closed by an extrapolation.
+
+**5.25 GiB and 6 GiB are one condition.** A13 requires model × 8/7 ≤ budget, so for the 6 GiB budget the model
+must stay at or below 6 × 7/8 = 5.25 GiB; the 1/8 is for what the model does not count (allocator fragmentation,
+per-allocation headers). The network profile in store mode, computed:
+
+| | model | model × 8/7 | against 6 GiB (6,442,450,944 B) |
+|---|---:|---:|---|
+| store mode, on 1074b47 | 5,581,321,485 B (5.198 GiB) | 6,378,653,126 B | passes, 0.052 GiB under 5.25 |
+| store mode, with the side set below (+294,912 B: 6,144 side entries × 48 B) | 5,581,616,397 B (5.198 GiB) | 6,378,990,168 B | passes, 0.052 GiB under 5.25 |
+| store mode at the O2 caps (decision row 3) | 5,617,166,961 B (5.231 GiB) | 6,419,619,384 B | passes, 0.019 GiB under 5.25 |
+| whole-state mode (the default) | 26,819,799,029 B | 30,651,198,891 B | refused |
+
+The largest store-mode terms (`a13_store_model_at_the_network_profile`): a code set read by one execution
+(1.125 GiB), execution memory at the worst gas split (0.979 GiB), a block's new trie nodes before commit
+(0.916 GiB), state.redb's allocator over its largest file (0.391 GiB), the node cache (0.250 GiB).
+
+**Measured, store mode, at the network's state caps** (949,767 accounts, 3.8 M slots; `jm_store_scale`, Linux):
+
+| what ran | VmHWM | source |
+|---|---:|---|
+| open from a checkpoint (855 records replayed) | 454–455 MB | [open/before-after-final.log](open/before-after-final.log), [load/](load/) |
+| the pool at its gas bound (4 creations of 7.95 M gas, 1,424 fresh slots in its layer), then a full-gas block of fresh slots and the pool revalidated | 455–471 MB | [load/](load/) |
+| then a reorg from 24 blocks below the head onto 25 blocks, 13 of them full-gas fresh-slot blocks (20.7 s) | 455 MB (no rise after the open) | [load/](load/README.md) |
+| round 3: growth to the caps, a reorg of 8, three checkpoints | 474 MB (539 MB before that round's fix 1) | [../memory-r14/scale-d30dc71/](../memory-r14/scale-d30dc71/README.md) |
+| H_END (129,600 empty blocks, devnet profile with the network's H_END) | 486 MB | [hend/continue.raw](hend/continue.raw) |
+
+The measured peaks are below a tenth of the model. That does not show the model is loose: the workloads do not
+reach the large terms (no execution near its memory bound, no code set near CODE_CAP, no RPC or peers, no
+deep-reorg window at the caps). The terms they reach behave as counted: the stored versions are a fifth of
+the per-version model, the node cache sits at its bound, the pool's layer holds what its gas wrote. **Not
+measured:** the execution, code-set and batch terms at their worst together, RPC and peers at the caps, a
+reorg of R_keep depth at the caps, Windows.
+
+**Journal growth to H_END.**
+- Measured, empty blocks: 2,011 B per record, 260,616,349 B at H_END ([hend/continue.raw](hend/continue.raw)).
+- Bound for the canonical chain: about 11.3 GiB at the network caps. It comes from the cumulative caps
+  (TXBYTES_CAP 8 GiB, the identity bound on evidence, headers, parentResult), not from H_END × BODY_MAX
+  ([../../JOURNAL-GROWTH-AND-REPLAY.md](../../JOURNAL-GROWTH-AND-REPLAY.md) § 2.1).
+- No bound for side blocks: a block evicted and fetched again is journaled again, once per cycle while it stays
+  in the R_keep window (same document, § 4; decision row 5).
+- The H_END journal at full blocks was not measured.
+
+**What the H_END runs found.**
+- An import's time grew with height: 8 → 165 ms per empty block on the first run, 16 → 72 ms by h = 77,760 on
+  the second (eb85bed), and quadratic over a replay from genesis. Two causes were found by stack samples:
+  - `rebuild_canonical`'s walk to genesis at every insert, fixed in eb85bed;
+  - the side-block scans of `retain_unsettled` and `settle`, and settle's trie pass, each over every entry.
+    The commit after 719da04 keeps the side blocks as a set and clears only the tries given since the last settle.
+  - Not yet measured: an H_END run on the commit with the side set.
+- The first reopen at H_END did not use its checkpoints and replayed from genesis. Why is not known: its
+  node log was off, and the store was started over. The second run (eb85bed, node log on) was still growing when this was
+  written; its reopen will say whether its checkpoints are used.
 
 ## 6. Boot and performance
 
@@ -160,4 +215,30 @@ BOOT-BLOCKERS.
 
 ## Suites
 
-SECTION_SUITES
+| log | tree | release, all tests | io-fault | crash-test | with debug assertions |
+|---|---|---|---|---|---|
+| [suite-early.log](suite-early.log), [suite-early-iofault.log](suite-early-iofault.log) | 3adc356's tree before commit | 250 / 0 (28 ignored) | 106 / 0 | — | — |
+| [suite-118afd7.log](suite-118afd7.log) | 118afd7 | 254 / 0 (30 ignored) | 110 / 0 | 1 / 0 | plain debug build: consensus 25 / 66 (see below), state_store 14 / 0 |
+| [suite-e028068.log](suite-e028068.log) | e028068 (+ two test-only fixes, then committed in 1074b47) | 254 / 0 | 111 / 0 (rerun with the fixes) | 1 / 0 | consensus 89 / 2 (see below), state_store 14 / 0 |
+| [suite-eb85bed.log](suite-eb85bed.log) | eb85bed | 254 / 0 | — | — | — |
+| [suite-side-release.log](suite-side-release.log), [suite-side-debug-assertions.log](suite-side-debug-assertions.log) | 719da04 + the side set (the commit after it, before its last test additions) | 252 / 2 (30 ignored; see below) | 111 / 0 | 1 / 0 | caps 11, consensus 91, net 53, state_store 14, store 12; 0 failed |
+
+(passed / failed.) Failures, each kept in its log:
+- **118afd7, plain debug build:** 64 tests panic at `tests/consensus.rs:15`, the devnet admission. An unoptimized
+  build is refused by the boot timing gate (R14/R19), as in earlier rounds. The other two failures are
+  timing-bound tests (a submission's deadline, a long catch-up) in that build. From e028068 on, the debug-assertion
+  runs use a release build with `CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true` in a separate target directory.
+- **e028068, release with debug assertions:** two tests (`a_damaged_history_store_is_never_served_and_is_rebuilt`,
+  `e4_checkpoint_damage_falls_back_to_a_verified_state`) panicked at the same admission line, with the H_END run
+  beside them. The runner's filter did not keep the refusal's text. It did not recur in the one later run with debug
+  assertions on ([suite-side-debug-assertions.log](suite-side-debug-assertions.log): consensus 91 / 0). **The cause is not established.** It is the same symptom as the Windows refusal on
+  1074b47 (run 40680583220, whole-state R14/R19), which also remains open. The 1074b47 commit message called both
+  "the admission timing gate under load and passed when rerun": that the rerun passed is true, the cause was not shown.
+- **The side-set tree, release:** two failures, with seeded-fault builds and the H_END run beside the suite (load
+  about 20 on 4 CPUs). Reruns are in [suite-side-reruns.log](suite-side-reruns.log).
+  - `a_submission_during_a_long_backlog_is_busy_at_its_deadline_and_not_pooled` (consensus.rs:752, a reply within
+    its deadline plus 400 ms) passed 5 of 5 reruns. The suite's failure is not explained by that.
+  - `reconnect_churn_keeps_threads_and_slots_bounded` (net.rs:127, "still accepts peers": a new peer is not live
+    after 200 churned connections) fails on 719da04 too under the same load: 3 of 6 there, 1 of 6 on this tree,
+    alternating. A wait of 3 s in place of 500 ms still failed 4 of 6, so it is not a latency bound; the change
+    was reverted. **The cause is not established;** it is older than this round's change and stays open.

@@ -194,6 +194,10 @@ The 320 full side blocks (132.3 MiB) are replaced by offloaded metadata. Devnet 
 commit (`evidence/a13-breakdown-redb.json`, 9ce5a7c):
 - side/offloaded side-block metadata (side_cap + 2·r_keep = 6,144 entries): **140,986,368 B**;
 - side/one full block before offload or during restore: **433,635 B**;
+- 2026-10-28 (after 719da04): each entry also holds a slot in the chain's side set (`Chain::side`, which
+  replaced the per-retain walk over every entry), 48 B more: 22,995 B per entry, +294,912 B for the 6,144
+  entries. The devnet total pinned by `a13_bound_breakdown` is 3,233,892,640 B; network store mode
+  5,581,616,397 B (5.198 GiB).
 - side/evicted-hash FIFO (EVICTED_MAX): **98,304 B**;
 - side total **141,518,307 B = 134.96 MiB** (was 320 × 433,563 = 138,740,160 B = 132.31 MiB at 687ac38).
 Model total **5,627,687,516 B** (was 5,623,469,297 B): +4,218,219 B = +2,778,147 (side) + 1,440,072, the
