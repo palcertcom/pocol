@@ -1067,12 +1067,21 @@ impl Chain{
         self.key(&cx)<self.key(&cy)
     }
     pub(crate) fn rebuild_canonical(&mut self){
+        // From the head back to the first block already canonical at its height. A block fixes its ancestors, so
+        // the chain below that block is unchanged, and only the new branch is walked (2026-10-28: the walk from
+        // the head to genesis at every insert made an import O(H) and a replay from genesis O(H²); at H_END an
+        // empty block's import took 165 ms, evidence/r4). The canonical vector is always a parent-linked path.
         let mut path=Vec::new();let mut cur=Some(self.head);
-        while let Some(h)=cur{path.push(h);cur=self.blocks[&h].parent;}
-        path.reverse();
+        let fork=loop{
+            let Some(h)=cur else{break 0};
+            let e=&self.blocks[&h];
+            if self.canonical.get(e.height as usize)==Some(&h){break e.height+1}
+            path.push(h);cur=e.parent;
+        };
+        path.reverse();self.canonical.truncate(fork as usize);self.canonical.extend(path);
+        debug_assert!({let mut full=Vec::new();let mut c=Some(self.head);while let Some(h)=c{full.push(h);c=self.blocks[&h].parent;}full.reverse();full==self.canonical},"the canonical path is the head's");
         // The first height whose canonical block changed: the prune below it still holds.
-        let same=path.iter().zip(&self.canonical).take_while(|(a,b)|a==b).count() as u64;
-        self.unprune(same);self.canonical=path;
+        self.unprune(fork);
     }
     /// Canonical heights from `h` up may hold what the R21 prune drops (`prune_cursor`).
     pub(crate) fn unprune(&mut self,h:u64){self.prune_cursor=self.prune_cursor.min(h.max(1));}
