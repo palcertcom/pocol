@@ -115,7 +115,11 @@ fn base()->DevnetConfig{DevnetConfig::new(777930,1_700_000_000,&["a","b","c"])}
     let spec=pocold::load_spec_for(&dir,&pocold::single_host_local(),Some(&data)).unwrap();
     assert!(detail(&spec).contains("through a scratch node store"),"{}",detail(&spec));
     assert!(!scratch.exists(),"the scratch store is removed before the node opens");
-    let whole=pocold::load_spec(&dir,&pocold::single_host_local()).unwrap();assert!(!detail(&whole).contains("node store"),"{}",detail(&whole));
+    // 2026-10-28 (Windows run 40680583220): the whole-state admission was refused once on R14/R19 with no times to
+    // show why; a refusal now prints the timing of a calibration run made right after it.
+    let whole=pocold::load_spec(&dir,&pocold::single_host_local()).unwrap_or_else(|e|{let n=devnet::build(&base()).unwrap();
+        panic!("{e}; a calibration run right after it: {:?}",pocol_lp4_execution::admission::measure(&n.spec_bytes,&n.alloc,1).map(|t|t.phase_ms))});
+    assert!(!detail(&whole).contains("node store"),"{}",detail(&whole));
     let n=Node::open(Config{dir:data.clone(),name:"st".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:true,..Default::default()}},spec).unwrap();
     assert!(n.state_store().is_some()&&n.status_json()["stateStore"]==true);
     drop(n);let _=std::fs::remove_dir_all(&d);

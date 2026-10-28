@@ -398,6 +398,7 @@ Their artifacts are not copied.
 | 40600109673 | e453851 (node code: open sets aside a store it finds damaged) | PASS on every step (lp4 211/0, pocold 245/0), the damage test and the new release tests included; client window 0.503 s, pacer lateness 2 ms; evidence/windows-e453851/ |
 | 40608577150 | 260d021 (evidence only; node code as e453851) | PASS (conclusion success; artifact not copied) |
 | 40662875687 | 22543cf (round 4; node code as 3adc356: Reject::Local, streamed journal open) | PASS on every step (lp4 211/0, pocold 250/0, **pocold-io-fault 106/0**, the new step with the deterministic I/O fault tests); client window 0.509 s, pacer lateness 4 ms; evidence/windows-22543cf/ |
+| 40680583220 | 1074b47 (round 4: checkpoint open, the review's fixes) | **FAIL, one test:** pocold 252/1, `a_store_mode_boot_is_timed_through_a_scratch_state_store_in_its_data_directory`: the whole-state boot timing gate refused (R14, R19) with no times recorded; pocold-io-fault 110/0. Cause not established; the test now prints the times with a refusal. evidence/windows-1074b47/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
