@@ -1365,7 +1365,8 @@ fn jm_journal_to_hend(){
     let c=scale_cfg();let d=devnet::build(&c).unwrap();
     let spec=||Spec::new(d.admit(&pocold::single_host_local()).unwrap_or_else(|e|panic!("{e}")).0);
     let keys:HashMap<Address,Key>=d.miners.iter().map(|m|(m.id,Key::from_secret(&m.key.secret()).unwrap())).collect();
-    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"hend".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,
+    // JM_HEND_LOG=1: the node's log on stderr (a refused checkpoint says why).
+    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"hend".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:std::env::var("JM_HEND_LOG").is_ok(),
         limits:Limits{state_store:true,..Default::default()}},spec()).unwrap();(n,t.elapsed().as_secs_f64())};
     let size=|f:&str|std::fs::metadata(dir.join(f)).map(|m|m.len()).unwrap_or(0);
     let h_end=spec().cp().H_END;let top=env_n("JM_HEND_TOP",h_end).min(h_end);
