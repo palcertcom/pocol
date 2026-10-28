@@ -10,8 +10,8 @@
 - **C. Decisions not taken.** The owner's decision decides what the code must do.
 - **D. Resource limits.** The computed bound or a budget refuses, for the profile as specified.
 
-The values are re-measured on `TREE` by `pocold/tests/network_budget.rs::network_profile_boot_gates_itemized`
-(evidence/r4/boot-gates.log). The CP is governance.md's network values. The chainId is 777920, because
+The values are re-measured on `1074b47` by `pocold/tests/network_budget.rs::network_profile_boot_gates_itemized`
+(evidence/r4/boot/boot-gates.log). The CP is governance.md's network values. The chainId is 777920, because
 `devnet::build` refuses 777001. The local values are governance.md's for a network node: Δ=5, φ=5, Φ=10,
 t_exec=3 s, Δ_rel=26, Γ=30, K_hist=32.
 
@@ -21,8 +21,12 @@ t_exec=3 s, Δ_rel=26, Γ=30, K_hist=32.
 |---|---|---|---|---|
 | R22, profile layer | `ProfileIdentity::validate` (lp1-node/src/profile.rs:273): a node of kind Node needs a profile of kind Network, and kind Network ⇔ chainId 777001 | kind Network, node kind Node, chainId 777001 | pocold always requests kind Simnet, node kind Simnet (`pocold::load_spec_for`, src/lib.rs:188); no genesis with chainId 777001 can be built | **A** (no network genesis) and **B** (no code path asks for a network admission) |
 | R22, admission layer | `admission::admit`, experimental-devnet scope (lp4-execution/src/admission.rs:283): only a simnet profile on a simnet node | Scope::Specification for a network node | Scope::ExperimentalDevnet, hard-coded in `load_spec_for` | **B** |
-| R21 | (K_hist + side_max) whole snapshots at ACCT_CAP+5 accounts and SLOT_CAP+SYS_SLOT_MAX slots ≤ HIST_TRIE_BUDGET; the only exception is a simnet profile with retentionStress (governance.md R21; gate.rs) | ≤ 1,717,986,918 B | R21_WHOLE | **D**, for whole-state snapshots |
-| R21, store mode | what the 32 versions behind the live one can add, at most 32 block additions | ≤ 1,717,986,918 B | R21_STORE (the live version alone is R21_LIVE) | **D** as counted; **B**: the spec's runtime mechanism for this case is K_eff (validation L12, consensus.md:230, storage.md:70), which pocold does not implement |
+| R21 | (K_hist + side_max) whole snapshots at ACCT_CAP+5 accounts and SLOT_CAP+SYS_SLOT_MAX slots ≤ HIST_TRIE_BUDGET; the only exception is a simnet profile with retentionStress (governance.md R21; gate.rs) | ≤ 1,717,986,918 B | 59,619,697,068 B (34.7×) | **D**, for whole-state snapshots |
+| R21, store mode | what the 32 versions behind the live one can add, at most 32 block additions | ≤ 1,717,986,918 B | 26,269,409,781 B: the 32 versions' additions 24,267,648,672 B and the live version 2,001,761,109 B (the live version alone exceeds the budget) | **D** as counted; **B**: the spec's runtime mechanism for this case is K_eff (validation L12, consensus.md:230, storage.md:70), which pocold does not implement |
+
+R14 and R19 do not refuse: the calibration's phases took 7, 9 and 11 ms against t_exec = 3,000 ms on this run (the
+H_END measurement ran beside it). They time one compute loop, not the slowest valid blocks, so the pass is not a
+bound (condition `timing-not-a-bound`, decision row 2); the slowest measured blocks are in evidence/r4/README.md § 6.
 
 ## Every refusal, by cause
 
@@ -55,13 +59,13 @@ t_exec=3 s, Δ_rel=26, Γ=30, K_hist=32.
 
 | check | computed | budget | result |
 |---|---:|---:|---|
-| A13, whole-state mode (the default) | A13_WHOLE B model; A13_WHOLE_REQ B required | 6,442,450,944 B (6 GiB) | **refused** |
-| A13, store mode (`--state-store`) | A13_STORE B model (STORE_GIB GiB); A13_STORE_REQ B required | 6,442,450,944 B | passes, computed |
-| R21 (above) | R21_WHOLE B / R21_STORE B | 1,717,986,918 B | refused |
+| A13, whole-state mode (the default) | 26,819,504,117 B model; 30,650,861,848 B required | 6,442,450,944 B (6 GiB) | **refused** |
+| A13, store mode (`--state-store`) | 5,581,321,485 B model (5.198 GiB); 6,378,653,126 B required | 6,442,450,944 B | passes, computed |
+| R21 (above) | 59,619,697,068 B / 26,269,409,781 B | 1,717,986,918 B | refused |
 
 The model cap and the budget are one condition: A13 requires model × 8/7 ≤ budget, that is model ≤ budget × 7/8 =
 5.25 GiB for a 6 GiB budget. The 1/8 headroom is for what the model does not count (allocator fragmentation,
-per-allocation headers). The store-mode model is STORE_GIB GiB against that 5.25 GiB cap. What a node measured
+per-allocation headers). The store-mode model is 5.198 GiB against that 5.25 GiB cap (0.05 GiB to spare; at the O2 caps of decision row 3 it is 5.231 GiB, evidence/r4/boot/store-model-o2.log). What a node measured
 is a different quantity: evidence/r4/README.md § Memory.
 
 ## What booting the network profile would take

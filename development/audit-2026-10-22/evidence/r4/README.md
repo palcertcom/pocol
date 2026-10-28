@@ -11,6 +11,8 @@ Commits of this round (on claude/memory-r14-followup, after 260d021):
 | 3adc356 | pocold: a local storage failure (a state.redb commit, a journal read) stops the node (exit 70) and is never a validity verdict; the journal is streamed at open; `io-fault` test feature; OpenTiming |
 | 16838eb | e2e: a failed run keeps its node logs, inputs and seeds before cleanup; `e2e_heal.mjs`; deterministic heals in `e2e_integrated` |
 | 118afd7 | pocold: checkpoint open without per-record chain scans (prune cursor, one side scan, orphans only after a removal), with replay's version releases in the next block's commit; tests |
+| e028068 | pocold: the independent review's findings F1–F7 (every I/O failure of the node's own storage stops it and keeps the store); e2e F8, F9 |
+| 1074b47 | tests (the io-fault `Op::Read` match arm; the kill test keeps its child's stderr) and evidence |
 
 ## 1. Seeded faults RV10, RV11, RV12, and the defect they led to
 
@@ -49,6 +51,27 @@ manifest of SHA-256 sums, the commit, the pocold binary's hash and the environme
 whose cause was not proven stay open: [../memory-r14/accept-e453851/CORRECTIONS-2026-10-28.md](../memory-r14/accept-e453851/CORRECTIONS-2026-10-28.md)
 (e2e_integrated run 1) and [../memory-r14/accept-ad301e7/CORRECTIONS-2026-10-28.md](../memory-r14/accept-ad301e7/CORRECTIONS-2026-10-28.md)
 (BR18). A passing rerun does not explain either.
+
+## Independent review of 3adc356, 16838eb, 118afd7
+
+A reviewer that had not written the code read the three commits against 260d021 (no build, no run). It found no
+blocking defect and ten findings. All of them are on 118afd7's tree or older, and the fixes are in e028068:
+
+| # | finding | severity | fix | test |
+|---|---|---|---|---|
+| F1 | at open, a journal read error in a checkpoint restore counted as a refusal: every checkpoint was dropped in turn and state.redb deleted (a regression of the streamed journal, 3adc356) | should-fix | `Source::payload_at` separates a local failure (Err) from a refusal (Ok(None)); open fails and keeps everything | `e4_an_open_that_cannot_read_its_storage_fails_and_keeps_the_store` (journal read) |
+| F2 | the same for a state.redb I/O failure in a restore, in dropping a refused checkpoint, or in reading the checkpoints | should-fix | `StateStore::io_failed` (any redb Io/PreviousIo error); open fails | the same test (a write while pinning a stored version; a write while dropping a refused checkpoint) |
+| F3 | a history.redb read error in restoring a slimmed entry was `Reject::Block` | should-fix | `Reject::Local` | none: there is no fault injection for history.redb |
+| F4 | a live checkpoint write or release step that failed on I/O was only logged; a read before the next commit could panic (exit 101) | should-fix | the node stops at once (exit 70); in replay, open fails | `e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid` (checkpoint modes added; release modes must stop in the step) |
+| F5, F6 | a late release that contradicts the counts failed the commit and was lost; a failed commit dropped what waited | minor | the store is marked damaged (rebuilt at the next open); what waited is put back | none beyond the late-release test |
+| F7 | replay's read back of a record was not bound again to the rolling hash | minor | it is | none |
+| F8 | e2e_integrated could measure a and b on different tips | minor | a catch-up phase before the measurement | the acceptance runs |
+| F9 | kept evidence recorded every POCOL/E2E/PLAYWRIGHT variable | minor | only the variables the drivers read | — |
+| F10 | the io-fault tests run only with the feature | minor | not changed: the Windows workflow runs them (step pocold-io-fault) and so does this round's suite | — |
+
+Seeded faults for the fixes ([mutants-review.log](mutants-review.log)): 5 of 5 killed. Two survived the first
+round (a release step only logged; a failed drop of a refused checkpoint); the tests were strengthened and
+both were then killed.
 
 ## 5. Checkpoint open
 
@@ -103,7 +126,37 @@ SECTION_MEMORY
 
 ## 6. Boot and performance
 
-SECTION_BOOT
+All on 1074b47 with the H_END run (§4, nice 10) beside them; logs in [boot/](boot/). (During the last log,
+modexp-random, two documents were being edited; no code.)
+
+**R21, R22 and A13 with their actual values:** [../../BOOT-BLOCKERS-2026-10-28.md](../../BOOT-BLOCKERS-2026-10-28.md), sorted by cause
+(no approved genesis or measured input, implementation gaps, decisions not taken, resource limits);
+[boot/boot-gates.log](boot/boot-gates.log). The network profile does not boot: R21 refuses in both modes, and
+A13 passes only in store mode.
+
+**R14/R19 calibration** ([boot/r14-boot-timing.log](boot/r14-boot-timing.log)): the boot gate times one compute loop.
+- Phases: 6–10 ms in memory and 8–15 ms through the store, against t_exec = 1,000 ms (devnet).
+- In the network gate: 7, 9 and 11 ms against 3,000 ms.
+- It passes without timing the slowest blocks (condition `timing-not-a-bound`, decision row 2, not approved,
+  not changed here).
+
+**The slowest valid blocks measured** (one transaction of 7.95 M gas, `POCOL_ROOT_CHECK=0` as in the node binary):
+
+| set | slowest | validate | import |
+|---|---|---:|---:|
+| workload gap, 16 kinds × 2 states × 2 modes ([boot/r14-workload-gap.log](boot/r14-workload-gap.log)) | MODEXP, 16-byte even modulus, grown state, whole-state mode | median 328 ms (41 ns/gas) | 359 ms |
+| shape sweep, 385 shapes ([boot/modexp-sweep.log](boot/modexp-sweep.log)) | MODEXP, 16-byte modulus 2·odd, 8,192-bit exponent | median 400 ms, min 371 ms (50 ns/gas) | — |
+| seeded random, 3,000 inputs, seed 0x5eed20261028 ([boot/modexp-random.log](boot/modexp-random.log)) | 9-byte base and modulus, 54-byte exponent | median 277 ms (projected 346 ms) | — |
+
+- Every measured block is within t_exec = 1 s, by about 2.5×.
+- The worst figure of round 3 was 0.47 s to validate and 0.51 s to import. This round's worst is 0.40 s, on
+  the same host class under a different load.
+- The grid and the random set are not a proof of the maximum.
+- What would bound it is decision row 2 (calibrating on the slowest kinds), which is open.
+
+**Not changed:** no limit raised and no consensus rule changed. The missing network genesis, the implementation
+gaps (K_eff, a network admission path, the RpcGuard mechanisms) and the resource limits are listed apart in
+BOOT-BLOCKERS.
 
 ## Suites
 
