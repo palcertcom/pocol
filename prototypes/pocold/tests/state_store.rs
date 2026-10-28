@@ -340,3 +340,106 @@ fn release_step_io_child(){
         drop(s);let _=std::fs::remove_dir_all(&d);
     }
 }
+/// Seeded fault RV10 (2026-10-28): `stored_bytes` is every key and value of every table but `meta`, the
+/// `release` rows among them. Checked, while rows are owed, against redb's own count of each table's key
+/// and value bytes (`TableStats::stored_bytes`), read from the file once the store is closed.
+#[test] fn stored_bytes_is_every_table_s_keys_and_values_while_rows_are_owed(){
+    use redb::{ReadableTableMetadata,TableHandle};
+    let d=dir("stored-bytes");let s=owing_store(&d,0x5b);let owed=s.owed_refs().unwrap().len();assert!(owed>0,"positive control: rows are owed");
+    let counted=s.stored_bytes().unwrap();let path=s.path().to_path_buf();drop(s);
+    let db=redb::Database::open(&path).unwrap();let r=db.begin_read().unwrap();let (mut all,mut rows,mut tables)=(0u64,0u64,vec![]);
+    for t in r.list_tables().unwrap(){let name=t.name().to_string();if name=="meta"{continue}
+        let b=r.open_untyped_table(t).unwrap().stats().unwrap().stored_bytes();all+=b;if name=="release"{rows=b;}tables.push((name,b));}
+    println!("STORED-BYTES {counted} B counted; redb: {tables:?}");
+    assert_eq!(rows,owed as u64*36,"positive control: redb counts 36 bytes for each of the {owed} release rows");
+    assert_eq!(counted,all,"stored_bytes is redb's count of every table's keys and values");
+    drop(r);drop(db);let _=std::fs::remove_dir_all(&d);
+}
+/// Storage faults (`--features io-fault`): an I/O error injected into state.redb once the store reaches a
+/// named step, deterministic and on every platform (the RLIMIT_FSIZE test above is Unix only). redb then
+/// refuses the store (`PreviousIo`) until it is opened again, as after a real I/O error. A failed write
+/// (`Op::Write`, the commit's first page write) leaves the commit undone: redb's header still names the
+/// transaction before. A failed fsync (`Op::Sync`) comes after the commit's pages and header were written, so
+/// the commit may be durable all the same, as on a real disk; every test below takes both outcomes.
+#[cfg(feature="io-fault")]
+const IO_OPS:[pocold::io_fault::Op;2]=[pocold::io_fault::Op::Write,pocold::io_fault::Op::Sync];
+/// D-6: a release step whose commit fails on I/O returns the error, does not mark the store damaged and
+/// stops the steps. Reopened, the store is not rebuilt and keeps both checkpoints; it owes every row it
+/// owed (a failed write) or what the step left (a failed fsync after which the step was durable). Its counts
+/// recount and the release finishes.
+#[cfg(feature="io-fault")]
+#[test] fn an_io_fault_in_a_release_step_leaves_the_store_whole(){
+    use pocold::io_fault;
+    for op in IO_OPS{
+        let d=dir(&format!("iof-step-{op:?}"));let s=owing_store(&d,0x10f);let owed=s.owed_refs().unwrap();let path=s.path().to_path_buf();
+        io_fault::arm(&path,"release-step",op);
+        let e=s.release_step(256).expect_err("the step fails on the injected fault").0;
+        assert_eq!(io_fault::fired(&path),vec![("release-step".to_string(),op)],"{op:?}: positive control: one fault, at the step's commit ({e})");
+        assert!(!s.is_damaged()&&!d.join(pocold::state_store::DAMAGED).exists(),"{op:?}: an I/O error is not damage");
+        assert!(!s.release_pending(),"{op:?}: no more steps are tried");
+        assert!(s.release_step(256).is_err(),"{op:?}: redb refuses the store until it is opened again");
+        drop(s);let s=StateStore::open(&d).unwrap();
+        assert!(!s.rebuilt,"{op:?}: the store is not rebuilt");assert_eq!(s.checkpoints().unwrap().len(),2,"{op:?}: both checkpoints are kept");
+        let now=s.owed_refs().unwrap();s.recount().unwrap();
+        match op{io_fault::Op::Write=>assert_eq!(now,owed,"a failed write: the step is undone and no row is lost"),
+            io_fault::Op::Sync=>assert!(now==owed||now.len()<owed.len()+256,"a failed fsync: the step is undone or durable")}
+        println!("IOF-STEP {op:?}: {} rows owed before, {} after reopening",owed.len(),now.len());
+        assert_eq!(s.release_pending(),!now.is_empty(),"{op:?}: open reads the flag from the table");
+        while s.release_pending(){s.release_step(16).unwrap();}s.recount().unwrap();assert!(s.owed_refs().unwrap().is_empty());
+        drop(s);let _=std::fs::remove_dir_all(&d);
+    }
+}
+/// Seeded fault RV12 (2026-10-28): a checkpoint's write that does not commit leaves `release_pending` as the
+/// table it leaves; the flag is set only once the write commits. The write's commit fails on an injected
+/// page-write fault, so it is undone:
+/// 1. nothing owed, two checkpoints kept: the write would drop the oldest and owe its nodes. Nothing is owed
+///    after the failure, and the flag stays clear;
+/// 2. rows owed, one checkpoint kept (the other dropped): the write would finish what is owed and drop none.
+///    The rows are still owed after the failure, and the flag stays set.
+/// Each store is then reopened (redb refuses it until then): the table and the checkpoints are as they were.
+/// With an fsync fault instead the write may be durable; the flag then keeps what the store was known to
+/// hold, and the next open, which reads it from the table, gives the table either outcome left.
+#[cfg(feature="io-fault")]
+#[test] fn a_checkpoint_write_that_fails_on_io_leaves_the_flag_as_the_table(){
+    use pocold::io_fault;
+    for op in IO_OPS{for case in 1..=2u64{
+        let d=dir(&format!("iof-write-{op:?}-{case}"));let s=owing_store(&d,0x120+case);
+        if case==1{s.release_all().unwrap();}else{let c=s.checkpoints().unwrap();s.drop_checkpoint(c[0].0).unwrap();}
+        let (owed,before)=(s.owed_refs().unwrap(),s.checkpoints().unwrap());
+        assert_eq!((owed.is_empty(),before.len(),s.release_pending()),if case==1{(true,2,false)}else{(false,1,true)},"{op:?} {case}: positive control");
+        let roots=before.last().unwrap().2.clone();let path=s.path().to_path_buf();
+        io_fault::arm(&path,"checkpoint-txn",op);
+        let e=s.write_checkpoint(b"c-fails",&roots,2).expect_err("the write fails on the injected fault").0;
+        assert_eq!(io_fault::fired(&path).len(),1,"{op:?} {case}: positive control: the fault fired at the write's commit ({e})");
+        assert!(!s.is_damaged(),"{op:?} {case}: an I/O error is not damage");
+        assert_eq!(s.release_pending(),case==2,"{op:?} {case}: the flag keeps what the store was known to hold");
+        drop(s);let s=StateStore::open(&d).unwrap();assert!(!s.rebuilt);s.recount().unwrap();
+        let (now,after)=(s.owed_refs().unwrap(),s.checkpoints().unwrap());let seqs=|c:&[(u64,Vec<u8>,Vec<Id>)]|c.iter().map(|x|x.0).collect::<Vec<_>>();
+        let undone=now==owed&&seqs(&after)==seqs(&before);
+        println!("IOF-WRITE {op:?} case {case}: the write was {} on disk",if undone{"undone"}else{"durable"});
+        if op==io_fault::Op::Write{assert!(undone,"case {case}: a failed write is undone: what is owed and the checkpoints are as they were")}
+        else{assert!(undone||(after.len()==2&&after.last().unwrap().1==b"c-fails"),"case {case}: a failed fsync leaves the write undone or whole")}
+        assert_eq!(s.release_pending(),!now.is_empty(),"{op:?} {case}: open reads the flag from the table");
+        drop(s);let _=std::fs::remove_dir_all(&d);
+    }}
+}
+/// An I/O error in a block's commit (state-txn): with a failed write the version is not stored; with a failed
+/// fsync it may be stored and pinned. Either way the store opens without a rebuild and its counts recount
+/// (the node's open then resets the pins to the checkpoints'). The same commit then succeeds and reads back.
+#[cfg(feature="io-fault")]
+#[test] fn a_commit_that_fails_on_io_is_undone_or_whole(){
+    use pocold::io_fault;
+    for op in IO_OPS{
+        let c=codes();let mut r=Rng(0xc0);let d=dir(&format!("iof-commit-{op:?}"));let s=StateStore::open(&d).unwrap();let db=state(&mut r,120,&c);
+        let mut b=Batch::default();let t=NodeTrie::build(&db,&s,&mut b);let path=s.path().to_path_buf();
+        io_fault::arm(&path,"state-txn",op);
+        assert!(s.commit(&b,t.world,true).is_err(),"{op:?}: the commit fails on the injected fault");assert_eq!(io_fault::fired(&path).len(),1);
+        assert!(!s.is_damaged());drop(s);
+        let s=StateStore::open(&d).unwrap();assert!(!s.rebuilt);s.recount().unwrap();
+        let stored=s.count(&t.world.unwrap()).unwrap();println!("IOF-COMMIT {op:?}: the root's count after reopening {stored:?}");
+        if op==io_fault::Op::Write{assert_eq!((stored,s.node_count().unwrap()),(None,0),"a failed write: the version is not stored")}
+        else{assert!(stored.is_none()||stored==Some(1),"a failed fsync: undone, or stored and pinned once")}
+        s.commit(&b,t.world,true).unwrap();s.recount().unwrap();same(&db,&TrieState{store:&s,trie:t,block_hashes:&db.block_hashes},"after the retried commit");
+        drop(s);let _=std::fs::remove_dir_all(&d);
+    }
+}

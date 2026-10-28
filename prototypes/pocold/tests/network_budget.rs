@@ -198,3 +198,22 @@ fn print(tag:&str,b:&pocold::resources::Bound){
         assert_eq!(r.is_ok(),need<=u128::from(lim.mem_budget));
     }
 }
+/// D-3 O2 (2026-10-28; a fact the decision table lacked): the network store-mode A13 model at the caps O2
+/// proposes (TX_CAP 5·10^7, TXBYTES_CAP 24·2^30, LOG_CAP 2^32) beside today's (10^7, 2^33, 2^30). TX_CAP and
+/// TXBYTES_CAP are CP fields and enter `derive` through the profile. LOG_CAP is a build constant, so its share
+/// is added from the formula the history term uses (`resources.rs`: LOG_CAP·33/32 of history.redb payload, its
+/// allocator at HISTORY_FILE_FACTOR / 4096 bytes per byte; the resident window's logs are bounded by the window,
+/// not by LOG_CAP). Prints; asserts only that both are computed. Nothing here adopts O2.
+#[test] fn network_store_model_at_the_o2_caps(){
+    let local=pocold_local();let lim=pocold::node::Limits{state_store:true,..Default::default()};
+    let model=|c:&DevnetConfig|{let d=devnet::build(c).expect("network-profile candidate");pocold::resources::derive(d.profile.cp(),local.k_hist,local.side_max,&lim,2).unwrap().total};
+    let o1=model(&network());let mut o2c=network();o2c.tx_cap=50_000_000;o2c.txbytes_cap=24<<30;let o2_cp=model(&o2c);
+    let log_delta=((1u128<<32)-(1u128<<30))/32*33*pocold::resources::HISTORY_FILE_FACTOR/4096;
+    let o2=o2_cp+log_delta;let gib=|x:u128|x as f64/(1u128<<30) as f64;
+    let need=|x:u128|pocold::resources::budget_required(x).unwrap();
+    println!("NETWORK-A13-O2 {}",serde_json::json!({"o1ModelBytes":o1.to_string(),"o1GiB":gib(o1),"o1RequiredGiB":gib(need(o1)),
+        "o2CpCapsModelBytes":o2_cp.to_string(),"o2LogCapDeltaBytes":log_delta.to_string(),"o2ModelBytes":o2.to_string(),"o2GiB":gib(o2),"o2RequiredGiB":gib(need(o2)),
+        "budgetGiB":gib(u128::from(lim.mem_budget)),"o2FitsBudget":need(o2)<=u128::from(lim.mem_budget)}));
+    assert!(o2>=o1);
+}
+fn pocold_local()->pocol_lp4_execution::admission::NodeLocal{pocol_lp4_execution::admission::NodeLocal{delta:5,phi:5,t_exec:3,delta_rel:26,gamma:30,k_hist:32,retention_stress:false,..pocold::single_host_local()}}

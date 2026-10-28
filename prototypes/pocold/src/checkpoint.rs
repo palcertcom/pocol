@@ -164,7 +164,7 @@ pub fn roots(s:&Snapshot)->Vec<Id>{s.entries.iter().filter_map(|e|e.root).collec
 /// What `restore` reads besides the snapshot: a journal record's payload by its frame offset (only records
 /// of the bound prefix), and history.redb's receipts and nonce ranges.
 pub trait Source{
-    fn payload_at(&self,off:u64)->Option<&[u8]>;
+    fn payload_at(&self,off:u64)->Option<Vec<u8>>;
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>;
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>;
     /// Whether history.redb holds the block's receipts and nonce ranges.
@@ -209,7 +209,7 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
             // must be there too.
             if !src.has(&r.hash)?{return Err(why("not in history.redb"))}
             let payload=src.payload_at(off).ok_or_else(||why("its journal offset is not a record of the bound prefix"))?;
-            let (hb,bb,rb)=crate::store::decode_record(payload).map_err(|e|why(&format!("record: {e}")))?;
+            let (hb,bb,rb)=crate::store::decode_record(&payload).map_err(|e|why(&format!("record: {e}")))?;
             let header=decode_header(&hb).map_err(|e|why(&format!("header: {e}")))?;
             if block_hash(&header)!=r.hash{return Err(why("the journal header does not hash to the entry"))}
             let p=blocks.get(&header.parent_hash).ok_or_else(||why("parent not restored"))?;
@@ -268,9 +268,10 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
 }
 
 /// A journal's records by frame offset (the prefix a snapshot is bound to) over history.redb.
-pub struct JournalSource<'a>{pub by_off:HashMap<u64,usize>,pub payloads:&'a [Vec<u8>],pub records:usize,pub history:&'a crate::history::History}
+pub struct JournalSource<'a>{pub by_off:HashMap<u64,usize>,pub journal:&'a crate::store::Journal,pub records:usize,pub history:&'a crate::history::History}
 impl Source for JournalSource<'_>{
-    fn payload_at(&self,off:u64)->Option<&[u8]>{self.by_off.get(&off).filter(|i|**i<self.records).map(|i|self.payloads[*i].as_slice())}
+    /// Read back from the journal file and verified again (open no longer holds the payloads).
+    fn payload_at(&self,off:u64)->Option<Vec<u8>>{self.by_off.get(&off).filter(|i|**i<self.records)?;self.journal.payload_at(off).ok()}
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|e.0)}
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|e.0)}
     fn has(&self,hash:&[u8;32])->Result<bool,String>{self.history.has(hash).map_err(|e|e.0)}

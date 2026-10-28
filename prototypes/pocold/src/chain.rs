@@ -117,11 +117,11 @@ pub struct Pinned{pub trie:pocol_lp4_execution::node_trie::NodeTrie,pub hashes:H
 impl Pinned{
     /// Commits the child's new nodes and pins its root.
     pub fn new(store:std::sync::Arc<dyn pocol_lp4_execution::node_trie::TrieStore>,c:StoredChild)->Result<Pinned,Reject>{
-        store.commit(&c.batch,c.trie.world).map_err(|e|Reject::Block(format!("state store: {e}")))?;Ok(Pinned{trie:c.trie,hashes:c.hashes,store})
+        store.commit(&c.batch,c.trie.world).map_err(|e|Reject::Local(format!("state store: {e}")))?;Ok(Pinned{trie:c.trie,hashes:c.hashes,store})
     }
     /// C-1 E4.4: a version already stored (a checkpoint's, restored at open) pinned once more for its entry.
     pub fn adopt(store:std::sync::Arc<dyn pocol_lp4_execution::node_trie::TrieStore>,root:pocol_lp4_execution::node_trie::Id,hashes:HashMap<U256,B256>)->Result<Pinned,Reject>{
-        store.commit(&Default::default(),Some(root)).map_err(|e|Reject::Block(format!("state store: {e}")))?;
+        store.commit(&Default::default(),Some(root)).map_err(|e|Reject::Local(format!("state store: {e}")))?;
         Ok(Pinned{trie:pocol_lp4_execution::node_trie::NodeTrie{world:Some(root)},hashes,store})
     }
     pub fn view(&self)->pocol_lp4_execution::node_trie::TrieState<'_>{pocol_lp4_execution::node_trie::TrieState{store:&*self.store,trie:self.trie,block_hashes:&self.hashes}}
@@ -259,6 +259,11 @@ pub enum Reject{
     /// block at or below head-R_keep, which retention would remove at once (it cannot be canonical or win
     /// D133 there; deeper rollback is the manual checkpoint of governance.md:200). Never a validity verdict.
     Evicted,
+    /// 2026-10-28: the node's own storage failed (a state version's commit to state.redb, a journal read),
+    /// never a validity verdict: the block is not marked invalid. The node stops (exit 70), as when a
+    /// history.redb or journal write fails, and the next open recovers (I1). Before, a state.redb commit
+    /// that failed was a `Block` rejection: the block and its descendants were refused until a restart.
+    Local(String),
 }
 fn blk<T>(s:impl Into<String>)->Result<T,Reject>{Err(Reject::Block(s.into()))}
 

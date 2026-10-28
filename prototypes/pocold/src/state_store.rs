@@ -95,7 +95,8 @@ impl StateStore{
     pub fn open_with(dir:&Path,cache_cap:usize)->Result<Self,StateStoreError>{
         let path=dir.join(FILE);let marker=dir.join(DAMAGED);
         let create=|p:&Path|->Result<Database,StateStoreError>{
-            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(STATE_PAGE_CACHE);b.create(p)})).map_err(|_|StateStoreError("redb panicked at open".into()))?.map_err(err)?;
+            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(STATE_PAGE_CACHE);
+                #[cfg(feature="io-fault")] let db=crate::io_fault::create(&b,p);#[cfg(not(feature="io-fault"))] let db=b.create(p);db})).map_err(|_|StateStoreError("redb panicked at open".into()))?.map_err(err)?;
             match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}_=>return Err(StateStoreError("integrity check failed".into()))}
             catch_unwind(AssertUnwindSafe(||->Result<(),StateStoreError>{let w=db.begin_write().map_err(err)?;
                 {let nodes=w.open_table(NODES).map_err(err)?;w.open_table(CODE).map_err(err)?;w.open_table(PINS).map_err(err)?;
@@ -198,7 +199,7 @@ impl StateStore{
                     }
                 }
             }
-            crate::crash_point("state-txn");
+            crate::crash_point("state-txn");crate::io_point(&self.path,"state-txn");
             w.commit().map_err(err)
         })
     }
@@ -256,7 +257,7 @@ impl StateStore{
                 for old in seqs.iter().take(seqs.len().saturating_sub(keep.max(1))){owe_one(&mut c,&mut x,&mut p,&mut o,*old)?;}
                 owing=!o.is_empty().map_err(err)?;
             }
-            crate::crash_point("checkpoint-txn");
+            crate::crash_point("checkpoint-txn");crate::io_point(&self.path,"checkpoint-txn");
             w.commit().map_err(err)?;Ok(seq)
         });
         if let Some(m)=broken{return Err(self.mark_damaged(&format!("a checkpoint's write: {m}")))}
@@ -269,9 +270,11 @@ impl StateStore{
     /// the step, never part of it, and the work is still owed). Each row takes what its node owes off the
     /// node's count and, when none is left, deletes the node and owes one reference to each of its children.
     /// Returns the rows worked off. A step that fails stops the steps (`release_pending` is false until the
-    /// next checkpoint's write or open, which finish what is owed). A storage error (an I/O error, say)
-    /// loses only the step: the store stays whole and keeps its checkpoints, as after a failed block commit.
-    /// A count that contradicts what is owed marks the store damaged, and the next open rebuilds it.
+    /// next checkpoint's write or open, which finish what is owed). A storage error (an I/O error, say) is
+    /// not damage: on disk the store stays whole with its checkpoints (a failed write undoes the step; after a
+    /// failed fsync it may be durable). redb then refuses the store until it is opened again, so the node's
+    /// next state commit fails, and the node stops (`Reject::Local`) and recovers at its next open
+    /// (2026-10-28). A count that contradicts what is owed marks the store damaged, and the next open rebuilds it.
     /// Fsynced, unlike an entry's release: measured at the network's state caps, steps left unsynced made
     /// each block's durable commit write their pages (imports during a release up to 905 ms, against 209 ms
     /// with each step fsynced; evidence/memory-r14/scale-d30dc71).
@@ -281,7 +284,7 @@ impl StateStore{
             let w=self.db.begin_write().map_err(err)?;let n;
             {let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
              n=worked(work(&mut t,&mut o,budget.max(1),&self.cache),&mut broken)?;done=o.is_empty().map_err(err)?;}
-            crate::crash_point("release-step");
+            crate::crash_point("release-step");crate::io_point(&self.path,"release-step");
             w.commit().map_err(err)?;Ok(n)
         });
         match n{
@@ -298,6 +301,7 @@ impl StateStore{
             let w=self.db.begin_write().map_err(err)?;let mut n=0u64;
             {let mut t=w.open_table(NODES).map_err(err)?;let mut o=w.open_table(RELEASE).map_err(err)?;
              loop{let k=worked(work(&mut t,&mut o,usize::MAX,&self.cache),&mut broken)?;if k==0{break}n+=k as u64;}}
+            crate::io_point(&self.path,"release-all");
             w.commit().map_err(err)?;Ok(n)
         });
         if let Some(m)=broken{return Err(self.mark_damaged(&format!("the release at open: {m}")))}

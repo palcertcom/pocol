@@ -1269,7 +1269,7 @@ fn jm_store_scale(){
     };
     let alice=devnet::account_key("alice");
     // How the open's checkpoint restore read the stored versions (whole, or through the parent's diff).
-    let read=|n:&Node|serde_json::json!({"whole":n.stats.versions_read.whole,"byDiff":n.stats.versions_read.by_diff});
+    let read=|n:&Node|serde_json::json!({"whole":n.stats.versions_read.whole,"byDiff":n.stats.versions_read.by_diff,"openTiming":serde_json::to_value(&n.stats.open).unwrap()});
     match phase.as_str(){
         "grow"=>{
             assert!(!dir.exists(),"JM_SCALE_DIR must not exist for the grow phase");
@@ -1340,5 +1340,117 @@ fn jm_store_scale(){
             figures(&n,"after three checkpoints",serde_json::json!({"encodeMs":encode_ms,"snapshotBytes":bytes.len(),"roots":roots.len(),"entries":n.chain.blocks.len(),"checkpointNow":calls}));
         }
         p=>panic!("JM_SCALE_PHASE {p}"),
+    }
+}
+
+// ============================ R4-4: the journal and the stores up to H_END (2026-10-28) ============================
+/// The journal, history.redb and state.redb of a store-mode node of `scale_cfg()` (the network's state caps and its
+/// H_END of 129,600) imported up to H_END, measured, then the open of that directory. Phases (JM_HEND_PHASE) on one
+/// directory (JM_HEND_DIR):
+/// - "grow" (the directory must not exist): signed empty blocks from genesis to H_END (or JM_HEND_TOP). At
+///   JM_HEND_STEPS (20) points it prints JM-HEND: the height, the journal's bytes and records, history.redb's and
+///   state.redb's file sizes, RSS and VmHWM, and the segment's import times. Every empty block's journal record is the
+///   same size up to its shares, so the bytes per record are printed too.
+/// - "reopen": opens the directory in a fresh process (from its newest checkpoint), and prints the open's time and
+///   `OpenTiming`, VmHWM after the open, and RSS after the open with the node alive (after malloc_trim): the open's
+///   transient is VmHWM minus that RSS (condition `open-replay-transient`).
+/// Empty blocks are the cheapest records there are; a block's body adds its bytes (at most BODY_MAX each, and a
+/// branch's transactions at most TXBYTES_CAP in all). A measurement on this host, not a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_journal_to_hend(){
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let dir=PathBuf::from(std::env::var("JM_HEND_DIR").expect("JM_HEND_DIR"));
+    let phase=std::env::var("JM_HEND_PHASE").unwrap_or_else(|_|"grow".into());
+    let c=scale_cfg();let d=devnet::build(&c).unwrap();
+    let spec=||Spec::new(d.admit(&pocold::single_host_local()).unwrap_or_else(|e|panic!("{e}")).0);
+    let keys:HashMap<Address,Key>=d.miners.iter().map(|m|(m.id,Key::from_secret(&m.key.secret()).unwrap())).collect();
+    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"hend".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,
+        limits:Limits{state_store:true,..Default::default()}},spec()).unwrap();(n,t.elapsed().as_secs_f64())};
+    let size=|f:&str|std::fs::metadata(dir.join(f)).map(|m|m.len()).unwrap_or(0);
+    let h_end=spec().cp().H_END;let top=env_n("JM_HEND_TOP",h_end).min(h_end);
+    let figures=|n:&Node,what:&str,extra:serde_json::Value|{
+        println!("JM-HEND {}",serde_json::json!({"phase":what,"height":n.chain.head().height,"hEnd":h_end,"records":n.journal_records(),"journalBytes":size("blocks.journal"),
+            "bytesPerRecord":size("blocks.journal") as f64/n.journal_records().max(1) as f64,"historyBytes":size("history.redb"),"stateFileBytes":size("state.redb"),
+            "rssBytes":rss_bytes(),"vmHwmBytes":vmhwm_bytes(),"blocksKnown":n.chain.blocks.len(),"extra":extra}));
+    };
+    match phase.as_str(){
+        "grow"=>{
+            assert!(!dir.exists(),"JM_HEND_DIR must not exist for the grow phase");
+            let steps=env_n("JM_HEND_STEPS",20);let (mut n,_)=open();figures(&n,"grow start",serde_json::json!({}));
+            let (mut build_ms,mut import_ms)=(vec![],vec![]);let (t0,mut next)=(Instant::now(),1u64);
+            while n.chain.head().height<top{
+                let t=Instant::now();let b=signed_on(&n.chain,&keys,n.chain.head,Body::default());build_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let t=Instant::now();n.import(b,None).unwrap();import_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let h=n.chain.head().height;
+                if h>=next*top/steps||h==top{
+                    let st=|v:&[f64]|serde_json::json!({"n":v.len(),"medianMs":if v.is_empty(){0.0}else{median(v.to_vec())},"maxMs":v.iter().cloned().fold(0.0,f64::max)});
+                    figures(&n,&format!("grow {next}/{steps}"),serde_json::json!({"seconds":t0.elapsed().as_secs_f64(),"build":st(&build_ms),"import":st(&import_ms),"checkpointsWritten":n.stats.checkpoints_written}));
+                    build_ms.clear();import_ms.clear();next+=1;
+                }
+                // The event loop's background steps between events (D-6 release, D-7 pool).
+                while n.release_pending(){n.release_step();}
+            }
+            assert_eq!(n.chain.head().height,top);
+        }
+        "reopen"=>{
+            let base=rss_bytes();let (n,open_s)=open();let hwm=vmhwm_bytes();trim_heap();
+            figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"openTiming":serde_json::to_value(&n.stats.open).unwrap(),
+                "rssBeforeOpen":base,"vmHwmAfterOpen":hwm,"rssAfterOpenTrimmed":rss_bytes(),"transientBytes":hwm-rss_bytes()}));
+        }
+        p=>panic!("JM_HEND_PHASE {p}"),
+    }
+}
+
+// ============================ R4-6: a randomized MODEXP search beside the grid (2026-10-28) ============================
+/// The shape sweep (`jm_modexp_sweep`) is a grid, not a proof of the slowest MODEXP input. This draws JM_RND_N (3,000)
+/// inputs from a seeded generator (JM_RND_SEED, printed, so a run is reproduced from its seed): modulus lengths
+/// log-uniform over 1..1,024 bytes, with random structure (odd, even with a random count of trailing zero bits,
+/// a power of two, all ones, a short top word), base lengths below, at and above the modulus's, and exponents of
+/// 1..96 bytes with random leading zero bytes (which change the adjusted exponent length, so the gas). Each input's
+/// result and gas are checked equal to revm's; its time per call is measured; and the JM_RND_BLOCKS (4) slowest
+/// per unit of block gas are built as full-gas blocks and validated (median of 3), as the sweep does. A search,
+/// not a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_modexp_random(){
+    use revm::precompile as pc;
+    const LOOP_GAS:u64=131;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let (seed,n_samples,blocks_n)=(env_n("JM_RND_SEED",0x5eed_2026_1028),env_n("JM_RND_N",3000),env_n("JM_RND_BLOCKS",4) as usize);
+    let mut s=seed|1;let mut next=||{s^=s<<13;s^=s>>7;s^=s<<17;s};
+    let time=|f:&dyn Fn()|{f();let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.02||calls<3{f();calls+=1;}t.elapsed().as_secs_f64()*1e9/calls as f64};
+    println!("JM-MODEXP-RANDOM-SEED {seed:#x} samples {n_samples}");
+    let mut rows:Vec<(f64,serde_json::Value,Vec<u8>,usize)>=vec![];let mut skipped=0u64;
+    for i in 0..n_samples{
+        let m=((2f64.powf((next()%10_000) as f64/10_000.0*10.0)) as usize).clamp(1,1024);
+        let b=match next()%4{0=>0,1=>(m/2).max(1),2=>m,_=>m+(next()%64) as usize};
+        let e=1+(next()%96) as usize;let lead=if next()%3==0{(next()%e as u64) as usize}else{0};
+        let mut md:Vec<u8>=(0..m).map(|_|next() as u8).collect();let mk=next()%6;
+        match mk{0=>{md[m-1]|=1}1=>{let t=1+(next()%(8*m as u64).max(2)) as usize;let t=t.min(8*m-1);for k in 0..t{md[m-1-k/8]&=!(1<<(k%8));}md[m-1-t/8]|=1<<(t%8);}
+            2=>{md=vec![0;m];md[0]=1<<(next()%8);}3=>{md=vec![0xff;m];}4=>{md[0]=0;if m>1{md[1]|=1}}_=>{}}
+        let base:Vec<u8>=(0..b).map(|_|next() as u8).collect();let mut ex:Vec<u8>=(0..e).map(|_|next() as u8).collect();for x in ex.iter_mut().take(lead){*x=0;}
+        let mut input=vec![];for l in [b,e,m]{let mut w=[0u8;32];w[24..].copy_from_slice(&(l as u64).to_be_bytes());input.extend(w);}
+        input.extend(&base);input.extend(&ex);input.extend(&md);
+        let inp=revm::primitives::Bytes::from(input.clone());
+        let ours=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);let theirs=pc::modexp::berlin_run(&inp,u64::MAX);
+        assert_eq!(format!("{ours:?}"),format!("{theirs:?}"),"sample {i} (seed {seed:#x}): pocol's MODEXP equals revm's");
+        let avail=FULL_GAS-53_000-16*(input.len() as u64+30);
+        let Ok(gas)=theirs.as_ref().map(|o|o.gas_used) else{skipped+=1;continue};if gas+LOOP_GAS>avail||input.len()>u16::MAX as usize{skipped+=1;continue}
+        let t=time(&||{let _=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);});
+        let per_gas=t/(gas+LOOP_GAS) as f64;let calls=(avail/(gas+LOOP_GAS)) as f64;
+        rows.push((per_gas,serde_json::json!({"sample":i,"baseBytes":b,"expBytes":e,"expLeadingZeroBytes":lead,"modBytes":m,"modKind":mk,"gasPerCall":gas,"nsPerCall":t,
+            "nsPerBlockGas":per_gas,"projectedBlockMs":calls*t/1e6}),input,m));
+    }
+    rows.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap());
+    println!("JM-MODEXP-RANDOM-SUMMARY {}",serde_json::json!({"seed":format!("{seed:#x}"),"drawn":n_samples,"measured":rows.len(),"skippedOverBlockGasOrError":skipped,
+        "maxNsPerBlockGas":rows.first().map(|r|r.0),"medianNsPerBlockGas":rows.get(rows.len()/2).map(|r|r.0)}));
+    for (_,v,_,_) in rows.iter().take(10){println!("JM-MODEXP-RANDOM-TOP {v}");}
+    let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");let p0=fallback(&n,g,0);import(&mut n,&p0);
+    for (_,v,input,m) in rows.iter().take(blocks_n){
+        let init=precompile_loop(5,input,input.len() as u16,(*m) as u16);
+        let b=signed(&n,p0.hash(),Body{txs:vec![deploy(&alice,0,FULL_GAS,0,init)],evidence:vec![]});
+        let (min,med,gas)=validate_ms(&n.chain,&b,3);
+        println!("JM-MODEXP-RANDOM-BLOCK {}",serde_json::json!({"sample":v["sample"],"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"projectedBlockMs":v["projectedBlockMs"],"nsPerGas":med*1e6/gas.max(1) as f64}));
     }
 }

@@ -1480,7 +1480,7 @@ fn e4_store_node_at_the_spec_depth_2048_and_2049_answers_as_a_whole_state_node()
     let (mut n,dir,conf)=rnode("seq",64,16);n.import(y.clone(),None).unwrap();n.import(x.clone(),None).unwrap();
     assert_eq!(n.chain.head,y.hash(),"the first imported wins the signed tie");
     let binding=n.chain.spec.genesis_hash();drop(n);
-    {let mut rec=pocold::store::open(&dir,&binding).unwrap();let again=rec.payloads[0].clone();rec.journal.append(&again).unwrap();}
+    {let mut rec=pocold::store::open(&dir,&binding).unwrap();let again=rec.payload(0).unwrap();rec.journal.append(&again).unwrap();}
     let mut n=reopen(&conf);assert_eq!(n.chain.head,x.hash(),"y re-imported after x: x now has the smaller importSeq");
     n.import(x2.clone(),None).unwrap();n.import(y2.clone(),None).unwrap();assert_eq!(n.chain.head,x2.hash());assert_eq!(n.chain.head,best_of(&n.chain));
     drop(n);let r=reopen(&conf);assert_eq!(r.chain.head,x2.hash(),"replay keeps the re-import order");
@@ -2332,6 +2332,93 @@ fn wait_for(secs:u64,f:&dyn Fn()->bool)->bool{let t=std::time::Instant::now();wh
     assert!(wait_for(120,&||head(ra)==target),"A adopts the honest heavier peer's head despite the false peer: {} vs {target}",head(ra));
     let st=rpc_tcp(ra,"pocol_status",json!([]));assert!(st["stats"]["syncSessions"].as_u64().unwrap_or(0)>=2,"{}",st["stats"]);
 }
+/// 2026-10-28 (seeded fault LF5): a journal record that cannot be read back while a block is imported is the node's
+/// own failure, never a validity verdict. A node holds 40 blocks, so the oldest are pruned and offloaded (their
+/// bodies are read from the journal on demand). A child process (the node) flips a byte inside block 1's journal
+/// record, then imports a fork child of block 2, whose validation rebuilds block 2's state from genesis and so
+/// reads block 1's record. The read fails its digest check: the node stops (exit 70) and marks nothing invalid.
+/// Before the fix the failed read was a `Reject::Block`, returned as a verdict on the fork child.
+#[test] fn a_journal_read_that_fails_in_an_import_stops_the_node(){
+    let exe=std::env::current_exe().unwrap();
+    let out=std::process::Command::new(&exe).args(["journal_read_fault_child","--exact","--ignored","--nocapture","--test-threads=1"]).env("POCOLD_JREAD_CHILD","1").output().unwrap();
+    let text=format!("{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
+    println!("JREAD (exit {:?}): {}",out.status.code(),text.lines().filter(|l|l.contains("JREAD-CHILD")||l.contains("FATAL")).collect::<Vec<_>>().join(" | "));
+    assert!(text.contains("JREAD-CHILD corrupted"),"positive control: the child corrupted the record: {text}");
+    assert_eq!(out.status.code(),Some(70),"the node stops with exit 70: {text}");
+    assert!(text.contains("FATAL local storage: journal read_at")&&!text.contains("JREAD-CHILD imported"),"a local failure, not a verdict: {text}");
+}
+#[test] #[ignore="the child process of a_journal_read_that_fails_in_an_import_stops_the_node"]
+fn journal_read_fault_child(){
+    use std::io::{Read,Seek,SeekFrom,Write};
+    if std::env::var("POCOLD_JREAD_CHILD").is_err(){return}
+    let mut h=net();let g=h.chain.head;let blocks=grow(&mut h,g,40,&|n,p|fallback(n,p,0));
+    let (mut n,dir,_)=rnode("jread",64,16);for x in &blocks{n.import(x.clone(),None).unwrap();}
+    let e1=n.chain.get(&blocks[0].hash()).unwrap().clone();
+    assert!(n.chain.canonical_at(2).unwrap().pruned&&e1.offloaded,"positive control: block 2's state is pruned and block 1 is offloaded");
+    // Attempt 1: attempt 0 on block 2 is block 3 itself.
+    h.chain.ensure_state(&blocks[1].hash()).unwrap();let fork=fallback(&h,blocks[1].hash(),1);
+    let path=dir.join("blocks.journal");let off=e1.body_off.unwrap()+60;
+    {let mut f=std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();f.seek(SeekFrom::Start(off)).unwrap();let mut b=[0u8;1];f.read_exact(&mut b).unwrap();
+     f.seek(SeekFrom::Start(off)).unwrap();f.write_all(&[b[0]^0x40]).unwrap();f.sync_all().unwrap();}
+    println!("\nJREAD-CHILD corrupted block 1's record at byte {off}");std::io::stdout().flush().unwrap();
+    let r=n.import(fork,None);
+    println!("\nJREAD-CHILD imported the fork child: {r:?}; {} blocks marked invalid",n.chain.invalid.len());std::io::stdout().flush().unwrap();
+}
+/// D133 at a partition's heal (2026-10-28), deterministic: three nodes over TCP, none of which mines, so the
+/// work each side measured before the heal is the work it has at the heal, and nothing can change it while
+/// the nodes reconnect. During the partition a and b hold one branch from a common prefix and c another.
+/// The losing branch is the taller one, fallback blocks at a late attempt; the winning one is shorter,
+/// signed blocks until it has strictly more total work, so the outcome follows total work, not height.
+/// Healed (a and b meshed, c connected to both), the three end on the winner's tip measured before the
+/// heal, the losing side's nodes each reorganized onto it and moved down in height, the winners never
+/// reorganized, and every canonical block on every node is the winning branch's. Seeded faults show the
+/// test fails for a node that takes the lighter branch, that never reorganizes, or that never syncs.
+fn d133_heal(winner_is_c:bool)->serde_json::Value{
+    use pocold::node::{Config,Limits,Node};
+    let port=||std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let addr=|p:u16|->std::net::SocketAddr{format!("127.0.0.1:{p}").parse().unwrap()};
+    let c=cfg(&["a","b","c"]);let mut hw=net();let g=hw.chain.head;let prefix=branch(&mut hw,g,4,&[]);
+    let fork=prefix.last().unwrap().hash();let mut hl=net();for x in &prefix{import(&mut hl,x);}
+    // The loser: 14 fallback blocks at attempt 3 (the latest timestamps, the easiest targets).
+    let mut lose=vec![];let mut p=fork;for _ in 0..14{let x=fallback(&hl,p,3);import(&mut hl,&x);hl.chain.retain();p=x.hash();lose.push(x);}
+    let (lw,lh)=(hl.chain.get(&p).unwrap().total_work,hl.chain.get(&p).unwrap().height);
+    // The winner: signed blocks (the earliest timestamps) until its total work is strictly more.
+    let mut win=vec![];let mut q=fork;while hw.chain.get(&q).map_or(true,|e|e.total_work<=lw){let x=signed(&hw,q,Body::default(),0);import(&mut hw,&x);hw.chain.retain();q=x.hash();win.push(x);}
+    let (ww,wh)=(hw.chain.get(&q).unwrap().total_work,hw.chain.get(&q).unwrap().height);
+    assert!(ww>lw&&wh<lh,"positive control: the winning branch is heavier ({ww} > {lw}) and shorter ({wh} < {lh})");
+    let (ab_blocks,c_blocks)=if winner_is_c{(&lose,&win)}else{(&win,&lose)};
+    let (pa,pb,pc,ra,rb,rc)=(port(),port(),port(),port(),port(),port());let tag=format!("{}-{}",if winner_is_c{"c"}else{"ab"},std::process::id());
+    let dir=|x:&str|{let d=std::env::temp_dir().join(format!("pocold-heal-{x}-{tag}"));let _=std::fs::remove_dir_all(&d);d};
+    let conf=|name:&str,listen:u16,peers:Vec<std::net::SocketAddr>,rpc:u16|Config{dir:dir(name),name:name.into(),miner:None,listen:Some(addr(listen)),peers,rpc:Some(addr(rpc)),stop_at:None,log:false,limits:Limits::default()};
+    // The partition: each side's blocks imported while its nodes are apart; then each head is measured.
+    let mut na=Node::open(conf("a",pa,vec![],ra),admitted(&c)).unwrap();let mut nb=Node::open(conf("b",pb,vec![addr(pa)],rb),admitted(&c)).unwrap();
+    let mut nc=Node::open(conf("c",pc,vec![addr(pa),addr(pb)],rc),admitted(&c)).unwrap();
+    for x in prefix.iter().chain(ab_blocks.iter()){na.import(x.clone(),None).unwrap();nb.import(x.clone(),None).unwrap();}
+    for x in prefix.iter().chain(c_blocks.iter()){nc.import(x.clone(),None).unwrap();}
+    let measured=[(na.chain.head,na.chain.head().total_work,na.chain.head().height),(nb.chain.head,nb.chain.head().total_work,nb.chain.head().height),(nc.chain.head,nc.chain.head().total_work,nc.chain.head().height)];
+    let tip=if winner_is_c{measured[2]}else{measured[0]};
+    assert!(measured[0]==measured[1]&&measured[0].0!=measured[2].0,"positive control: a and b agree, c differs");
+    assert_eq!(tip,(q,ww,wh),"positive control: the winning side's head is the winning branch's tip");
+    // The heal. No node has a miner, so no block is made after the measurement.
+    for n in [&mut na,&mut nb,&mut nc]{n.start_network().unwrap();}
+    for n in [na,nb,nc]{std::thread::Builder::new().stack_size(64<<20).spawn(move||{let mut n=n;n.run()}).unwrap();}
+    let status=|r:u16|rpc_tcp(r,"pocol_status",json!([]));let want=json!(hex(&tip.0));
+    let converged=wait_for(120,&||[ra,rb,rc].iter().all(|r|status(*r)["head"]["hash"]==want));
+    let st:Vec<serde_json::Value>=[ra,rb,rc].iter().map(|r|status(*r)).collect();
+    let summary=json!({"winner":if winner_is_c{"c"}else{"a/b"},"winnerTip":{"height":wh,"work":ww.to_string()},"loserTip":{"height":lh,"work":lw.to_string()},
+        "after":st.iter().map(|x|json!({"head":x["head"]["hash"],"height":x["head"]["height"],"reorgs":x["stats"]["reorgs"],"syncSessions":x["stats"]["syncSessions"]})).collect::<Vec<_>>()});
+    println!("D133-HEAL {summary}");
+    assert!(converged,"the three nodes end on the heavier branch's tip measured before the heal: {summary}");
+    let reorgs:Vec<u64>=st.iter().map(|x|x["stats"]["reorgs"].as_u64().unwrap()).collect();
+    let losers:Vec<usize>=if winner_is_c{vec![0,1]}else{vec![2]};
+    for i in 0..3{if losers.contains(&i){assert!(reorgs[i]>=1,"node {i} (losing side) reorganized: {summary}")}else{assert_eq!(reorgs[i],0,"node {i} (winning side) never reorganized: {summary}")}
+        assert_eq!(st[i]["head"]["height"].as_u64(),Some(wh),"node {i} is at the winner's height ({wh}), below the loser's ({lh}): {summary}");}
+    let canon:Vec<String>=prefix.iter().chain(win.iter()).map(|x|hex(&x.hash())).collect();
+    for r in [ra,rb,rc]{for (h,want) in canon.iter().enumerate(){assert_eq!(rpc_tcp(r,"eth_getBlockByNumber",json!([format!("{:#x}",h+1),false]))["hash"],json!(want),"height {}: the canonical block is the winning branch's",h+1);}}
+    summary
+}
+#[test] fn d133_heal_c_reorganizes_onto_the_heavier_a_b_branch(){d133_heal(false);}
+#[test] fn d133_heal_a_and_b_reorganize_onto_the_heavier_c_branch(){d133_heal(true);}
 /// Replay never runs with a smaller R_keep than live used: the largest value is kept beside the
 /// journal (retention.rkeep). Reopening with a smaller configured R_keep still replays a branch adopted
 /// at a depth the smaller window would have cut, to the same head with no record skipped.
@@ -2567,6 +2654,91 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     assert_eq!(n.stats.resumed_from,None,"replayed from genesis");assert!(!n.state_store().unwrap().is_damaged(),"the new store is whole");
     e44_same(&mut n,&mut g,"after the release at open found the store damaged");
     drop(n);drop(g);for d in [a,gd]{let _=std::fs::remove_dir_all(&d);}
+}
+
+/// Seeded fault RV11 (2026-10-28): an I/O error in the release at open is not damage. A node stops owing a
+/// dropped checkpoint's nodes; the next open's release (`release_all`) meets an injected fault (`io-fault`):
+/// a failed page write, which undoes it, or a failed fsync, after which it may be durable. Open fails (redb
+/// refuses the store until it is opened again) and sets nothing aside: no damaged marker, no
+/// `state.redb.aside`. The open after it resumes from a checkpoint, owes nothing, and is the node replay from
+/// genesis gives. With RV11 (any error from the release marks the store damaged) the first open set the
+/// store aside and replayed from genesis.
+#[cfg(feature="io-fault")]
+#[test] fn e4_checkpoint_open_that_fails_on_io_in_its_release_keeps_the_store(){
+    use pocold::io_fault::{self,Op};
+    let blocks=e44_blocks();let every=7u64;
+    for op in [Op::Write,Op::Sync]{
+        let a=e44_dir(&format!("release-io-{op:?}"));
+        {let mut n=reopen(&e44_conf(&a,every));for b in blocks{n.import(b.clone(),None).unwrap();}assert!(n.release_pending(),"positive control: the node stops owing");}
+        let file=a.join(pocold::state_store::FILE);
+        let owed=pocold::state_store::StateStore::open(&a).unwrap().owed_refs().unwrap().len();assert!(owed>0,"positive control: the store owes work");
+        let (mut g,gd)=e44_reference(&a,&format!("release-io-ref-{op:?}"));
+        io_fault::arm(&file,"release-all",op);
+        let e=pocold::node::Node::open(e44_conf(&a,every)(),admitted(&cfg(&["a","b","c"]))).err().expect("open fails on the I/O error");
+        assert_eq!(io_fault::fired(&file),vec![("release-all".to_string(),op)],"{op:?}: positive control: the fault fired in the release at open ({e})");
+        assert!(!a.join(pocold::state_store::DAMAGED).exists()&&!a.join(format!("{}.aside",pocold::state_store::FILE)).exists(),"{op:?}: nothing is set aside ({e})");
+        let mut n=reopen(&e44_conf(&a,every));
+        println!("E4-RELEASE-IO {op:?}: open failed ({e}); the next resumed from record {:?}, {} rows worked off at open, {owed} owed before",n.stats.resumed_from,n.stats.released_at_open);
+        assert!(n.stats.resumed_from.is_some(),"{op:?}: the next open resumes from a checkpoint");
+        if op==Op::Write{assert!(n.stats.released_at_open>0,"a failed write undid the release: the next open works it off");}
+        assert!(!n.release_pending()&&n.state_store().unwrap().owed_refs().unwrap().is_empty(),"{op:?}: nothing is owed");
+        e44_same(&mut n,&mut g,&format!("after an I/O fault in the release at open ({op:?})"));
+        drop(n);drop(g);for d in [a,gd]{let _=std::fs::remove_dir_all(&d);}
+    }
+}
+/// 2026-10-28: a storage error while a block is imported is the node's own failure, never a validity verdict
+/// (blockReject is for committed content). A store-mode node imports blocks; then an injected fault
+/// (`io-fault`) fails a state.redb commit: the commit of the next block's state ("import"), or a release
+/// step, after which redb refuses the store, so the next block's commit fails ("release"); each with a
+/// failed page write and with a failed fsync. Before the fix the import returned `Reject::Block`: the block
+/// was marked invalid, and it and every descendant were refused until the node restarted. Now the node stops
+/// (exit 70, as when a history or journal write fails) and marks nothing invalid. The next open is the node
+/// replay from genesis gives from the same journal, and imports that block and the rest. The child process
+/// is the node, since its exit is what is tested.
+#[cfg(feature="io-fault")]
+#[test] fn e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid(){
+    let blocks=e44_blocks();let exe=std::env::current_exe().unwrap();
+    for mode in ["import-Write","import-Sync","release-Write","release-Sync"]{
+        let d=e44_dir(&format!("iof-{mode}"));let file=d.with_extension("blocks");
+        {let mut out=vec![];for b in blocks{for p in [b.header.encoded.clone(),b.body.encode()]{out.extend((p.len() as u32).to_be_bytes());out.extend(p);}}std::fs::write(&file,out).unwrap();}
+        let out=std::process::Command::new(&exe).args(["e4_io_fault_child","--exact","--ignored","--nocapture","--test-threads=1"])
+            .env("POCOLD_IOF_CHILD",&d).env("POCOLD_E44_BLOCKS",&file).env("POCOLD_IOF_MODE",mode).output().unwrap();
+        let text=format!("{}{}",String::from_utf8_lossy(&out.stdout),String::from_utf8_lossy(&out.stderr));
+        let at:usize=text.split("IOF-CHILD armed before block ").nth(1).and_then(|x|x.split_whitespace().next()).and_then(|x|x.parse().ok()).unwrap_or_else(||panic!("{mode}: the child: {text}"));
+        println!("E4-IMPORT-IO {mode} (exit {:?}): {}",out.status.code(),text.lines().filter(|l|l.contains("IOF-CHILD")||l.contains("FATAL")||l.contains("] reject ")||l.contains("release step:")).collect::<Vec<_>>().join(" | "));
+        assert!(text.contains("injected I/O fault"),"{mode}: positive control: the fault fired: {text}");
+        assert_eq!(out.status.code(),Some(70),"{mode}: the node stops with exit 70: {text}");
+        assert!(text.contains("FATAL local storage")&&!text.contains("IOF-CHILD imported")&&!text.contains("] reject "),"{mode}: no block is rejected: {text}");
+        let (mut g,gd)=e44_reference(&d,&format!("iof-ref-{mode}"));
+        let mut n=reopen(&e44_conf(&d,7));e44_same(&mut n,&mut g,&format!("after the stop ({mode})"));
+        for b in &blocks[at..]{n.import(b.clone(),None).unwrap_or_else(|e|panic!("{mode}: the next open imports every block: {e:?}"));}
+        assert_eq!(n.chain.head,blocks.last().unwrap().hash(),"{mode}: the block the fault stopped and the rest are imported");
+        assert!(n.chain.invalid.is_empty(),"{mode}: no block is marked invalid");n.state_store().unwrap().recount().unwrap();
+        drop(n);drop(g);for p in [d,gd]{let _=std::fs::remove_dir_all(&p);}let _=std::fs::remove_file(&file);
+    }
+}
+/// The child of `e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid` (`POCOLD_IOF_MODE`):
+/// imports the blocks of `POCOLD_E44_BLOCKS` until three checkpoints are written ("release": and rows are
+/// owed), arms the fault, takes a release step ("release"), then imports the next block. It is expected to
+/// stop inside that import; if it returns, it prints the result. Not a test on its own.
+#[cfg(feature="io-fault")]
+#[test] #[ignore="the child process of e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid"]
+fn e4_io_fault_child(){
+    use std::io::Write;use pocold::io_fault::{self,Op};
+    let (Ok(dir),Ok(file),Ok(mode))=(std::env::var("POCOLD_IOF_CHILD"),std::env::var("POCOLD_E44_BLOCKS"),std::env::var("POCOLD_IOF_MODE")) else{return};
+    let bytes=std::fs::read(file).unwrap();let (mut i,mut blocks)=(0usize,vec![]);
+    while i<bytes.len(){let mut part=vec![];for _ in 0..2{let n=u32::from_be_bytes(bytes[i..i+4].try_into().unwrap()) as usize;part.push(bytes[i+4..i+4+n].to_vec());i+=4+n;}
+        blocks.push(Block{header:decode_header(&part[0]).unwrap(),body:Body::decode(&part[1],1<<24).unwrap()});}
+    let d=std::path::PathBuf::from(&dir);let mut n=reopen(&e44_conf(&d,7));let st=d.join(pocold::state_store::FILE);
+    let (op,release)=(if mode.ends_with("Sync"){Op::Sync}else{Op::Write},mode.starts_with("release"));
+    let mut k=0;while k+1<blocks.len()&&!(n.stats.checkpoints_written>=3&&(!release||n.release_pending())){n.import(blocks[k].clone(),None).unwrap();k+=1;}
+    assert!(n.stats.checkpoints_written>=3&&(!release||n.release_pending()),"positive control: checkpoints written (and rows owed)");
+    println!("\nIOF-CHILD armed before block {k}");std::io::stdout().flush().unwrap();
+    if release{io_fault::arm(&st,"release-step",op);n.release_step();println!("\nIOF-CHILD release step taken; pending {}",n.release_pending());}
+    else{io_fault::arm(&st,"state-txn",op);}
+    std::io::stdout().flush().unwrap();
+    let r=n.import(blocks[k].clone(),None);
+    println!("\nIOF-CHILD imported block {k}: {r:?}; {} blocks marked invalid",n.chain.invalid.len());std::io::stdout().flush().unwrap();
 }
 
 /// The child of `e4_checkpoint_survives_kills`: imports the blocks of `POCOLD_E44_BLOCKS` into the node

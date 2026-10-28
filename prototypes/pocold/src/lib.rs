@@ -45,6 +45,53 @@ pub fn crash_point(step:&str){
 #[cfg(not(feature="crash-test"))]
 #[inline(always)]
 pub fn crash_point(_step:&str){}
+/// Storage fault tests (`--features io-fault`, absent from the release): deterministic I/O errors in
+/// state.redb. `arm(file,step,op)` makes the store at `file` fail its next `op` (a write or an fsync) with
+/// an I/O error, once, after it next reaches `step` (`io_point`, beside the crash points). The faults are
+/// kept per file, so tests running in one process do not meet each other's. redb then refuses every
+/// read and write of that database (`PreviousIo`) until it is opened again, as after a real I/O error.
+#[cfg(feature="io-fault")]
+pub mod io_fault{
+    use std::path::{Path,PathBuf};use std::sync::Mutex;
+    #[derive(Clone,Copy,PartialEq,Eq,Debug)]
+    pub enum Op{Write,Sync}
+    struct Plan{file:PathBuf,step:String,op:Op,armed:bool}
+    static PLANS:Mutex<Vec<Plan>>=Mutex::new(Vec::new());
+    static FIRED:Mutex<Vec<(PathBuf,String,Op)>>=Mutex::new(Vec::new());
+    pub fn arm(file:&Path,step:&str,op:Op){PLANS.lock().unwrap().push(Plan{file:file.to_path_buf(),step:step.into(),op,armed:false});}
+    /// The faults injected into `file` so far: (step, op), oldest first.
+    pub fn fired(file:&Path)->Vec<(String,Op)>{FIRED.lock().unwrap().iter().filter(|x|x.0==file).map(|x|(x.1.clone(),x.2)).collect()}
+    /// Drops the faults armed for `file` that have not fired.
+    pub fn disarm(file:&Path){PLANS.lock().unwrap().retain(|p|p.file!=file);}
+    pub(crate) fn reached(file:&Path,step:&str){for p in PLANS.lock().unwrap().iter_mut(){if p.file==file&&p.step==step{p.armed=true;}}}
+    fn take(file:&Path,op:Op)->std::io::Result<()>{
+        let mut plans=PLANS.lock().unwrap();
+        let Some(i)=plans.iter().position(|p|p.armed&&p.op==op&&p.file==file) else{return Ok(())};
+        let p=plans.remove(i);FIRED.lock().unwrap().push((p.file,p.step,op));
+        Err(std::io::Error::other("injected I/O fault (io-fault)"))
+    }
+    /// redb's file backend, failing as armed.
+    #[derive(Debug)]
+    pub(crate) struct Faulty{inner:redb::backends::FileBackend,file:PathBuf}
+    impl redb::StorageBackend for Faulty{
+        fn len(&self)->std::io::Result<u64>{self.inner.len()}
+        fn read(&self,offset:u64,len:usize)->std::io::Result<Vec<u8>>{self.inner.read(offset,len)}
+        fn set_len(&self,len:u64)->std::io::Result<()>{self.inner.set_len(len)}
+        fn sync_data(&self,eventual:bool)->std::io::Result<()>{take(&self.file,Op::Sync)?;self.inner.sync_data(eventual)}
+        fn write(&self,offset:u64,data:&[u8])->std::io::Result<()>{take(&self.file,Op::Write)?;self.inner.write(offset,data)}
+    }
+    /// `Builder::create(path)` with the failing backend.
+    pub(crate) fn create(b:&redb::Builder,path:&Path)->Result<redb::Database,redb::DatabaseError>{
+        let f=std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        b.create_with_backend(Faulty{inner:redb::backends::FileBackend::new(f)?,file:path.to_path_buf()})
+    }
+}
+/// Where an armed storage fault (`io_fault`) is triggered; nothing without the feature.
+#[cfg(feature="io-fault")]
+pub fn io_point(file:&std::path::Path,step:&str){io_fault::reached(file,step)}
+#[cfg(not(feature="io-fault"))]
+#[inline(always)]
+pub fn io_point(_file:&std::path::Path,_step:&str){}
 pub mod statediff;pub mod types;pub mod chain;pub mod store;pub mod miner;pub mod net;pub mod node;pub mod rpc;pub mod resources;
 /// Unit tests only: a counting allocator (per thread, while switched on) so tests can bound the
 /// heap a code path requests.
