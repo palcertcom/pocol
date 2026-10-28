@@ -248,6 +248,9 @@ BOOT-BLOCKERS.
 | [suite-e028068.log](suite-e028068.log) | e028068 (+ two test-only fixes, then committed in 1074b47) | 254 / 0 | 111 / 0 (rerun with the fixes) | 1 / 0 | consensus 89 / 2 (see below), state_store 14 / 0 |
 | [suite-eb85bed.log](suite-eb85bed.log) | eb85bed | 254 / 0 | — | — | — |
 | [suite-side-release.log](suite-side-release.log), [suite-side-debug-assertions.log](suite-side-debug-assertions.log) | 719da04 + the side set (the commit after it, before its last test additions) | 252 / 2 (30 ignored; see below) | 111 / 0 | 1 / 0 | caps 11, consensus 91, net 53, state_store 14, store 12; 0 failed |
+| [suite-side-final2.log](suite-side-final2.log) | 5cd7d43 | consensus, network_budget | — | — | consensus, state_store; 206 / 0 in all |
+| [suite-recmin.log](suite-recmin.log) | 50f9207 | consensus, state_store, network_budget | — | — | consensus; 208 / 0 in all |
+| [review-2/suite-review-fixes.log](review-2/suite-review-fixes.log) | 1bba829 (the review's F-A, F-B, F-C) | 256 / 0 (30 ignored) | 113 / 0 | 1 / 0 | consensus, state_store 107 / 0 |
 
 (passed / failed.) Failures, each kept in its log:
 - **118afd7, plain debug build:** 64 tests panic at `tests/consensus.rs:15`, the devnet admission. An unoptimized
