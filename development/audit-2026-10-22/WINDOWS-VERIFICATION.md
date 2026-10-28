@@ -396,6 +396,8 @@ Their artifacts are not copied.
 | 40592643692 | dd85cc0 (the release at open and in the event loop tested; node code as 22a82c2) | PASS on every step (lp4 211/0, pocold 241/0); client window 0.514 s, pacer lateness 10 ms; evidence/windows-dd85cc0/ |
 | 40595988585 | ad301e7 (node code: the independent review's fixes) | PASS on every step (lp4 211/0, pocold 244/0); client window 0.505 s, pacer lateness 2 ms; evidence/windows-ad301e7/ |
 | 40600109673 | e453851 (node code: open sets aside a store it finds damaged) | PASS on every step (lp4 211/0, pocold 245/0), the damage test and the new release tests included; client window 0.503 s, pacer lateness 2 ms; evidence/windows-e453851/ |
+| 40608577150 | 260d021 (evidence only; node code as e453851) | PASS (conclusion success; artifact not copied) |
+| 40662875687 | 22543cf (round 4; node code as 3adc356: Reject::Local, streamed journal open) | PASS on every step (lp4 211/0, pocold 250/0, **pocold-io-fault 106/0**, the new step with the deterministic I/O fault tests); client window 0.509 s, pacer lateness 4 ms; evidence/windows-22543cf/ |
 
 The 182d73a failure:
 - It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the

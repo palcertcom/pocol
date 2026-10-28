@@ -382,7 +382,8 @@ const IO_OPS:[pocold::io_fault::Op;2]=[pocold::io_fault::Op::Write,pocold::io_fa
         assert!(!s.rebuilt,"{op:?}: the store is not rebuilt");assert_eq!(s.checkpoints().unwrap().len(),2,"{op:?}: both checkpoints are kept");
         let now=s.owed_refs().unwrap();s.recount().unwrap();
         match op{io_fault::Op::Write=>assert_eq!(now,owed,"a failed write: the step is undone and no row is lost"),
-            io_fault::Op::Sync=>assert!(now==owed||now.len()<owed.len()+256,"a failed fsync: the step is undone or durable")}
+            io_fault::Op::Sync=>assert!(now==owed||now.len()<owed.len()+256,"a failed fsync: the step is undone or durable"),
+            io_fault::Op::Read=>unreachable!("state.redb's faults are writes and fsyncs")}
         println!("IOF-STEP {op:?}: {} rows owed before, {} after reopening",owed.len(),now.len());
         assert_eq!(s.release_pending(),!now.is_empty(),"{op:?}: open reads the flag from the table");
         while s.release_pending(){s.release_step(16).unwrap();}s.recount().unwrap();assert!(s.owed_refs().unwrap().is_empty());

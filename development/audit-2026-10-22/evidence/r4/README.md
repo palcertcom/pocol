@@ -10,7 +10,7 @@ Commits of this round (on claude/memory-r14-followup, after 260d021):
 |---|---|
 | 3adc356 | pocold: a local storage failure (a state.redb commit, a journal read) stops the node (exit 70) and is never a validity verdict; the journal is streamed at open; `io-fault` test feature; OpenTiming |
 | 16838eb | e2e: a failed run keeps its node logs, inputs and seeds before cleanup; `e2e_heal.mjs`; deterministic heals in `e2e_integrated` |
-| COMMIT_OPEN | pocold: checkpoint open without the per-record full scans (prune cursor, one side scan, orphans only after a removal) and with replay's trie commits unsynced between durable points; tests |
+| 118afd7 | pocold: checkpoint open without per-record chain scans (prune cursor, one side scan, orphans only after a removal), with replay's version releases in the next block's commit; tests |
 
 ## 1. Seeded faults RV10, RV11, RV12, and the defect they led to
 
@@ -52,7 +52,50 @@ whose cause was not proven stay open: [../memory-r14/accept-e453851/CORRECTIONS-
 
 ## 5. Checkpoint open
 
-SECTION_OPEN
+Input: the store a node at the network's state caps left (949,767 accounts, 3.8 M slots, 1.36 M trie nodes,
+state.redb 2.06 GB), copied fresh for each run; the open resumes from the checkpoint at record 28,672 and replays
+855 records. Every run ends on the same head. The 262–322 s of the earlier rounds were measured with other work
+on the host; on this host and input, 16838eb takes 235–253 s (six runs).
+
+Where the time went (16838eb with timers, [open/baseline-fine.log](open/baseline-fine.log), [open/prof-after.log](open/prof-after.log)):
+
+| part | time |
+|---|---:|
+| block commits to state.redb (896 durable transactions, about 140 ms each) | 126 s |
+| releases of the versions entries stopped holding (867 transactions, about 45 ms each; counted inside "retain") | 39 s |
+| the rest of retain: whole-chain walks at every record (prune, three side scans, the orphan pass) | 33–36 s |
+| restore of the checkpoint (each stored version read and checked) | 15 s |
+| reset of the pins left by the previous run | 9–13 s |
+| execution of the 855 blocks | 5 s |
+
+Changes (118afd7), none of which skips a check or a durable write:
+- the R21 prune visits each height once, and again only where a reorg, a rebuild or a restore could have
+  given a block a state back (`Chain::prune_cursor`); debug builds assert the invariant;
+- the side blocks are found once per retain, and the orphan pass runs only after a removal;
+- during replay, a released version waits for the next block's commit and is released in that durable
+  transaction (`StateStore::set_deferred`); a crash in between leaves the version pinned, which the next open
+  resets, as after any crash.
+
+Result, same input, alternating runs ([open/before-after-final.log](open/before-after-final.log)):
+
+| | before (16838eb) | after (118afd7's node code) |
+|---|---:|---:|
+| open | 245.0 s, 243.1 s | 207.1 s, 214.5 s |
+| retain during replay | 73.7 s, 74.5 s | 14.0 s, 16.1 s |
+| validate (execution and block commits) | 132.6 s, 130.2 s | 156.1 s, 160.7 s (the releases now run inside the commits) |
+
+What is left is the durable block commits (about 150 s). Not done: making them cheaper. One attempt was
+measured and reverted: commits without an fsync during replay let state.redb grow from 1.3 GB to more than
+5.6 GB in 90 s, because redb reuses no freed page until a durable commit; the disk filled and the node stopped
+with a local storage failure, as designed ([open/unsynced-commits-fill-the-disk.log](open/unsynced-commits-fill-the-disk.log)).
+The same full disk stopped the H_END run (§4) with exit 70.
+
+Tests: `retain_prunes_each_canonical_height_once_and_again_where_a_state_came_back`,
+`retain_prunes_side_blocks_made_canonical_below_the_cut_and_leaves_no_orphan`,
+`a_late_release_leaves_the_rows_an_immediate_one_leaves`, the replay crash cases added to
+`e4_checkpoint_crash_at_each_step`. Seeded faults: [mutants-prune.log](mutants-prune.log) (6 of 7 killed; the
+survivor, a side-list reuse, was removed from the code), [mutants-late.log](mutants-late.log) (4 of 4 killed
+after the test was strengthened; the earlier survivors are kept in the log).
 
 ## 4. Memory and storage
 

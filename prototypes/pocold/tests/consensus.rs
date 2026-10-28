@@ -2863,12 +2863,15 @@ fn e4_checkpoint_kill_child(){
     use std::io::BufRead;
     let blocks=e44_blocks();let a=e44_dir("kill");let file=a.with_extension("blocks");
     {let mut out=vec![];for b in blocks{for p in [b.header.encoded.clone(),b.body.encode()]{out.extend((p.len() as u32).to_be_bytes());out.extend(p);}}std::fs::write(&file,out).unwrap();}
-    let exe=std::env::current_exe().unwrap();let mut resumed=0;let mut heights=vec![];
+    let exe=std::env::current_exe().unwrap();let mut resumed=0;let mut heights=vec![];let err=a.with_extension("child-stderr");
     for (k,delay) in [40u64,90,160,260,400,600,900,1300,1800,2600,0].into_iter().enumerate(){
         let mut c=std::process::Command::new(&exe).args(["e4_checkpoint_kill_child","--exact","--ignored","--nocapture","--test-threads=1"])
-            .env("POCOLD_E44_CHILD",&a).env("POCOLD_E44_BLOCKS",&file).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+            .env("POCOLD_E44_CHILD",&a).env("POCOLD_E44_BLOCKS",&file).stdout(std::process::Stdio::piped()).stderr(std::fs::File::create(&err).unwrap()).spawn().unwrap();
         let mut lines=std::io::BufReader::new(c.stdout.take().unwrap()).lines();
-        let ready=lines.find_map(|l|l.ok().filter(|l|l.starts_with("E44READY"))).expect("the child opened");
+        // The child's stderr is kept in a file, and its end is shown if the child did not open (2026-10-28: one run
+        // under heavy load failed here with nothing to show why).
+        let ready=lines.find_map(|l|l.ok().filter(|l|l.starts_with("E44READY"))).unwrap_or_else(||{let _=c.wait();
+            let t=std::fs::read_to_string(&err).unwrap_or_default();panic!("the child opened (run {k}); its stderr ends: {}",&t[t.len().saturating_sub(3000)..])});
         if delay==0{assert!(lines.find_map(|l|l.ok().filter(|l|l=="E44DONE")).is_some(),"the last run imports every block");}
         else{std::thread::sleep(std::time::Duration::from_millis(delay));}
         c.kill().unwrap();c.wait().unwrap();
@@ -2881,7 +2884,7 @@ fn e4_checkpoint_kill_child(){
     }
     println!("E44-KILLS {heights:?}");
     assert!(resumed>=8,"positive control: most opens resumed from a checkpoint ({resumed})");
-    let _=std::fs::remove_dir_all(&a);let _=std::fs::remove_file(&file);
+    let _=std::fs::remove_dir_all(&a);let _=std::fs::remove_file(&file);let _=std::fs::remove_file(&err);
 }
 
 /// D-6 damage: a store that is cut short, has a changed byte, is missing, or holds a checkpoint that does
