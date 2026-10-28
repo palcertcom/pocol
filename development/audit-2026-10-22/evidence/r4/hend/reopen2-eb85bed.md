@@ -19,3 +19,9 @@ Runs on 051dfaa (the side set) do not show it at small heights:
 
 Open: the refusal at H_END and at ~115,000 on the older code. A run to H_END on the current code, with the log
 written straight to a file, is the next step (§ 4).
+
+## Cause (found afterwards)
+
+A run to H_END on 5cd7d43 logged `checkpoint 124: snapshot count beyond its bytes`. The snapshot decoder's count
+guard assumed 134 bytes a record where 126 are written, so a snapshot of mostly minimal entries is refused. This
+explains this reopen, the first H_END reopen and why small heights resume. See ../README.md § 4.

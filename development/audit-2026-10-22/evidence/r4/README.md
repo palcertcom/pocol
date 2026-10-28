@@ -184,7 +184,19 @@ reorg of R_keep depth at the caps, Windows.
   the session's 2-hour limit on a background command ([hend/grow2-eb85bed.log](hend/grow2-eb85bed.log)). Its reopen
   started the store over too, and its log lines were lost ([hend/reopen2-eb85bed.md](hend/reopen2-eb85bed.md)). On
   051dfaa, reopens at small heights resume from their checkpoints (a clean stop at 20,000, a `kill -9` at
-  12,651). **The refusal at large heights stays open.**
+  12,651).
+- **Cause found** by a run to H_END on 5cd7d43 with the log written straight to a file
+  ([hend/hend-5cd7d43-grow-and-reopen.log](hend/hend-5cd7d43-grow-and-reopen.log)):
+  - the log reads `checkpoints unusable, the state store is rebuilt: checkpoint 124: snapshot count beyond its bytes`;
+  - `checkpoint::decode` guarded the entry count with a record size of 134 bytes, but `put_rec` writes 126 (five u64
+    fields, not six);
+  - a snapshot of mostly minimal entries (no summary, no root: the slimmed ones, past about 100,000 heights) was
+    refused, every checkpoint with it, and open rebuilt from genesis.
+
+  Fixed in the commit after 5cd7d43 (`REC_MIN`), with `a_snapshot_of_minimal_entries_reads_back`, which fails
+  without the fix.
+- **That run on 5cd7d43:** grow to H_END in 2,184 s, median import 10–12 ms in every segment (165 ms at the end of
+  the first run). VmHWM 601 MB at H_END (486 MB on the first run, which held fewer side and trie entries).
 
 ## 6. Boot and performance
 
