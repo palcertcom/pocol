@@ -1375,10 +1375,13 @@ fn jm_journal_to_hend(){
             "rssBytes":rss_bytes(),"vmHwmBytes":vmhwm_bytes(),"blocksKnown":n.chain.blocks.len(),"extra":extra}));
     };
     match phase.as_str(){
-        "grow"=>{
-            assert!(!dir.exists(),"JM_HEND_DIR must not exist for the grow phase");
-            let steps=env_n("JM_HEND_STEPS",20);let (mut n,_)=open();figures(&n,"grow start",serde_json::json!({}));
-            let (mut build_ms,mut import_ms)=(vec![],vec![]);let (t0,mut next)=(Instant::now(),1u64);
+        // "continue": a store a grow left (stopped, or killed) is opened and grown on to the top.
+        "grow"|"continue"=>{
+            if phase=="grow"{assert!(!dir.exists(),"JM_HEND_DIR must not exist for the grow phase");}else{assert!(dir.exists(),"JM_HEND_DIR must exist to continue");}
+            let steps=env_n("JM_HEND_STEPS",20);let (mut n,secs)=open();
+            figures(&n,if phase=="grow"{"grow start"}else{"continue: opened"},serde_json::json!({"openSeconds":secs,"resumedFrom":n.stats.resumed_from,"openTiming":n.stats.open}));
+            let mut next=1u64;while next*top/steps<=n.chain.head().height&&next<steps{next+=1;}
+            let (mut build_ms,mut import_ms)=(vec![],vec![]);let t0=Instant::now();
             while n.chain.head().height<top{
                 let t=Instant::now();let b=signed_on(&n.chain,&keys,n.chain.head,Body::default());build_ms.push(t.elapsed().as_secs_f64()*1e3);
                 let t=Instant::now();n.import(b,None).unwrap();import_ms.push(t.elapsed().as_secs_f64()*1e3);

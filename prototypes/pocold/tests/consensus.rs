@@ -874,6 +874,56 @@ fn admitted_with(c:&DevnetConfig,local:pocol_lp4_execution::admission::NodeLocal
 }
 /// Builds a fallback child of `parent` after rebuilding its state in a scratch copy.
 fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&parent).unwrap();fallback(n,parent,0)}
+/// 2026-10-28: retain's R21 prune visits each canonical height once (`Chain::prune_cursor`, it walked the
+/// whole chain at every call) and again only where a rebuild, a restore or a reorg could have given a block
+/// below the cut a state back. After every retain each canonical block at or below the cut is pruned, as
+/// the old walk left it: on a straight chain, after a rebuild of a pruned block, and after a reorg onto a
+/// branch that forks below the cut.
+#[test] fn retain_prunes_each_canonical_height_once_and_again_where_a_state_came_back(){
+    let mut n=net();n.chain.k_hist=4;let mut hashes=vec![n.chain.head];
+    let all_pruned=|n:&Net|{let cut=n.chain.head().height.saturating_sub(n.chain.k_hist);
+        (1..=cut).all(|h|n.chain.canonical_at(h).map_or(false,|e|e.pruned&&e.stored.is_none()&&!e.full&&e.diff.is_none()))};
+    for _ in 0..30{let h=n.chain.head;let b=fallback(&n,h,0);import(&mut n,&b);n.chain.retain();hashes.push(n.chain.head);
+        assert_eq!(n.chain.prune_cursor,n.chain.head().height.saturating_sub(4)+1,"each height once");assert!(n.chain.prune_holds()&&all_pruned(&n));}
+    // A rebuild gives a pruned canonical block its state back: the cursor goes back to it, and retain prunes it again.
+    n.chain.ensure_state(&hashes[8]).unwrap();assert!(!n.chain.blocks[&hashes[8]].pruned,"positive control: rebuilt");
+    assert!(n.chain.prune_cursor<=8,"the rebuild lowered the cursor: {}",n.chain.prune_cursor);
+    n.chain.retain();assert!(n.chain.blocks[&hashes[8]].pruned&&n.chain.prune_holds()&&all_pruned(&n),"pruned again");
+    // A heavier branch from height 10 (below the cut at 26): its blocks become canonical below the cut.
+    let mut p=hashes[10];let mut side=vec![];
+    while !side.last().map_or(false,|x|*x==n.chain.head){n.chain.ensure_state(&p).unwrap();let b=signed(&n,p,Body::default(),0);import(&mut n,&b);p=b.hash();side.push(p);if side.len()>40{panic!("not adopted: side {} at {}, head {} at {}",n.chain.get(&p).unwrap().total_work,n.chain.get(&p).unwrap().height,n.chain.head().total_work,n.chain.head().height)}}
+    assert!(n.chain.is_canonical(&side[0])&&n.chain.get(&side[0]).unwrap().height==11,"positive control: the fork is canonical from 11");
+    assert!(n.chain.prune_cursor<=11,"the reorg lowered the cursor: {}",n.chain.prune_cursor);
+    n.chain.retain();assert!(n.chain.prune_holds()&&all_pruned(&n),"the adopted blocks below the cut are pruned");
+    for _ in 0..5{let h=n.chain.head;let b=fallback(&n,h,0);import(&mut n,&b);n.chain.retain();assert!(n.chain.prune_holds()&&all_pruned(&n));}
+}
+/// 2026-10-28, with the test above: a reorg onto side blocks that kept their states (side_max) makes blocks
+/// below the cut canonical with no rebuild among them; the canonical change itself lowers `prune_cursor`, and
+/// retain prunes them. A side branch removed by R_keep takes its descendants with it, and none is left whose
+/// parent is gone (the orphan pass runs after every removal).
+#[test] fn retain_prunes_side_blocks_made_canonical_below_the_cut_and_leaves_no_orphan(){
+    let mut n=net();n.chain.k_hist=4;let g=n.chain.head;
+    let main=grow(&mut n,g,40,&|n,p|fallback(n,p,0));let target=n.chain.head().total_work;
+    // A heavier branch of signed blocks from height 10, built on a second node.
+    let mut b=net();for x in &main[..10]{import(&mut b,x);}
+    let mut p=main[9].hash();let mut side=vec![];
+    while b.chain.get(&p).unwrap().total_work<=target{let x=signed(&b,p,Body::default(),0);import(&mut b,&x);p=x.hash();side.push(x);}
+    let (last,rest)=side.split_last().unwrap();assert!(rest.len()>=2&&b.chain.get(&p).unwrap().height<36,"positive control: the branch's tip is below the cut");
+    n.chain.ensure_state(&main[9].hash()).unwrap();for x in rest{assert!(!import(&mut n,x),"positive control: lighter until its last block");}
+    n.chain.retain();let cut=n.chain.head().height-4;assert_eq!(n.chain.prune_cursor,cut+1);
+    let tip=n.chain.get(&rest.last().unwrap().hash()).unwrap();assert!(!tip.pruned&&tip.height<cut,"positive control: the side tip below the cut kept its state (side_max)");
+    // Its last block makes the branch canonical with no rebuild: only the canonical change lowers the cursor.
+    assert!(import(&mut n,last),"positive control: adopted");assert!(n.chain.is_canonical(&rest[0].hash()));
+    assert!(n.chain.prune_cursor<=11,"the canonical change lowered the cursor: {}",n.chain.prune_cursor);
+    n.chain.retain();assert!(n.chain.prune_holds(),"retain pruned them");
+    let cut=n.chain.head().height.saturating_sub(4);
+    assert!((1..=cut).all(|h|n.chain.canonical_at(h).map_or(false,|e|e.pruned&&e.stored.is_none()&&!e.full&&e.diff.is_none())));
+    // The old main chain from 11 up is now a side branch; R_keep removes its deep blocks, and their descendants go too.
+    let before=n.chain.blocks.len();n.chain.r_keep=8;n.chain.retain();
+    assert!(n.chain.blocks.len()<before,"positive control: blocks were removed");
+    assert!(n.chain.blocks.values().all(|e|e.parent.map_or(true,|x|n.chain.blocks.contains_key(&x))),"no block is left whose parent is gone");
+    assert!(main[10..].iter().all(|b|n.chain.get(&b.hash()).is_none()),"the old main chain went with its removed blocks");
+}
 #[test] fn a13_rebuild_of_a_deep_fork_keeps_only_the_target_state(){
     let mut n=net();n.chain.k_hist=4;let mut hashes=vec![n.chain.head];
     for _ in 0..14{let h=n.chain.head;let b=fallback(&n,h,0);import(&mut n,&b);n.chain.retain();hashes.push(n.chain.head);}
@@ -2544,7 +2594,8 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     let (mut g,gd)=e44_reference(&a,"live-ref");assert_eq!(g.stats.checkpoints_written,0);
     // (1) a copy without its store: replay from genesis writes checkpoints; the next open resumes from one.
     let r=e44_dir("replayed");copy_dir(&a,&r);std::fs::remove_file(r.join(pocold::state_store::FILE)).unwrap();
-    {let mut n=reopen(&e44_conf(&r,every));assert_eq!(n.stats.resumed_from,None);assert_eq!(n.stats.checkpoints_written,blocks.len() as u64/every,"replay checkpoints too");e44_same(&mut n,&mut g,"replayed from genesis, writing checkpoints");}
+    {let mut n=reopen(&e44_conf(&r,every));assert_eq!(n.stats.resumed_from,None);assert_eq!(n.stats.checkpoints_written,blocks.len() as u64/every,"replay checkpoints too");
+     {let st=n.state_store().unwrap();assert!(!st.is_deferring()&&st.deferred_releases()==0,"replay ends its late releases (2026-10-28)");}e44_same(&mut n,&mut g,"replayed from genesis, writing checkpoints");}
     {let st=pocold::state_store::StateStore::open(&r).unwrap();let c=st.checkpoints().unwrap();let s=pocold::checkpoint::decode(&c.last().unwrap().1).unwrap();
      assert!(s.protect.as_ref().map_or(false,|p|!p.is_empty()),"positive control: the replay checkpoint names the blocks later records build on");}
     {let mut n=reopen(&e44_conf(&r,every));let k=(blocks.len() as u64/every)*every;
@@ -2750,7 +2801,8 @@ fn e4_checkpoint_kill_child(){
     let bytes=std::fs::read(file).unwrap();let (mut i,mut blocks)=(0usize,vec![]);
     while i<bytes.len(){let mut part=vec![];for _ in 0..2{let n=u32::from_be_bytes(bytes[i..i+4].try_into().unwrap()) as usize;part.push(bytes[i+4..i+4+n].to_vec());i+=4+n;}
         blocks.push(Block{header:decode_header(&part[0]).unwrap(),body:Body::decode(&part[1],1<<24).unwrap()});}
-    let mut n=reopen(&e44_conf(std::path::Path::new(&dir),1));
+    let every=std::env::var("POCOLD_E44_EVERY").ok().and_then(|x|x.parse().ok()).unwrap_or(1);
+    let mut n=reopen(&e44_conf(std::path::Path::new(&dir),every));
     println!("\nE44READY {}",n.chain.head().height);std::io::stdout().flush().unwrap();
     // D-6: one release step after each import, as the event loop runs one between events.
     for b in blocks{let _=n.import(b,None);n.release_step();}
@@ -2898,13 +2950,14 @@ fn e4_checkpoint_kill_child(){
 #[test] fn e4_checkpoint_crash_at_each_step(){
     use std::io::BufRead;
     let blocks=e44_blocks();let exe=std::env::current_exe().unwrap();let mut log=vec![];
-    let run=|dir:&std::path::Path,file:&std::path::Path,crash:Option<String>|->bool{
+    let run_every=|dir:&std::path::Path,file:&std::path::Path,crash:Option<String>,every:u64|->bool{
         let mut c=std::process::Command::new(&exe);c.args(["e4_checkpoint_kill_child","--exact","--ignored","--nocapture","--test-threads=1"])
-            .env("POCOLD_E44_CHILD",dir).env("POCOLD_E44_BLOCKS",file).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+            .env("POCOLD_E44_CHILD",dir).env("POCOLD_E44_BLOCKS",file).env("POCOLD_E44_EVERY",every.to_string()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
         if let Some(x)=&crash{c.env("POCOLD_CRASH_AT",x);}
         let mut c=c.spawn().unwrap();let lines=std::io::BufReader::new(c.stdout.take().unwrap()).lines();
         let done=lines.map_while(|l|l.ok()).any(|l|l=="E44DONE");
         if done{c.kill().unwrap();}c.wait().unwrap();done};
+    let run=|dir:&std::path::Path,file:&std::path::Path,crash:Option<String>|run_every(dir,file,crash,1);
     for (step,ns) in [("state-txn",[2u64,30,90]),("state-commit",[1,25,80]),("history",[3,40,100]),("journal",[5,50,104]),
         ("checkpoint-before",[1,33,99]),("checkpoint-txn",[2,47,103]),("checkpoint-after",[4,60,101]),("release-step",[1,20,60])]{
         for n in ns{
@@ -2933,6 +2986,24 @@ fn e4_checkpoint_kill_child(){
     assert_eq!(x.stats.resumed_from,Some(30),"resumed from the replay checkpoint written before the crash");
     e44_same(&mut x,&mut g,"after a crash just after a replay checkpoint");
     drop(x);drop(g);for p in [d,gd]{let _=std::fs::remove_dir_all(&p);}let _=std::fs::remove_file(&file);
+    // 2026-10-28: a crash inside a replayed block's commit, between two replay checkpoints (one every 7 records),
+    // or inside a replay checkpoint's transaction: the next open resumes from a checkpoint that was written, or
+    // replays from genesis, and is the node replay from genesis gives.
+    let mut lazy=vec![];
+    for crash in ["state-txn:5","state-txn:23","state-txn:61","checkpoint-txn:4","checkpoint-txn:9"]{
+        let d=e44_dir(&format!("lazy-{}",crash.replace(':',"-")));let file=d.with_extension("blocks");
+        {let mut out=vec![];for b in blocks{for p in [b.header.encoded.clone(),b.body.encode()]{out.extend((p.len() as u32).to_be_bytes());out.extend(p);}}std::fs::write(&file,out).unwrap();}
+        assert!(run_every(&d,&file,None,7),"{crash}: a first run imports every block");
+        for f in [pocold::state_store::FILE,pocold::history::FILE]{std::fs::remove_file(d.join(f)).unwrap();}
+        assert!(!run_every(&d,&file,Some(crash.into()),7),"{crash}: the replay stops at the crash point");
+        let (mut g,gd)=e44_reference(&d,&format!("lazy-ref-{}",crash.replace(':',"-")));let mut x=reopen(&e44_conf(&d,7));
+        lazy.push((crash,x.stats.resumed_from,x.chain.head().height));
+        assert!(x.stats.resumed_from.map_or(true,|k|k%7==0&&k>0),"{crash}: resumed from a checkpoint: {:?}",x.stats.resumed_from);
+        assert_eq!(x.stats.checkpoints_refused,0,"{crash}: no checkpoint is refused");
+        e44_same(&mut x,&mut g,&format!("after a crash in replay at {crash}"));
+        drop(x);drop(g);for p in [d,gd]{let _=std::fs::remove_dir_all(&p);}let _=std::fs::remove_file(&file);
+    }
+    println!("E44-LAZY {lazy:?}");
 }
 /// D-6: a checkpoint entry bound to its sibling's journal record is refused. The siblings share a parent
 /// and a target (equal height and total work) and neither holds a stored version, so only the check that

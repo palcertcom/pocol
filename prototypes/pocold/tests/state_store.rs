@@ -443,3 +443,52 @@ const IO_OPS:[pocold::io_fault::Op;2]=[pocold::io_fault::Op::Write,pocold::io_fa
         drop(s);let _=std::fs::remove_dir_all(&d);
     }
 }
+
+/// 2026-10-28, replay's late release (`StateStore::set_deferred`): a version an entry stops holding is released
+/// inside the next block's commit, after that block's nodes are counted, while the next block's batch was built
+/// with the version still stored (so it leaves out the nodes both hold). After every step the store holds the
+/// same rows (every node with its count, every pin) as one that released each version in its own transaction
+/// before the next batch was built, and each kept version reads its state.
+#[test] fn a_late_release_leaves_the_rows_an_immediate_one_leaves(){
+    use pocol_lp4_execution::node_trie::TrieStore;
+    let c=codes();let (da,db_)=(dir("late-a"),dir("late-b"));
+    let (a,b)=(StateStore::open(&da).unwrap(),StateStore::open(&db_).unwrap());b.set_deferred(true).unwrap();
+    let mut r=Rng(0x1a7e);let mut st=state(&mut r,150,&c);
+    let (mut ta,mut tb)={let mut x=Batch::default();let t=NodeTrie::build(&st,&a,&mut x);a.commit(&x,t.world,true).unwrap();
+        let mut y=Batch::default();let u=NodeTrie::build(&st,&b,&mut y);b.commit(&y,u.world,true).unwrap();(t,u)};
+    let mut kept:std::collections::VecDeque<(Id,InMemoryDB)>=[(ta.world.unwrap(),st.clone())].into();
+    let rows=|s:&StateStore,roots:&[Id]|{let mut v:Vec<(Id,u32)>=reach(s,roots).into_iter().map(|id|(id,s.count(&id).unwrap().unwrap())).collect();v.sort();v};
+    let mut late_seen=0;
+    for step in 0..40{
+        let next=mutate(&mut r,&st,&c,600);let touched=Touched::between(&st,&next);
+        // On odd steps the late store releases the parent after the child's batch is built and before the child is
+        // committed (allowed only while releases wait; the other store releases it after the commit). The nodes only
+        // the two share must outlive the release.
+        let early=step%2==1&&kept.len()==1;
+        let mut x=Batch::default();let ua=ta.update(&a,&mut x,&next,&touched);
+        let mut y=Batch::default();let ub=tb.update(&b,&mut y,&next,&touched);
+        assert_eq!(ua.world,ub.world,"step {step}: the same root");
+        let parent=kept.back().unwrap().0;
+        if early{TrieStore::unpin(&b,&parent).unwrap();}
+        if b.deferred_releases()>0{late_seen+=1;}
+        a.commit(&x,ua.world,true).unwrap();if early{TrieStore::unpin(&a,&parent).unwrap();kept.pop_back();}
+        b.commit(&y,ub.world,true).unwrap_or_else(|e|panic!("step {step}: {}",e.0));assert_eq!(b.deferred_releases(),0,"step {step}: the commit released what waited");
+        kept.push_back((ua.world.unwrap(),next.clone()));
+        // Otherwise up to three versions are kept, released after the commit as replay's retain does.
+        while kept.len()>if step%2==0{1}else{3}{let (old,_)=kept.pop_front().unwrap();TrieStore::unpin(&a,&old).unwrap();TrieStore::unpin(&b,&old).unwrap();}
+        ta=ua;tb=ub;st=next;
+        let roots:Vec<Id>=kept.iter().map(|k|k.0).collect();
+        if b.deferred_releases()==0{assert_eq!(rows(&a,&roots),rows(&b,&roots),"step {step}: the same nodes and counts");assert_eq!(a.node_count().unwrap(),b.node_count().unwrap(),"step {step}");}
+    }
+    assert!(late_seen>=20,"positive control: releases waited for the next commit ({late_seen})");
+    // What waits when deferral ends is released then.
+    let (old,_)=kept.pop_front().unwrap();TrieStore::unpin(&a,&old).unwrap();TrieStore::unpin(&b,&old).unwrap();
+    assert_eq!(b.deferred_releases(),1,"positive control: a release waits");
+    b.set_deferred(false).unwrap();assert_eq!(b.deferred_releases(),0);
+    let roots:Vec<Id>=kept.iter().map(|k|k.0).collect();
+    assert_eq!(rows(&a,&roots),rows(&b,&roots));assert_eq!(a.node_count().unwrap(),b.node_count().unwrap(),"no node outlives its last version");
+    let mut pa=a.pins().unwrap();let mut pb=b.pins().unwrap();pa.sort();pb.sort();assert_eq!(pa,pb,"the same pins");
+    a.recount().unwrap();b.recount().unwrap();
+    for (w,s) in &kept{same(s,&TrieState{store:&b,trie:NodeTrie{world:Some(*w)},block_hashes:&s.block_hashes},"late");}
+    drop((a,b));for d in [da,db_]{let _=std::fs::remove_dir_all(&d);}
+}

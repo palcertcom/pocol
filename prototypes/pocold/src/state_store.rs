@@ -82,6 +82,9 @@ pub struct StateStore{db:Database,path:PathBuf,dir:PathBuf,pub rebuilt:bool,dama
     closing:AtomicBool,
     /// D-6: the `release` table holds work (`release_pending`).
     owed:AtomicBool,
+    /// Replay (`set_deferred`): a version an entry stops holding is released inside the next block's commit
+    /// transaction, after that block's own nodes are counted, instead of in a transaction of its own.
+    deferring:AtomicBool,deferred:Mutex<Vec<Id>>,
     /// Nodes read from the table (cache misses) and nodes written, since open (measurements).
     pub reads:std::sync::atomic::AtomicU64,pub writes:std::sync::atomic::AtomicU64}
 
@@ -113,7 +116,7 @@ impl StateStore{
                 let db=create(&path)?;let _=std::fs::remove_file(&marker);(db,true)}
         };
         let owed={let r=db.begin_read().map_err(err)?;!r.open_table(RELEASE).map_err(err)?.is_empty().map_err(err)?};
-        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),owed:AtomicBool::new(owed),reads:Default::default(),writes:Default::default()})
+        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),owed:AtomicBool::new(owed),deferring:AtomicBool::new(false),deferred:Mutex::new(Vec::new()),reads:Default::default(),writes:Default::default()})
     }
     pub fn path(&self)->&Path{&self.path}
     pub fn is_damaged(&self)->bool{self.damaged.load(Ordering::SeqCst)}
@@ -181,11 +184,13 @@ impl StateStore{
     pub fn commit(&self,b:&Batch,root:Option<Id>,durable:bool)->Result<(),StateStoreError>{
         self.guard(||{
             let mut w=self.db.begin_write().map_err(err)?;if !durable{w.set_durability(Durability::None);}
+            let late=std::mem::take(&mut *self.deferred.lock().unwrap());
             {
                 let mut c=w.open_table(CODE).map_err(err)?;for (h,code) in &b.code{if c.get(&h.0).map_err(err)?.is_none(){c.insert(&h.0,code.original_bytes().as_ref()).map_err(err)?;}}
+                let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;
                 if let Some(root)=root{
-                    let mut p=w.open_table(PINS).map_err(err)?;let n=p.get(&root).map_err(err)?.map_or(0,|v|v.value());p.insert(&root,n+1).map_err(err)?;
-                    let mut t=w.open_table(NODES).map_err(err)?;let mut stack=vec![root];
+                    let n=p.get(&root).map_err(err)?.map_or(0,|v|v.value());p.insert(&root,n+1).map_err(err)?;
+                    let mut stack=vec![root];
                     while let Some(id)=stack.pop(){
                         let cur=t.get(&id).map_err(err)?.map(|v|v.value().to_vec());
                         match cur{
@@ -198,6 +203,9 @@ impl StateStore{
                         }
                     }
                 }
+                // The versions released late (`set_deferred`), after this block's nodes were counted: a node both
+                // hold keeps its row, as when the release ran first and the batch held the node again.
+                for r in &late{release(&mut p,&mut t,r,&self.cache)?;}
             }
             crate::crash_point("state-txn");crate::io_point(&self.path,"state-txn");
             w.commit().map_err(err)
@@ -218,6 +226,21 @@ impl StateStore{
     /// grew the file from 17 MB to 34 MB and from 68 MB to 270 MB, evidence/c1-e4/disk-close-ab-*.log). The next open releases them in one durable transaction
     /// (`reset_pins`, what it does after a crash), or starts the store empty when no checkpoint is kept.
     pub fn close(&self){self.closing.store(true,Ordering::SeqCst);}
+    /// Replay (2026-10-28): every version released through `TrieStore::unpin` waits for the next block's
+    /// commit and is released in that transaction (at the network's state caps a release in a transaction of
+    /// its own took about 45 ms, 39 s of a 229 s open, evidence/r4/open). Turning it off releases what waits,
+    /// in one transaction. A crash in between leaves those versions pinned, as a crash before any release
+    /// does, and the next open resets them (`reset_pins`).
+    pub fn set_deferred(&self,on:bool)->Result<(),StateStoreError>{
+        self.deferring.store(on,Ordering::SeqCst);if on{return Ok(())}
+        let late=std::mem::take(&mut *self.deferred.lock().unwrap());if late.is_empty(){return Ok(())}
+        self.guard(||{let mut w=self.db.begin_write().map_err(err)?;w.set_durability(Durability::None);
+            {let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;for r in &late{release(&mut p,&mut t,r,&self.cache)?;}}
+            w.commit().map_err(err)})
+    }
+    /// Versions waiting for a late release (`set_deferred`).
+    pub fn deferred_releases(&self)->usize{self.deferred.lock().unwrap().len()}
+    pub fn is_deferring(&self)->bool{self.deferring.load(Ordering::SeqCst)}
     /// C-1 E4.4: the stored checkpoints, oldest first: (sequence, snapshot bytes, the roots it pins).
     pub fn checkpoints(&self)->Result<Vec<(u64,Vec<u8>,Vec<Id>)>,StateStoreError>{
         self.guard(||{let r=self.db.begin_read().map_err(err)?;let c=r.open_table(CKPT).map_err(err)?;let x=r.open_table(CKPT_ROOTS).map_err(err)?;let mut out=Vec::new();
@@ -437,9 +460,13 @@ impl NodeStore for StateStore{
     }
 }
 impl pocol_lp4_execution::node_trie::TrieStore for StateStore{
-    /// Durable: a block's nodes are committed before its journal record (I3).
+    /// Durable: a block's nodes are committed before its journal record (I3). (Replay too: 2026-10-28, its
+    /// commits without an fsync left every page they freed unreusable until the next durable commit, and at
+    /// the network's state caps state.redb grew from 1.3 GB to more than 5.6 GB in 90 s, evidence/r4.)
     fn commit(&self,b:&Batch,root:Option<Id>)->Result<(),String>{StateStore::commit(self,b,root,true).map_err(|e|e.0)}
-    fn unpin(&self,root:&Id)->Result<(),String>{if self.closing.load(Ordering::SeqCst){return Ok(())}StateStore::unpin(self,root,false).map_err(|e|e.0)}
+    fn unpin(&self,root:&Id)->Result<(),String>{if self.closing.load(Ordering::SeqCst){return Ok(())}
+        if self.deferring.load(Ordering::SeqCst){self.deferred.lock().unwrap().push(*root);return Ok(())}
+        StateStore::unpin(self,root,false).map_err(|e|e.0)}
     /// The pins entries hold: every pin but the checkpoints' (C-1 E4.4).
     fn pinned(&self)->Result<u64,String>{let all:u64=self.pins().map_err(|e|e.0)?.iter().map(|x|u64::from(x.1)).sum();Ok(all-self.checkpoint_pins().map_err(|e|e.0)?)}
 }

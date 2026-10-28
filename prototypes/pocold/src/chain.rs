@@ -286,6 +286,15 @@ pub struct Chain{
     /// `slim_cursor`: every canonical height below it was slimmed once; `unslimmed`: entries restored
     /// since, slimmed again when they are deep enough.
     pub slim_depth:Option<u64>,pub slim_cursor:u64,pub unslimmed:Vec<[u8;32]>,
+    /// `retain_unsettled`'s R21 prune, done once per height (it walked the whole canonical chain at every
+    /// call: 41.6 s of a 234 s open at scale, evidence/r4/open-logs). Every canonical block at a height in
+    /// 1..prune_cursor is pruned (no state, pin, full state or diff). What can break that lowers the cursor
+    /// (`unprune`): a canonical change below it (`rebuild_canonical`), a rebuild (`ensure_state_with`) and a
+    /// restore (`restore_canonical`) of the blocks they touch. `prune_holds` checks it.
+    pub prune_cursor:u64,
+    /// The first `retain_unsettled` of a chain (a new or restored one) looks for orphans although it removed
+    /// nothing; later ones only after a removal (every removal's orphans are removed with it).
+    orphan_check:bool,
     /// C-1 E1: state roots from the parent's trie (false: built from the whole state, a test reference),
     /// and how parents' tries were obtained: derived from the head's through the diffs, built from the
     /// whole state, or derived but refused because the root did not match the committed one.
@@ -336,7 +345,7 @@ impl Chain{
             summary:Some(Box::new(pocol_lp4_execution::state_summary::Summary::scan(spec.genesis().state(),cp.B_code_max))),stored:None};
         let mut blocks=HashMap::new();blocks.insert(gh,Box::new(genesis));
         let k_hist=u64::from(spec.local().k_hist);
-        Self{spec,blocks,head:gh,canonical:vec![gh],next_seq:1,k_hist,rebuilds:0,materializations:Default::default(),keep_full_states:false,slim_depth:None,slim_cursor:1,unslimmed:Vec::new(),incremental_root:true,trie_derived:Default::default(),trie_built:Default::default(),trie_refused:Default::default(),history_window:None,history_cursor:1,restore_reexecs:0,invalid:HashMap::new(),invalid_order:Default::default(),seen_templates:BTreeMap::new(),evicted:Default::default(),evicted_order:Default::default(),evicted_total:0,
+        Self{spec,blocks,head:gh,canonical:vec![gh],next_seq:1,k_hist,rebuilds:0,materializations:Default::default(),keep_full_states:false,slim_depth:None,slim_cursor:1,unslimmed:Vec::new(),prune_cursor:1,orphan_check:true,incremental_root:true,trie_derived:Default::default(),trie_built:Default::default(),trie_refused:Default::default(),history_window:None,history_cursor:1,restore_reexecs:0,invalid:HashMap::new(),invalid_order:Default::default(),seen_templates:BTreeMap::new(),evicted:Default::default(),evicted_order:Default::default(),evicted_total:0,
             r_keep:R_KEEP,side_cap:SIDE_BLOCKS_MAX,protect:Default::default(),replaying:false,trie_store:None}
     }
     pub fn head(&self)->&Entry{&self.blocks[&self.head]}
@@ -712,16 +721,26 @@ impl Chain{
         // R21 is the canonical trie window; non-canonical states are bounded by side_max below. (Pruning
         // a side block below the window made each block of a deep competing branch rebuild its parent
         // from genesis: quadratic work for an R_keep-deep adoption.)
-        let prune:Vec<[u8;32]>=self.canonical.iter().skip(1).take(cut as usize).copied().collect();
-        for h in prune{if let Some(e)=self.blocks.get_mut(&h){if !e.pruned{e.state=empty_state();e.pruned=true;}e.stored=None;e.full=false;e.diff=None;}}
-        let side=|c:&Chain|->Vec<[u8;32]>{c.blocks.values().filter(|e|e.height>0&&!c.is_canonical(&e.hash)).map(|e|e.hash).collect()};
+        // Heights 1..=cut, each once (`prune_cursor`); what has a block there was pruned before the cut moved.
+        // With the invariant holding (checked in debug builds), the old walk over 1..=cut changed nothing below it.
+        debug_assert!(self.prune_holds(),"prune_cursor {}: a canonical block below it is not pruned",self.prune_cursor);
+        while self.prune_cursor<=cut{
+            if let Some(h)=self.canonical.get(self.prune_cursor as usize).copied(){if let Some(e)=self.blocks.get_mut(&h){if !e.pruned{e.state=empty_state();e.pruned=true;}e.stored=None;e.full=false;e.diff=None;}}
+            self.prune_cursor+=1;
+        }
+        // The side blocks, found once: nothing below makes a block canonical, and orphans and evicted blocks
+        // are side blocks (a canonical block's parent is canonical), so what is left is this list less what
+        // was removed.
+        let side:Vec<[u8;32]>=self.blocks.values().filter(|e|e.height>0&&!self.is_canonical(&e.hash)).map(|e|e.hash).collect();
         let r_keep=self.r_keep;
-        let mut gone:Vec<[u8;32]>=side(self).into_iter().filter(|h|self.blocks[h].height+r_keep<=head_h).collect();
+        let mut gone:Vec<[u8;32]>=side.iter().filter(|h|self.blocks[*h].height+r_keep<=head_h).copied().collect();
         for h in &gone{self.blocks.remove(h);}
         // Descendants of a removed block go too (their parent is gone).
-        loop{let orphaned:Vec<[u8;32]>=self.blocks.values().filter(|e|e.parent.map_or(false,|p|!self.blocks.contains_key(&p))).map(|e|e.hash).collect();
-            if orphaned.is_empty(){break}for h in orphaned{self.blocks.remove(&h);gone.push(h);}}
-        let side_now=side(self);
+        if !gone.is_empty()||self.orphan_check{self.orphan_check=false;
+            loop{let orphaned:Vec<[u8;32]>=self.blocks.values().filter(|e|e.parent.map_or(false,|p|!self.blocks.contains_key(&p))).map(|e|e.hash).collect();
+                if orphaned.is_empty(){break}for h in orphaned{self.blocks.remove(&h);gone.push(h);}}}
+        debug_assert!(self.blocks.values().all(|e|e.parent.map_or(true,|p|self.blocks.contains_key(&p))),"an orphan was left");
+        let side_now:Vec<[u8;32]>=side.into_iter().filter(|h|self.blocks.contains_key(h)).collect();
         let unprotected=side_now.iter().filter(|h|!self.protect.contains(*h)).count();
         // Live: unprotected <= side_cap (a session holds <= protect_max more). Replay: all <= their sum.
         let (count,limit)=if self.replaying{(side_now.len(),self.side_cap+self.protect_max())}else{(unprotected,self.side_cap)};
@@ -748,7 +767,7 @@ impl Chain{
         self.protect=keep.into_iter().collect();
         // Offload: the journal holds every byte dropped here (body_off is set only after a fsynced
         // append), so no crash can lose them; genesis is never journaled and never offloaded.
-        let side_left=side(self);
+        let side_left:Vec<[u8;32]>=side_now.into_iter().filter(|h|self.blocks.contains_key(h)).collect();
         for h in &side_left{if let Some(e)=self.blocks.get_mut(h){if !e.offloaded&&e.body_off.is_some()&&e.height>0{offload(e);}}}
         // C-1 S4: canonical journaled entries deeper than slim_depth keep only what fork choice, contexts
         // and evidence read at that depth (restored on demand, `unslim`).
@@ -922,7 +941,7 @@ impl Chain{
         let window_start=resident.min(cut+1);
         let Some(first)=(from_h.max(1).max(window_start)..=head_h).find(|h|off(self,*h)) else{return Ok(0)};
         let last=(first..=head_h).rev().find(|h|off(self,*h)).unwrap_or(first);
-        let ph=self.canonical[first as usize-1];let (was_pruned,was_full)=(self.blocks[&ph].pruned,self.blocks[&ph].full);
+        let ph=self.canonical[first as usize-1];let (was_pruned,was_full)=(self.blocks[&ph].pruned,self.blocks[&ph].full);self.unprune(first-1);
         self.ensure_state_with(&ph,Some(src))?;
         let mut p=self.blocks[&ph].meta_clone();p.state=self.blocks[&ph].state.clone();p.stored=self.blocks[&ph].stored.clone();
         if (was_pruned||!was_full)&&ph!=self.canonical[0]{let x=self.blocks.get_mut(&ph).unwrap();x.state=empty_state();x.stored=None;x.full=false;x.pruned=was_pruned;}
@@ -999,7 +1018,7 @@ impl Chain{
         let e=self.blocks.get(hash).ok_or_else(||Reject::Block("rebuild target".into()))?;
         if e.full&&!e.pruned{return Ok(())}
         // C-1 S3a: a state that is not pruned is built from a full state through the diffs.
-        if !e.pruned&&self.trie_store.is_none(){if let Some(st)=self.materialize(hash){let x=self.blocks.get_mut(hash).unwrap();x.state=st.into();x.full=true;self.materializations.fetch_add(1,std::sync::atomic::Ordering::Relaxed);return Ok(())}
+        if !e.pruned&&self.trie_store.is_none(){if let Some(st)=self.materialize(hash){let x=self.blocks.get_mut(hash).unwrap();let xh=x.height;self.unprune(xh);let x=self.blocks.get_mut(hash).unwrap();x.state=st.into();x.full=true;self.materializations.fetch_add(1,std::sync::atomic::Ordering::Relaxed);return Ok(())}
             self.blocks.get_mut(hash).unwrap().pruned=true;}
         // TrieRebuild from the nearest ancestor that has a state (full, or materialized).
         let mut path=vec![];let mut cur=*hash;
@@ -1012,6 +1031,8 @@ impl Chain{
             path.push(cur);cur=e.parent.ok_or_else(||Reject::Block("rebuild root".into()))?;
         };
         let root=self.meta_restored(&cur,src)?;let root=&root;
+        // The blocks above the root get diffs and the target a state (`prune_cursor`).
+        self.unprune(root.height+1);
         // A13: rolling re-execution. Only the block being extended holds a state; intermediate
         // states are dropped, so a rebuild of any depth keeps at most two snapshots alive.
         let mut p=root.meta_clone();p.state=root_state;p.stored=root_stored;
@@ -1048,7 +1069,19 @@ impl Chain{
     pub(crate) fn rebuild_canonical(&mut self){
         let mut path=Vec::new();let mut cur=Some(self.head);
         while let Some(h)=cur{path.push(h);cur=self.blocks[&h].parent;}
-        path.reverse();self.canonical=path;
+        path.reverse();
+        // The first height whose canonical block changed: the prune below it still holds.
+        let same=path.iter().zip(&self.canonical).take_while(|(a,b)|a==b).count() as u64;
+        self.unprune(same);self.canonical=path;
+    }
+    /// Canonical heights from `h` up may hold what the R21 prune drops (`prune_cursor`).
+    pub(crate) fn unprune(&mut self,h:u64){self.prune_cursor=self.prune_cursor.min(h.max(1));}
+    /// A chain whose entries were replaced (a checkpoint's): the next `retain_unsettled` prunes and looks
+    /// for orphans from the start.
+    pub(crate) fn retention_reset(&mut self){self.prune_cursor=1;self.orphan_check=true;}
+    /// `prune_cursor`'s invariant: every canonical block at a height in 1..prune_cursor is pruned.
+    pub fn prune_holds(&self)->bool{
+        (1..self.prune_cursor).all(|h|self.canonical.get(h as usize).and_then(|x|self.blocks.get(x)).map_or(true,|e|e.pruned&&e.stored.is_none()&&!e.full&&e.diff.is_none()))
     }
     /// Whether `hash` is on the current canonical chain.
     pub fn is_canonical(&self,hash:&[u8;32])->bool{self.blocks.get(hash).map(|e|self.canonical.get(e.height as usize)==Some(hash)).unwrap_or(false)}

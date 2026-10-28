@@ -444,6 +444,8 @@ impl Node{
         let (mut skipped,mut restored,mut refilled)=(0u64,0usize,0u64);
         let (mut ckpt_last,mut written)=(start as u64,0u64);
         let t_replay=Instant::now();timing.replay_records=(n_rec-start.min(n_rec)) as u64;
+        // A version an entry stops holding is released inside the next block's commit (StateStore::set_deferred).
+        if let Some(st)=&state_store{st.set_deferred(true).map_err(|e|format!("state store: {}",e.0))?;}
         for i in start..n_rec{
             let payload=rec.payload(i).map_err(|e|format!("record {i}: {e:?}"))?;let payload=&payload;
             let this_off=rec_off; rec_off+=(payload.len()+store::OVERHEAD) as u64;
@@ -497,6 +499,7 @@ impl Node{
         drop(events);chain.protect.clear();chain.replaying=false;chain.r_keep=cfg.limits.r_keep;chain.retain_unsettled();
         // Every adoption was restored above, so this finds nothing unless replay skipped a record.
         restored+=chain.restore_canonical(0,&Src{journal:&rec.journal,history:&history}).map_err(|e|format!("replay: restore canonical {e:?}"))?;chain.settle();
+        if let Some(st)=&state_store{st.set_deferred(false).map_err(|e|format!("state store: the late releases: {}",e.0))?;}
         let (tx,rx)=mpsc::sync_channel(EVENT_QUEUE);let (miner_tx,miner_rx)=mpsc::channel::<MinerEvent>();
         let (light,light_rx)=crate::rpc::LightLane::new(cfg.limits.rpc.light_queue);let resp=crate::rpc::RespPools::new(&cfg.limits.rpc);
         let fwd=tx.clone();crate::threads::spawn("miner-fwd",crate::threads::IO_STACK,move||{for e in miner_rx{if fwd.send(Event::Miner(e)).is_err(){break}}}).map_err(|e|format!("spawn: {e}"))?;
