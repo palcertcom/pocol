@@ -840,8 +840,9 @@ impl Chain{
         for h in canon{if let Some(e)=self.blocks.get_mut(&h){if e.full&&!e.pruned{
             if e.diff.is_some(){e.state=empty_state();e.full=false;}else{e.state=empty_state();e.full=false;e.pruned=true;}}}}
         if self.blocks.get(&head).map_or(false,|e|!e.full&&!e.pruned){if let Some(s)=self.materialize(&head){let e=self.blocks.get_mut(&head).unwrap();e.state=s.into();e.full=true;self.materializations.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}}
-        // A state held as a diff: a canonical block from prune_cursor up, or a side block.
-        let open:Vec<[u8;32]>=self.canonical.iter().skip(self.prune_cursor.max(1) as usize).chain(self.side.iter()).filter(|h|self.blocks.get(*h).map_or(false,|e|!e.pruned&&!e.full)).copied().collect();
+        // A state held as a diff: a canonical block from prune_cursor up. No side block is one here: `settle` has
+        // just pruned each side state it dropped and made each one it kept full.
+        let open:Vec<[u8;32]>=self.canonical.iter().skip(self.prune_cursor.max(1) as usize).filter(|h|self.blocks.get(*h).map_or(false,|e|!e.pruned&&!e.full)).copied().collect();
         debug_assert!({let mut a=open.clone();a.sort();let mut b:Vec<[u8;32]>=self.blocks.values().filter(|e|!e.pruned&&!e.full).map(|e|e.hash).collect();b.sort();a==b},"the diff-held states are found");
         for h in open{if self.state_path(&h).is_none(){let side=!self.is_canonical(&h);let e=self.blocks.get_mut(&h).unwrap();e.pruned=true;if side{e.diff=None;}}}
     }

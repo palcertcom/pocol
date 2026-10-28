@@ -925,6 +925,16 @@ fn fallback_on_pruned(n:&mut Net,parent:[u8;32])->Block{n.chain.ensure_state(&pa
     assert!(n.chain.blocks.values().all(|e|e.parent.map_or(true,|x|n.chain.blocks.contains_key(&x))),"no block is left whose parent is gone");
     assert!(main[10..].iter().all(|b|n.chain.get(&b.hash()).is_none()),"the old main chain went with its removed blocks");
 }
+/// 2026-10-28: settle sheds full canonical states from prune_cursor up (every one below it is pruned). A canonical
+/// state made full at exactly the cursor's height (cut + 1, the lowest one kept as a diff) is shed again too.
+#[test] fn settle_sheds_a_full_canonical_state_at_the_lowest_height_it_keeps(){
+    let mut n=net();n.chain.k_hist=4;for _ in 0..20{let h=n.chain.head;let b=fallback(&n,h,0);import(&mut n,&b);n.chain.retain();}
+    let cut=n.chain.head().height-4;assert_eq!(n.chain.prune_cursor,cut+1);
+    let low=n.chain.canonical[(cut+1) as usize];assert!(!n.chain.blocks[&low].full&&!n.chain.blocks[&low].pruned,"positive control: held as a diff");
+    let st=n.chain.state_of(&low).unwrap().into_owned();{let e=n.chain.blocks.get_mut(&low).unwrap();e.state=st.into();e.full=true;}
+    n.chain.retain();assert!(!n.chain.blocks[&low].full&&!n.chain.blocks[&low].pruned,"shed again, kept as its diff");
+    let full=n.chain.canonical.iter().filter(|h|n.chain.blocks[*h].full).count();assert_eq!(full,2,"genesis and the head");
+}
 #[test] fn a13_rebuild_of_a_deep_fork_keeps_only_the_target_state(){
     let mut n=net();n.chain.k_hist=4;let mut hashes=vec![n.chain.head];
     for _ in 0..14{let h=n.chain.head;let b=fallback(&n,h,0);import(&mut n,&b);n.chain.retain();hashes.push(n.chain.head);}

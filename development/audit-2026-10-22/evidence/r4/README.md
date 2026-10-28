@@ -174,10 +174,17 @@ reorg of R_keep depth at the caps, Windows.
   - `rebuild_canonical`'s walk to genesis at every insert, fixed in eb85bed;
   - the side-block scans of `retain_unsettled` and `settle`, and settle's trie pass, each over every entry.
     The commit after 719da04 keeps the side blocks as a set and clears only the tries given since the last settle.
+    Seeded faults ([mutants-side.log](mutants-side.log)): S1–S6, S8, S9 killed in release; S7 (a restore keeps the
+    old set) and S10 (shed skips the lowest kept height) survived, and were killed after a test was added for
+    each. S11 was shown equivalent (shed runs after settle has pruned or made full every side state), and the
+    redundant code was removed.
   - Not yet measured: an H_END run on the commit with the side set.
 - The first reopen at H_END did not use its checkpoints and replayed from genesis. Why is not known: its
-  node log was off, and the store was started over. The second run (eb85bed, node log on) was still growing when this was
-  written; its reopen will say whether its checkpoints are used.
+  node log was off, and the store was started over. The second run (eb85bed, node log on) was stopped at h ≈ 114,901 by
+  the session's 2-hour limit on a background command ([hend/grow2-eb85bed.log](hend/grow2-eb85bed.log)). Its reopen
+  started the store over too, and its log lines were lost ([hend/reopen2-eb85bed.md](hend/reopen2-eb85bed.md)). On
+  051dfaa, reopens at small heights resume from their checkpoints (a clean stop at 20,000, a `kill -9` at
+  12,651). **The refusal at large heights stays open.**
 
 ## 6. Boot and performance
 
