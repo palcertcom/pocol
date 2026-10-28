@@ -41,7 +41,7 @@ let isolated = null;
 const logTo = (name, what) => { const f = join(work, `${name}.log`); appendFileSync(f, `\n=== ${new Date().toISOString()} ${what}\n`); const fd = openSync(f, 'a'); return ['ignore', fd, fd]; };
 // The partition's a and b, started outside devnet's pids.json: stopped in `main`'s finally if a wait fails first.
 const partition = [];
-const startIsolatedC = () => { isolated = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', 'c'), '--name', 'c', '--miner', 'c', '--rpc', '127.0.0.1:8542', '--log'], { stdio: logTo('c', 'partition: c alone'), detached: true }); };
+const startIsolatedC = (miner = true) => { isolated = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', 'c'), '--name', 'c', ...(miner ? ['--miner', 'c'] : []), '--rpc', '127.0.0.1:8542', '--log'], { stdio: logTo('c', miner ? 'partition: c alone' : 'partition: c alone, no miner'), detached: true }); };
 const stopIsolatedC = async () => { if (isolated) { process.kill(-isolated.pid, 'SIGTERM'); await new Promise((r) => isolated.once('exit', r)); isolated = null; } };
 const pids = () => JSON.parse(readFileSync(join(work, 'pids.json'), 'utf8'));
 const rssKiB = (pid) => { try { return Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))[1]); } catch { return null; } };
@@ -95,7 +95,11 @@ async function main() {
     // accept-int-073923f store run 2, ab was at 60 with work 0x245033 and c at 55 with 0x27aa15 (c's uninterrupted
     // blocks had raised its difficulty, ab's early fallback blocks had eased its own), so a and b adopted c's branch.
     const totalWork = async (i) => BigInt((await rpc(8540 + i, 'pocol_status')).head.totalWork);
-    await wait(async () => { const [ha, , hc] = await heights(); return ha > hc + 4 && (await totalWork(0)) > (await totalWork(2)); }, 240000, 'majority branch heavier');
+    // 2026-10-28: c then runs on without its miner, so the a/b branch becomes the heavier one by construction. Mining
+    // alone, c can outgrow the pair (acceptance on b4f13f3, whole-state run 2: c 217 blocks after the partition
+    // against a/b's 203, and the wait expired; evidence/r4/accept-b4f13f3/). The test needs v2 on the lighter branch.
+    await stopIsolatedC(); startIsolatedC(false);
+    await wait(async () => { try { const [ha, , hc] = await heights(); return ha > hc + 4 && (await totalWork(0)) > (await totalWork(2)); } catch { return false; } }, 240000, 'majority branch heavier');
     const cTip = (await rpc(8542, 'pocol_status')).head, aTip = (await rpc(8540, 'pocol_status')).head;
     ok('partition: branches diverged', cTip.hash !== aTip.hash, `c=${cTip.height} ab=${aTip.height} base=${base}`);
     // ---- heal ----
