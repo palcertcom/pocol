@@ -108,6 +108,12 @@ async function main() {
     const stopSolo = async () => { const ps = partition.splice(0); for (const p of ps) { try { process.kill(-p.pid, 'SIGTERM'); } catch {} } await Promise.all(ps.map((p) => (p.exitCode === null && p.signalCode === null ? new Promise((r) => p.once('exit', r)) : null))); };
     const statuses = () => wait(async () => { try { return await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); } catch { return null; } }, 60000, 'nodes up');
     await stopIsolatedC(); await stopSolo();
+    // a and b catch up with each other first, meshed and with no miner (review F8, 2026-10-28): a block one of them
+    // made just before it stopped would otherwise be measured on one side only.
+    { const ps = [0, 1].map((i) => { const l = 'ab'[i]; const p = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--rpc', `127.0.0.1:${8540 + i}`, '--log',
+        '--listen', `127.0.0.1:${30300 + i}`, ...(i === 1 ? ['--peer', '127.0.0.1:30300'] : [])], { stdio: logTo(l, 'catch up: a and b meshed, no miner'), detached: true }); partition.push(p); return p; });
+      await wait(async () => { try { const [x, y] = await Promise.all([0, 1].map((i) => rpc(8540 + i, 'pocol_status'))); return x.head.hash === y.head.hash; } catch { return false; } }, 60000, 'a and b on one tip');
+      void ps; await stopSolo(); }
     solo('measure: alone, no miner', false, false); const m = (await statuses()).map((x) => x.head); await stopSolo();
     const abWins = BigInt(m[0].totalWork) > BigInt(m[2].totalWork), win = abWins ? m[0] : m[2];
     ok('heal: positive control: measured with no miner, a and b share one tip and c another, of different work', m[0].hash === m[1].hash && m[0].hash !== m[2].hash && m[0].totalWork !== m[2].totalWork, `ab ${m[0].height}/${m[0].totalWork}, c ${m[2].height}/${m[2].totalWork}`);

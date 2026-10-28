@@ -22,7 +22,8 @@ impl chain::BlockBytes for Journal{
 struct Src<'a>{journal:&'a Journal,history:&'a crate::history::History}
 impl chain::BlockBytes for Src<'_>{
     fn record_at(&self,off:u64)->Result<(Vec<u8>,Vec<u8>,Vec<u8>),Reject>{chain::BlockBytes::record_at(self.journal,off)}
-    fn ranges_of(&self,hash:&[u8;32])->Option<Vec<(Address,u128,u128)>>{self.history.ranges(hash).ok().flatten()}
+    /// A history.redb read that fails is a local failure (review F3), not "ranges unavailable".
+    fn ranges_of(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,Reject>{self.history.ranges(hash).map_err(|e|Reject::Local(format!("history: {}",e.0)))}
 }
 /// NeedsRebuild retries of one block: its parent, and (C-1 S4) each slimmed evidence ancestor restored in
 /// turn (only after the head fell back more than R_keep). Beyond them the block is refused, never accepted.
@@ -404,11 +405,18 @@ impl Node{
                             let r=if k>n_rec||offs[k]!=b.end||rolls[k]!=b.hash{Err("it is not bound to this journal's records".to_string())}
                                 else if s.protect.as_ref().map_or(false,|p|p.len()!=protect.len()||p.iter().any(|h|!protect.contains(h))){Err("its protect set is not the one replay had after its last record".to_string())}
                                 else{crate::checkpoint::restore(&mut chain,&s,&crate::checkpoint::JournalSource{by_off:by_off.clone(),journal:&rec.journal,records:k,history:&history},&dyn_st)};
+                            // 2026-10-28 (independent review F1, F2): a restore that failed because the journal or
+                            // state.redb could not be read is the node's own storage failing, not the checkpoint: open
+                            // stops, and nothing is dropped, set aside or rebuilt for it.
                             match r{Ok(r)=>{resumed=Some(k);versions_read=r;chain.protect=protect;break}
+                                Err(e) if e.starts_with(crate::checkpoint::LOCAL)||st.io_failed()=>return Err(format!("state store: checkpoint {q} could not be read: {e}")),
                                 Err(e)=>{refused+=1;if cfg.log{eprintln!("[{}] checkpoint {q} (record {k}) refused: {e}",cfg.name);}
-                                    if st.drop_checkpoint(q).is_err()||st.is_damaged(){break}}}
+                                    let dropped=st.drop_checkpoint(q);
+                                    if st.io_failed(){return Err(format!("state store: dropping checkpoint {q}: {}",dropped.err().map_or_else(String::new,|e|e.0)))}
+                                    if dropped.is_err()||st.is_damaged(){break}}}
                         }
                     }
+                    Err(e) if st.io_failed()=>return Err(format!("state store: the checkpoints could not be read: {e}")),
                     Err(e)=>{if cfg.log{eprintln!("[{}] checkpoints unusable, the state store is rebuilt: {e}",cfg.name);}}
                 }
             }
@@ -448,6 +456,9 @@ impl Node{
         if let Some(st)=&state_store{st.set_deferred(true).map_err(|e|format!("state store: {}",e.0))?;}
         for i in start..n_rec{
             let payload=rec.payload(i).map_err(|e|format!("record {i}: {e:?}"))?;let payload=&payload;
+            // Read back from the file: bound again to the rolling hash the first pass computed (review F7), so a
+            // record rewritten with its digest between the two passes is refused, not replayed.
+            if crate::checkpoint::roll(&rolls[i],payload)!=rolls[i+1]{return Err(format!("record {i}: the journal changed while it was opened"))}
             let this_off=rec_off; rec_off+=(payload.len()+store::OVERHEAD) as u64;
             let (hb,bb,rb)=store::decode_record(payload).map_err(|e|format!("record {i}: {e}"))?;
             let header=decode_header(&hb).map_err(|e|format!("record {i}: {e}"))?;
@@ -492,7 +503,9 @@ impl Node{
             if let Some(st)=&state_store{if ckpt_every>0&&(i as u64+1)-ckpt_last>=ckpt_every{let t=Instant::now();
                 history.sync().map_err(|e|format!("replay {i}: history {}",e.0))?;
                 match write_checkpoint(&chain,st,&crate::checkpoint::Binding{records:i as u64+1,end:offs[i+1],hash:rolls[i+1]}){
-                    Ok(_)=>{written+=1;ckpt_last=i as u64+1;}Err(e)=>if cfg.log{eprintln!("[{}] checkpoint at record {}: {e}",cfg.name,i+1)}}timing.replay_checkpoint_ms+=ms(t);}}
+                    Ok(_)=>{written+=1;ckpt_last=i as u64+1;}
+                    Err(e) if st.io_failed()=>return Err(format!("replay {i}: state store: the checkpoint's write: {e}")),
+                    Err(e)=>if cfg.log{eprintln!("[{}] checkpoint at record {}: {e}",cfg.name,i+1)}}timing.replay_checkpoint_ms+=ms(t);}}
         }
         timing.replay_ms=ms(t_replay);
         if refilled>0{history.sync().map_err(|e|format!("replay: history {}",e.0))?;}
@@ -521,7 +534,11 @@ impl Node{
         let Some(st)=self.state_store.clone() else{return};
         if self.ckpt.every==0||self.journal.records-self.ckpt.last<self.ckpt.every{return}
         let b=crate::checkpoint::Binding{records:self.journal.records,end:self.journal.end_offset(),hash:self.ckpt.roll};
-        match write_checkpoint(&self.chain,&st,&b){Ok(_)=>{self.stats.checkpoints_written+=1;self.ckpt.last=b.records;}Err(e)=>self.log(&format!("checkpoint at record {}: {e}",b.records))}
+        match write_checkpoint(&self.chain,&st,&b){Ok(_)=>{self.stats.checkpoints_written+=1;self.ckpt.last=b.records;}
+            // 2026-10-28 (review F4): redb refuses the store after an I/O failure; a read before the next commit would
+            // panic, so the node stops here, as a failed block commit stops it.
+            Err(e) if st.io_failed()=>self.fatal(&format!("checkpoint at record {}: {e}",b.records)),
+            Err(e)=>self.log(&format!("checkpoint at record {}: {e}",b.records))}
     }
     /// C-1 E4.4: writes a checkpoint now (store mode; tests and a clean stop).
     pub fn checkpoint_now(&mut self)->Result<u64,String>{
@@ -770,7 +787,9 @@ impl Node{
     pub fn release_step(&mut self){
         let Some(st)=self.state_store.clone() else{return};
         let t0=Instant::now();
-        match st.release_step(RELEASE_SLICE){Ok(n)=>{self.stats.released_rows+=n as u64;}Err(e)=>self.log(&format!("release step: {}",e.0))}
+        match st.release_step(RELEASE_SLICE){Ok(n)=>{self.stats.released_rows+=n as u64;}
+            Err(e) if st.io_failed()=>self.fatal(&format!("release step: {}",e.0)),
+            Err(e)=>self.log(&format!("release step: {}",e.0))}
         let ms=t0.elapsed().as_millis() as u64;self.stats.release_steps+=1;self.stats.release_step_max_ms=self.stats.release_step_max_ms.max(ms);
     }
     /// Revalidates the whole backlog now (in-process callers and tests; `run` never does).

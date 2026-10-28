@@ -2749,7 +2749,7 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
 #[cfg(feature="io-fault")]
 #[test] fn e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid(){
     let blocks=e44_blocks();let exe=std::env::current_exe().unwrap();
-    for mode in ["import-Write","import-Sync","release-Write","release-Sync"]{
+    for mode in ["import-Write","import-Sync","release-Write","release-Sync","checkpoint-Write","checkpoint-Sync"]{
         let d=e44_dir(&format!("iof-{mode}"));let file=d.with_extension("blocks");
         {let mut out=vec![];for b in blocks{for p in [b.header.encoded.clone(),b.body.encode()]{out.extend((p.len() as u32).to_be_bytes());out.extend(p);}}std::fs::write(&file,out).unwrap();}
         let out=std::process::Command::new(&exe).args(["e4_io_fault_child","--exact","--ignored","--nocapture","--test-threads=1"])
@@ -2759,13 +2759,56 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
         println!("E4-IMPORT-IO {mode} (exit {:?}): {}",out.status.code(),text.lines().filter(|l|l.contains("IOF-CHILD")||l.contains("FATAL")||l.contains("] reject ")||l.contains("release step:")).collect::<Vec<_>>().join(" | "));
         assert!(text.contains("injected I/O fault"),"{mode}: positive control: the fault fired: {text}");
         assert_eq!(out.status.code(),Some(70),"{mode}: the node stops with exit 70: {text}");
-        assert!(text.contains("FATAL local storage")&&!text.contains("IOF-CHILD imported")&&!text.contains("] reject "),"{mode}: no block is rejected: {text}");
+        // "checkpoint": the blocks before the checkpoint's write are imported; the node stops in that write.
+        let stopped_in=if mode.starts_with("checkpoint"){text.contains("FATAL local storage: checkpoint at record")&&!text.contains("IOF-CHILD imported block")||text.lines().filter(|l|l.contains("IOF-CHILD imported")).all(|l|l.contains("Ok(true)"))&&text.contains("FATAL local storage: checkpoint at record")}
+            // "release": the node stops in the release step itself (review F4), before any read the refused store
+            // would fail; not later, in the next import's commit.
+            else if mode.starts_with("release"){text.contains("FATAL local storage: release step")&&!text.contains("IOF-CHILD imported")}
+            else{text.contains("FATAL local storage")&&!text.contains("IOF-CHILD imported")};
+        assert!(stopped_in&&!text.contains("] reject "),"{mode}: no block is rejected: {text}");
         let (mut g,gd)=e44_reference(&d,&format!("iof-ref-{mode}"));
         let mut n=reopen(&e44_conf(&d,7));e44_same(&mut n,&mut g,&format!("after the stop ({mode})"));
-        for b in &blocks[at..]{n.import(b.clone(),None).unwrap_or_else(|e|panic!("{mode}: the next open imports every block: {e:?}"));}
+        for b in &blocks[at..]{if n.chain.get(&b.hash()).is_some(){continue}n.import(b.clone(),None).unwrap_or_else(|e|panic!("{mode}: the next open imports every block: {e:?}"));}
         assert_eq!(n.chain.head,blocks.last().unwrap().hash(),"{mode}: the block the fault stopped and the rest are imported");
         assert!(n.chain.invalid.is_empty(),"{mode}: no block is marked invalid");n.state_store().unwrap().recount().unwrap();
         drop(n);drop(g);for p in [d,gd]{let _=std::fs::remove_dir_all(&p);}let _=std::fs::remove_file(&file);
+    }
+}
+/// 2026-10-28 (independent review F1, F2): an open whose checkpoint restore cannot read its storage (the journal's
+/// read back of a record, or state.redb's write when a stored version is pinned) fails. It drops no checkpoint,
+/// sets nothing aside and rebuilds nothing: the next open resumes from the newest checkpoint and is the node replay
+/// from genesis gives. Before the fix a journal read error refused every checkpoint in turn, dropped each, and the
+/// store was deleted and replayed from genesis.
+#[cfg(feature="io-fault")]
+#[test] fn e4_an_open_that_cannot_read_its_storage_fails_and_keeps_the_store(){
+    use pocold::io_fault::{self,Op};
+    let blocks=e44_blocks();let every=7u64;
+    for (what,arm) in [("journal read",0u8),("state.redb write while pinning a stored version",1),("state.redb write while dropping a refused checkpoint",2)]{
+        let d=e44_dir(&format!("open-io-{arm}"));
+        {let mut n=reopen(&e44_conf(&d,every));for b in blocks{n.import(b.clone(),None).unwrap();}}
+        let ck=||{let st=pocold::state_store::StateStore::open(&d).unwrap();st.checkpoints().unwrap().iter().map(|c|c.0).collect::<Vec<_>>()};
+        let before=ck();assert!(before.len()>=2,"positive control: checkpoints kept ({before:?})");
+        let (jr,st)=(d.join("blocks.journal"),d.join(pocold::state_store::FILE));
+        // The genesis version is pinned first (the first state commit); the stored versions after it.
+        // Case 2: the newest checkpoint is made unbound to the journal (refused), and dropping it fails.
+        if arm==2{use redb::ReadableTable;let db=redb::Database::open(&st).unwrap();let w=db.begin_write().unwrap();
+            {let ck:redb::TableDefinition<u64,&[u8]>=redb::TableDefinition::new("checkpoint");let mut t=w.open_table(ck).unwrap();
+             let (seq,bytes)={let (k,v)=t.last().unwrap().unwrap();(k.value(),v.value().to_vec())};let mut s=pocold::checkpoint::decode(&bytes).unwrap();
+             s.binding.hash=[1;32];t.insert(seq,pocold::checkpoint::encode_snapshot(&s).as_slice()).unwrap();}
+            w.commit().unwrap();}
+        match arm{0=>io_fault::arm_now(&jr,Op::Read),1=>io_fault::arm_at(&st,"state-txn",Op::Write,2),_=>io_fault::arm(&st,"drop-checkpoint",Op::Write)}
+        let r=pocold::node::Node::open(e44_conf(&d,every)(),admitted(&cfg(&["a","b","c"])));
+        let fired=if arm==0{io_fault::fired(&jr)}else{io_fault::fired(&st)};io_fault::disarm(&jr);io_fault::disarm(&st);
+        assert!(!fired.is_empty(),"{what}: positive control: the fault fired");
+        let e=match r{Err(e)=>e,Ok(n)=>panic!("{what}: the open succeeded (resumed from {:?}, {} refused)",n.stats.resumed_from,n.stats.checkpoints_refused)};
+        assert!(e.contains(if arm==2{"dropping checkpoint"}else{"could not be read"}),"{what}: {e}");
+        assert!(st.exists(),"{what}: state.redb is kept");assert_eq!(ck(),before,"{what}: no checkpoint is dropped");
+        let (mut g,gd)=e44_reference(&d,&format!("open-io-ref-{arm}"));
+        let newest=(blocks.len() as u64/every)*every;
+        let mut n=reopen(&e44_conf(&d,every));
+        if arm==2{assert_eq!((n.stats.resumed_from,n.stats.checkpoints_refused),(Some(newest-every),1),"{what}: the next open refuses the unbound checkpoint and resumes from the one before");}
+        else{assert_eq!((n.stats.resumed_from,n.stats.checkpoints_refused),(Some(newest),0),"{what}: the next open resumes from the newest checkpoint");}e44_same(&mut n,&mut g,&format!("after an open that failed on {what}"));
+        drop(n);drop(g);for p in [d,gd]{let _=std::fs::remove_dir_all(&p);}
     }
 }
 /// The child of `e4_a_state_store_io_fault_stops_the_node_and_marks_no_block_invalid` (`POCOLD_IOF_MODE`):
@@ -2786,10 +2829,13 @@ fn e4_io_fault_child(){
     assert!(n.stats.checkpoints_written>=3&&(!release||n.release_pending()),"positive control: checkpoints written (and rows owed)");
     println!("\nIOF-CHILD armed before block {k}");std::io::stdout().flush().unwrap();
     if release{io_fault::arm(&st,"release-step",op);n.release_step();println!("\nIOF-CHILD release step taken; pending {}",n.release_pending());}
+    else if mode.starts_with("checkpoint"){io_fault::arm(&st,"checkpoint-txn",op);}
     else{io_fault::arm(&st,"state-txn",op);}
     std::io::stdout().flush().unwrap();
-    let r=n.import(blocks[k].clone(),None);
-    println!("\nIOF-CHILD imported block {k}: {r:?}; {} blocks marked invalid",n.chain.invalid.len());std::io::stdout().flush().unwrap();
+    // "checkpoint": the blocks up to the next checkpoint's write (2026-10-28, review F4).
+    for b in &blocks[k..(k+if mode.starts_with("checkpoint"){8}else{1}).min(blocks.len())]{
+        let r=n.import(b.clone(),None);
+        println!("\nIOF-CHILD imported block {k}: {r:?}; {} blocks marked invalid",n.chain.invalid.len());std::io::stdout().flush().unwrap();}
 }
 
 /// The child of `e4_checkpoint_survives_kills`: imports the blocks of `POCOLD_E44_BLOCKS` into the node

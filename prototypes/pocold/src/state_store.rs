@@ -62,7 +62,15 @@ pub const CACHE_ENTRY:usize=2*std::mem::size_of::<(Id,(Arc<Node>,usize))>()+2*st
 
 #[derive(Debug)]
 pub struct StateStoreError(pub String);
-fn err(e:impl std::fmt::Display)->StateStoreError{StateStoreError(e.to_string())}
+/// What marks a redb I/O failure in an error's text (`StateStoreError::is_io`).
+const IO:&str="I/O failure: ";
+fn err(e:impl Into<redb::Error>)->StateStoreError{let e:redb::Error=e.into();
+    match e{redb::Error::Io(_)|redb::Error::PreviousIo=>StateStoreError(format!("{IO}{e}")),e=>StateStoreError(e.to_string())}}
+impl StateStoreError{
+    /// redb could not read or write the file (2026-10-28): the node's own storage failed. Never a verdict on what
+    /// the store holds; redb refuses the store until it is opened again (`StateStore::io_failed`).
+    pub fn is_io(&self)->bool{self.0.starts_with(IO)}
+}
 
 /// Decoded nodes by id, bounded by their encodings' bytes; the oldest go first.
 #[derive(Default)]
@@ -82,6 +90,8 @@ pub struct StateStore{db:Database,path:PathBuf,dir:PathBuf,pub rebuilt:bool,dama
     closing:AtomicBool,
     /// D-6: the `release` table holds work (`release_pending`).
     owed:AtomicBool,
+    /// An I/O failure was met since open (`io_failed`).
+    io:AtomicBool,
     /// Replay (`set_deferred`): a version an entry stops holding is released inside the next block's commit
     /// transaction, after that block's own nodes are counted, instead of in a transaction of its own.
     deferring:AtomicBool,deferred:Mutex<Vec<Id>>,
@@ -116,7 +126,7 @@ impl StateStore{
                 let db=create(&path)?;let _=std::fs::remove_file(&marker);(db,true)}
         };
         let owed={let r=db.begin_read().map_err(err)?;!r.open_table(RELEASE).map_err(err)?.is_empty().map_err(err)?};
-        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),owed:AtomicBool::new(owed),deferring:AtomicBool::new(false),deferred:Mutex::new(Vec::new()),reads:Default::default(),writes:Default::default()})
+        Ok(Self{db,path,dir:dir.to_path_buf(),rebuilt,damaged:AtomicBool::new(false),cache:Mutex::new(Cache::default()),cache_cap,closing:AtomicBool::new(false),owed:AtomicBool::new(owed),io:AtomicBool::new(false),deferring:AtomicBool::new(false),deferred:Mutex::new(Vec::new()),reads:Default::default(),writes:Default::default()})
     }
     pub fn path(&self)->&Path{&self.path}
     pub fn is_damaged(&self)->bool{self.damaged.load(Ordering::SeqCst)}
@@ -127,8 +137,14 @@ impl StateStore{
     }
     fn guard<T>(&self,f:impl FnOnce()->Result<T,StateStoreError>)->Result<T,StateStoreError>{
         if self.is_damaged(){return Err(StateStoreError("state store damaged".into()))}
-        catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_|Err(self.mark_damaged("redb panicked")))
+        let r=catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_|Err(self.mark_damaged("redb panicked")));
+        if let Err(e)=&r{if e.is_io(){self.io.store(true,Ordering::SeqCst);}}
+        r
     }
+    /// An I/O failure was met since open: redb refuses the store until it is opened again, and what failed says
+    /// nothing about what the store holds (2026-10-28, independent review F1–F4). The node stops; nothing is
+    /// set aside, dropped or rebuilt for it.
+    pub fn io_failed(&self)->bool{self.io.load(Ordering::SeqCst)}
     /// redb's full integrity check (every page checksum).
     pub fn verify(&mut self)->Result<bool,StateStoreError>{
         let db=&mut self.db;catch_unwind(AssertUnwindSafe(||db.check_integrity())).map_err(|_|StateStoreError("redb panicked in check_integrity".into()))?.map_err(err)
@@ -182,9 +198,10 @@ impl StateStore{
     /// yet, each counting one reference to each child), the batch's code, and pins the root
     /// once, in one transaction (`durable`: fsynced at commit).
     pub fn commit(&self,b:&Batch,root:Option<Id>,durable:bool)->Result<(),StateStoreError>{
-        self.guard(||{
+        let late=std::mem::take(&mut *self.deferred.lock().unwrap());
+        let mut contradiction=None;
+        let r=self.guard(||{
             let mut w=self.db.begin_write().map_err(err)?;if !durable{w.set_durability(Durability::None);}
-            let late=std::mem::take(&mut *self.deferred.lock().unwrap());
             {
                 let mut c=w.open_table(CODE).map_err(err)?;for (h,code) in &b.code{if c.get(&h.0).map_err(err)?.is_none(){c.insert(&h.0,code.original_bytes().as_ref()).map_err(err)?;}}
                 let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;
@@ -205,11 +222,18 @@ impl StateStore{
                 }
                 // The versions released late (`set_deferred`), after this block's nodes were counted: a node both
                 // hold keeps its row, as when the release ran first and the batch held the node again.
-                for r in &late{release(&mut p,&mut t,r,&self.cache)?;}
+                // A release that contradicts the counts (a root not pinned, a node named but not stored) fails the
+                // transaction (a release is never applied in part) and marks the store damaged below.
+                for r in &late{release(&mut p,&mut t,r,&self.cache).map_err(|e|{if !e.is_io(){contradiction=Some(e.0.clone());}e})?;}
             }
             crate::crash_point("state-txn");crate::io_point(&self.path,"state-txn");
             w.commit().map_err(err)
-        })
+        });
+        // 2026-10-28 (review F5, F6): what waited is not lost to a failed transaction (it waits again); a release that
+        // contradicts the counts marks the store damaged, so the next open rebuilds it.
+        if r.is_err(){let mut d=self.deferred.lock().unwrap();let mut back=late;back.extend(d.drain(..));*d=back;}
+        if let Some(m)=contradiction{return Err(self.mark_damaged(&format!("a late release: {m}")))}
+        r
     }
     /// Releases one pin of `root` in one transaction: every node no pin or stored node names any more is
     /// deleted, with the references it held.
@@ -336,6 +360,7 @@ impl StateStore{
             let w=self.db.begin_write().map_err(err)?;
             {let mut c=w.open_table(CKPT).map_err(err)?;let mut x=w.open_table(CKPT_ROOTS).map_err(err)?;let mut p=w.open_table(PINS).map_err(err)?;let mut t=w.open_table(NODES).map_err(err)?;
              drop_one(&mut c,&mut x,&mut p,&mut t,seq,&self.cache)?;}
+            crate::io_point(&self.path,"drop-checkpoint");
             w.commit().map_err(err)
         })
     }

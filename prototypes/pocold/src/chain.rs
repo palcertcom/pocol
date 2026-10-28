@@ -197,7 +197,7 @@ impl pocol_lp4_execution::view::View for StateView<'_>{
 /// (`read_at`); a bare chain passes `None` and never offloads, so it is never called there.
 pub trait BlockBytes{fn record_at(&self,off:u64)->Result<(Vec<u8>,Vec<u8>,Vec<u8>),Reject>;
     /// C-1 S4: a block's stored nonce ranges (history.redb), for restoring a slimmed entry.
-    fn ranges_of(&self,_hash:&[u8;32])->Option<Vec<(Address,u128,u128)>>{None}}
+    fn ranges_of(&self,_hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,Reject>{Ok(None)}}
 /// C-1 S4: drops what a slimmed entry does not keep: the header's heap fields, the ParentResult and the
 /// nonce ranges. Fork choice, contexts and evidence read only the rest at these depths.
 pub(crate) fn slim(e:&mut Entry){let h=&mut e.header;h.logs_bloom=Vec::new();h.proposer=Vec::new();h.sig=Vec::new();h.shares=Vec::new();h.ut_raw=Vec::new();
@@ -982,7 +982,7 @@ impl Chain{
         let header=decode_header(&hb).map_err(|_|Reject::Block("slim header decode".into()))?;
         if block_hash(&header)!=e.hash{return blk("slim: journal header does not hash to the block")}
         let result=decode_result(&rb,&e.hash)?;
-        let ranges=src.ranges_of(&e.hash).ok_or_else(||Reject::Block("slim: ranges unavailable".into()))?;
+        let ranges=src.ranges_of(&e.hash)?.ok_or_else(||Reject::Block("slim: ranges unavailable".into()))?;
         Ok((header,result,ranges))
     }
     /// A copy of `e` with its slimmed fields restored (`e` itself when it is not slim).

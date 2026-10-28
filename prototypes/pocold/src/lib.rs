@@ -54,16 +54,22 @@ pub fn crash_point(_step:&str){}
 pub mod io_fault{
     use std::path::{Path,PathBuf};use std::sync::Mutex;
     #[derive(Clone,Copy,PartialEq,Eq,Debug)]
-    pub enum Op{Write,Sync}
-    struct Plan{file:PathBuf,step:String,op:Op,armed:bool}
+    pub enum Op{Write,Sync,Read}
+    struct Plan{file:PathBuf,step:String,op:Op,armed:bool,skip:u32}
     static PLANS:Mutex<Vec<Plan>>=Mutex::new(Vec::new());
     static FIRED:Mutex<Vec<(PathBuf,String,Op)>>=Mutex::new(Vec::new());
-    pub fn arm(file:&Path,step:&str,op:Op){PLANS.lock().unwrap().push(Plan{file:file.to_path_buf(),step:step.into(),op,armed:false});}
+    pub fn arm(file:&Path,step:&str,op:Op){arm_at(file,step,op,1)}
+    /// As `arm`, armed the `n`-th time the step is reached.
+    pub fn arm_at(file:&Path,step:&str,op:Op,n:u32){PLANS.lock().unwrap().push(Plan{file:file.to_path_buf(),step:step.into(),op,armed:false,skip:n.saturating_sub(1)});}
+    /// A fault armed at once: the next `op` on `file` fails (the journal's reads: `Op::Read`, `read`).
+    pub fn arm_now(file:&Path,op:Op){PLANS.lock().unwrap().push(Plan{file:file.to_path_buf(),step:"now".into(),op,armed:true,skip:0});}
+    /// The journal's read back of a record (`Journal::payload_at`) fails as armed.
+    pub fn read(file:&Path)->std::io::Result<()>{take(file,Op::Read)}
     /// The faults injected into `file` so far: (step, op), oldest first.
     pub fn fired(file:&Path)->Vec<(String,Op)>{FIRED.lock().unwrap().iter().filter(|x|x.0==file).map(|x|(x.1.clone(),x.2)).collect()}
     /// Drops the faults armed for `file` that have not fired.
     pub fn disarm(file:&Path){PLANS.lock().unwrap().retain(|p|p.file!=file);}
-    pub(crate) fn reached(file:&Path,step:&str){for p in PLANS.lock().unwrap().iter_mut(){if p.file==file&&p.step==step{p.armed=true;}}}
+    pub(crate) fn reached(file:&Path,step:&str){for p in PLANS.lock().unwrap().iter_mut(){if p.file==file&&p.step==step&&!p.armed{if p.skip>0{p.skip-=1}else{p.armed=true;}}}}
     fn take(file:&Path,op:Op)->std::io::Result<()>{
         let mut plans=PLANS.lock().unwrap();
         let Some(i)=plans.iter().position(|p|p.armed&&p.op==op&&p.file==file) else{return Ok(())};

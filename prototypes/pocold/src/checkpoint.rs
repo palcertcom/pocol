@@ -163,8 +163,12 @@ pub fn roots(s:&Snapshot)->Vec<Id>{s.entries.iter().filter_map(|e|e.root).collec
 
 /// What `restore` reads besides the snapshot: a journal record's payload by its frame offset (only records
 /// of the bound prefix), and history.redb's receipts and nonce ranges.
+/// What marks a restore error that is the node's own storage failing, not the checkpoint (2026-10-28).
+pub const LOCAL:&str="local storage failure: ";
 pub trait Source{
-    fn payload_at(&self,off:u64)->Option<Vec<u8>>;
+    /// Ok(None): no record of the bound prefix there, or one that fails its check (a refusal). Err: the journal
+    /// could not be read (a local failure, never a refusal: `LOCAL`).
+    fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>;
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>;
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>;
     /// Whether history.redb holds the block's receipts and nonce ranges.
@@ -208,7 +212,7 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
             // I3; replay makes them durable before it checkpoints): one an old entry would read on demand
             // must be there too.
             if !src.has(&r.hash)?{return Err(why("not in history.redb"))}
-            let payload=src.payload_at(off).ok_or_else(||why("its journal offset is not a record of the bound prefix"))?;
+            let payload=src.payload_at(off)?.ok_or_else(||why("its journal offset is not a record of the bound prefix"))?;
             let (hb,bb,rb)=crate::store::decode_record(&payload).map_err(|e|why(&format!("record: {e}")))?;
             let header=decode_header(&hb).map_err(|e|why(&format!("header: {e}")))?;
             if block_hash(&header)!=r.hash{return Err(why("the journal header does not hash to the entry"))}
@@ -271,10 +275,13 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
 pub struct JournalSource<'a>{pub by_off:HashMap<u64,usize>,pub journal:&'a crate::store::Journal,pub records:usize,pub history:&'a crate::history::History}
 impl Source for JournalSource<'_>{
     /// Read back from the journal file and verified again (open no longer holds the payloads).
-    fn payload_at(&self,off:u64)->Option<Vec<u8>>{self.by_off.get(&off).filter(|i|**i<self.records)?;self.journal.payload_at(off).ok()}
-    fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|e.0)}
-    fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|e.0)}
-    fn has(&self,hash:&[u8;32])->Result<bool,String>{self.history.has(hash).map_err(|e|e.0)}
+    fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>{
+        if self.by_off.get(&off).filter(|i|**i<self.records).is_none(){return Ok(None)}
+        match self.journal.payload_at(off){Ok(p)=>Ok(Some(p)),Err(crate::store::StoreError::Corrupt(_))=>Ok(None),Err(e)=>Err(format!("{LOCAL}the journal at offset {off}: {e:?}"))}}
+    // history.redb that cannot be read is a local failure (review F2), never a refusal of the checkpoint.
+    fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
+    fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
+    fn has(&self,hash:&[u8;32])->Result<bool,String>{self.history.has(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
 }
 /// The chain's persistent fields as a snapshot sees them (tests compare two chains with it).
 pub fn fingerprint(c:&Chain)->Result<Snapshot,String>{snapshot_of(c,&Binding{records:0,end:0,hash:[0;32]})}

@@ -217,6 +217,7 @@ impl Journal{
     pub fn read_at(&self,offset:u64)->Result<(Vec<u8>,Vec<u8>,Vec<u8>),StoreError>{decode_record(&self.payload_at(offset)?).map_err(StoreError::Io)}
     /// The payload of the record at `offset`, verified as `read_at` verifies it.
     pub fn payload_at(&self,offset:u64)->Result<Vec<u8>,StoreError>{
+        #[cfg(feature="io-fault")] crate::io_fault::read(&self.path)?;
         let mut f=File::open(&self.path)?;
         f.seek(SeekFrom::Start(offset))?;
         let mut hdr=[0u8;HDR];f.read_exact(&mut hdr)?;

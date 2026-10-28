@@ -87,7 +87,7 @@ def keep_on_failure(suite, work, extra=None):
     os.makedirs(dest, exist_ok=True)
     try: commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip() or None
     except OSError: commit = None
-    env = {k: v for k, v in os.environ.items() if re.match(r"^(POCOL|E2E_)", k)}
+    env = {k: os.environ[k] for k in ("POCOLD", "POCOLD_RUN_ARGS", "POCOL_SIGN", "POCOL_E2E_KEEP") if k in os.environ}  # named one by one (review F9)
     json.dump({"suite": suite, "work": work, "keptAt": stamp, "commit": commit, "pocold": {"path": BIN, "sha256": sha(BIN) if os.path.exists(BIN) else None},
                "env": env, "files": files, "notCopied": skipped, "extra": extra or {}}, open(os.path.join(dest, "manifest.json"), "w"), indent=1)
     print(f"kept the failed run's logs and inputs in {dest}", flush=True); return dest

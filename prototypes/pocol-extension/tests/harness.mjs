@@ -37,6 +37,8 @@ const sha256 = (f) => createHash('sha256').update(readFileSync(f)).digest('hex')
  * chain id). The derived stores (*.redb) are listed with their sizes, not copied. Also the commit, the pocold
  * binary's SHA-256 and the environment that changes a run. Into POCOL_E2E_KEEP or tests/failures/ (ignored by
  * git), with manifest.json (every file's size and SHA-256). Returns the directory. */
+// The variables the e2e drivers read (review F9, 2026-10-28): named one by one, so nothing else in the environment is kept.
+const KEPT_ENV = ['POCOLD_BIN_DIR', 'POCOLD_RUN_ARGS', 'POCOL_E2E_KEEP', 'PLAYWRIGHT_MODULE', 'E2E_KEEP', 'E2E_REUSE'];
 export function keepOnFailure(suite, work, extra = {}) {
   const dir = join(process.env.POCOL_E2E_KEEP || join(HERE, 'failures'), `${suite}-${new Date().toISOString().replace(/[:.]/g, '')}-${process.pid}`);
   const files = [], skipped = [];
@@ -45,7 +47,7 @@ export function keepOnFailure(suite, work, extra = {}) {
     else { const d = join(dir, 'work', r); mkdirSync(dirname(d), { recursive: true }); copyFileSync(s, d); files.push({ path: r, bytes: statSync(s).size, sha256: sha256(d) }); } } };
   mkdirSync(dir, { recursive: true }); if (existsSync(work)) walk(work, '');
   let commit = null; try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: HERE, encoding: 'utf8' }).trim(); } catch {}
-  const bin = BIN('pocold'); const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(POCOL|E2E_|PLAYWRIGHT)/.test(k)));
+  const bin = BIN('pocold'); const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => KEPT_ENV.includes(k)));
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ suite, work, keptAt: new Date().toISOString(), commit, pocold: { path: bin, sha256: existsSync(bin) ? sha256(bin) : null }, env, files, notCopied: skipped, extra },
     (k, v) => (typeof v === 'bigint' ? v.toString() : v), 1) + '\n');
   console.log(`kept the failed run's logs and inputs in ${dir}`); return dir;
