@@ -1,9 +1,10 @@
 // Shared harness for the browser suites: devnet control, RpcTap, canaries, site
 // publishing, and Chromium with the extension loaded.
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { createServer, request as httpRequest } from 'node:http';
 import { createSocket } from 'node:dgram';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readdirSync, readFileSync, copyFileSync, statSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +13,8 @@ import { connect } from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const EXT = dirname(HERE), POCOLD = join(EXT, '..', 'pocold');
-export const BIN = (n) => join(POCOLD, 'target', 'release', n);
+// POCOLD_BIN_DIR: another build's binaries (seeded-fault controls); devnet.py is given the same pocold.
+export const BIN = (n) => join(process.env.POCOLD_BIN_DIR || join(POCOLD, 'target', 'release'), n);
 const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright/index.mjs';
 export const { chromium } = await import(PW);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -26,7 +28,28 @@ export function checker() {
   const ok = (name, cond, detail = '') => { results.push({ name, pass: !!cond, detail: String(detail).slice(0, 300) }); console.log((cond ? 'PASS ' : 'FAIL ') + name + (detail !== '' ? ' — ' + String(detail).slice(0, 300) : '')); if (!cond) failed++; };
   return { ok, results, failed: () => failed };
 }
-export const devnet = (args) => { const r = spawnSync('python3', [join(POCOLD, 'scripts', 'devnet.py'), ...args], { encoding: 'utf8' }); if (r.status) throw new Error(r.stderr); return r.stdout; };
+export const devnet = (args) => { const r = spawnSync('python3', [join(POCOLD, 'scripts', 'devnet.py'), ...args], { encoding: 'utf8', env: { ...process.env, POCOLD: BIN('pocold') } }); if (r.status) throw new Error(r.stderr); return r.stdout; };
+const sha256 = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
+/** A failed run's evidence (2026-10-28), kept before anything cleans the work directory: every node log and
+ * every input under `work` (the devnet's net/ directory with its genesis, profile and keys, site files, Playwright
+ * traces), each node's blocks.journal (its blocks, from which replay rebuilds the derived stores, I1), and
+ * `extra`, the run's own record (results, phases, and the values it drew: devnet.json holds the genesis time and
+ * chain id). The derived stores (*.redb) are listed with their sizes, not copied. Also the commit, the pocold
+ * binary's SHA-256 and the environment that changes a run. Into POCOL_E2E_KEEP or tests/failures/ (ignored by
+ * git), with manifest.json (every file's size and SHA-256). Returns the directory. */
+export function keepOnFailure(suite, work, extra = {}) {
+  const dir = join(process.env.POCOL_E2E_KEEP || join(HERE, 'failures'), `${suite}-${new Date().toISOString().replace(/[:.]/g, '')}-${process.pid}`);
+  const files = [], skipped = [];
+  const walk = (src, rel) => { for (const e of readdirSync(src, { withFileTypes: true })) { const s = join(src, e.name), r = rel ? join(rel, e.name) : e.name;
+    if (e.isDirectory()) walk(s, r); else if (!e.isFile()) continue; else if (/\.redb(\.aside|\.damaged)?$/.test(e.name)) skipped.push({ path: r, bytes: statSync(s).size });
+    else { const d = join(dir, 'work', r); mkdirSync(dirname(d), { recursive: true }); copyFileSync(s, d); files.push({ path: r, bytes: statSync(s).size, sha256: sha256(d) }); } } };
+  mkdirSync(dir, { recursive: true }); if (existsSync(work)) walk(work, '');
+  let commit = null; try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: HERE, encoding: 'utf8' }).trim(); } catch {}
+  const bin = BIN('pocold'); const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(POCOL|E2E_|PLAYWRIGHT)/.test(k)));
+  writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ suite, work, keptAt: new Date().toISOString(), commit, pocold: { path: bin, sha256: existsSync(bin) ? sha256(bin) : null }, env, files, notCopied: skipped, extra },
+    (k, v) => (typeof v === 'bigint' ? v.toString() : v), 1) + '\n');
+  console.log(`kept the failed run's logs and inputs in ${dir}`); return dir;
+}
 export async function rpc(port, method, params = []) {
   const r = await fetch(`http://127.0.0.1:${port}/`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
   const v = await r.json(); if (v.error) throw Object.assign(new Error(v.error.message), { rpc: v.error }); return v.result;

@@ -15,6 +15,7 @@ import { deflateSync } from 'node:zlib';
 import { connect } from 'node:net';
 import { build } from '../build.mjs';
 import { runLiveRp } from './live_rp.mjs';
+import { keepOnFailure } from './harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url)), EXT = dirname(HERE), POCOLD = join(EXT, '..', 'pocold');
 const BIN = (n) => join(POCOLD, 'target', 'release', n);
@@ -100,13 +101,20 @@ function publish(dir, port, cid, site) {
 }
 
 // ---------------- browser helpers ----------------
+// 2026-10-28: every browser context records a Playwright trace (DOM snapshots and screenshots). One closed after
+// a check failed while it was open, or still open when the driver stops, saves its trace into WORK/traces/, which
+// is kept with the nodes' logs and the inputs when the run fails (keepOnFailure); any other trace is dropped.
+const contexts = new Set(); let traces = 0;
+async function saveTrace(c, why) { try { mkdirSync(join(work, 'traces'), { recursive: true }); await c.ctx.tracing.stop({ path: join(work, 'traces', `${++traces}-${c.tag}-${why}.zip`) }); } catch {} }
 async function openBrowser(dist, tag) {
   const userDir = mkdtempSync(join(tmpdir(), 'pocol-chrome-' + tag + '-'));
   const ctx = await chromium.launchPersistentContext(userDir, { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`] });
+  const rec = { ctx, tag, failedAtOpen: failed }; contexts.add(rec); await ctx.tracing.start({ screenshots: true, snapshots: true });
   let [sw] = ctx.serviceWorkers(); if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const id = new URL(sw.url()).host; const opt = await ctx.newPage(); await opt.goto(`chrome-extension://${id}/options.html`);
   const send = (m) => opt.evaluate((x) => chrome.runtime.sendMessage(x), m);
-  return { ctx, id, opt, send, close: async () => { await ctx.close(); rmSync(userDir, { recursive: true, force: true }); } };
+  return { ctx, id, opt, send, close: async () => { contexts.delete(rec); if (failed > rec.failedAtOpen) await saveTrace(rec, 'failed'); else await ctx.tracing.stop().catch(() => {});
+    await ctx.close(); rmSync(userDir, { recursive: true, force: true }); } };
 }
 async function siteFrame(page, minFrame = 1) {
   await page.waitForFunction((n) => { const f = document.querySelector('#stage iframe#site'); return f && Number(f.dataset.frame) >= n; }, minFrame, { timeout: 60000 });
@@ -486,7 +494,9 @@ async function main() {
 // A stray rejection is a failed check, never a crash that skips the devnet shutdown in main's finally.
 process.on('unhandledRejection', (e) => ok('no unhandled rejection', false, (e && e.stack) || String(e)));
 try { await main(); } catch (e) { ok('e2e driver completed', false, e.stack || e.message); }
+for (const c of contexts) await saveTrace(c, 'open-at-end');
 const summary = { result: failed ? 'FAIL' : 'PASS', checks: results.length, failed, work };
+if (failed) { await sleep(2000); summary.kept = keepOnFailure('e2e_browser', work, { results }); } // the nodes stop first
 writeFileSync(join(EXT, 'tests', 'e2e_browser.last.json'), JSON.stringify({ ...summary, results }, null, 1) + '\n');
 console.log(JSON.stringify(summary));
 process.exit(failed ? 1 : 0);

@@ -17,3 +17,5 @@
 prototypes/pocold/target/
 # Ephemeral exploit-shaped witness programs copied in by the witness runner; never committed.
 **/tests/zz_audit_witness*.rs
+# A failed e2e run's kept logs and inputs (keepOnFailure, keep_on_failure); copied into evidence/ by hand.
+**/tests/failures/
