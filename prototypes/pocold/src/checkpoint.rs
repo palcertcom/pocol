@@ -101,7 +101,10 @@ fn rec_of(e:&Entry)->Result<Rec,String>{
         drawn:e.drawn,summary:e.summary.as_deref().copied(),root:e.stored.as_ref().and_then(|s|s.trie.world)})
 }
 /// Most bytes one entry takes in a snapshot (A13: a checkpoint being written holds the snapshot's bytes).
-pub const REC_MAX:usize=32+2+8+8+32+8*3+20+(4+16+8*6+64+1)+32;
+/// The smallest record `put_rec` writes: hash, flags, body offset, import sequence, total work, the three cumulative
+/// counts and the drawn address (no summary, no root).
+pub const REC_MIN:usize=32+2+8+8+32+8*3+20;
+pub const REC_MAX:usize=REC_MIN+(4+16+8*6+64+1)+32;
 fn put_rec(w:&mut W,e:&Rec){
     w.b(&e.hash);w.b(&e.flags.to_be_bytes());w.u(e.body_off.unwrap_or(0));w.u(e.import_seq);w.b(&e.total_work.to_be_bytes::<32>());
     w.u(e.cum_txs);w.u(e.cum_tx_bytes);w.u(e.cum_log_bytes);w.b(e.drawn.as_slice());
@@ -145,7 +148,9 @@ pub fn decode(bytes:&[u8])->Result<Snapshot,String>{
     let (head,next_seq,slim_cursor,history_cursor,evicted_total)=(r.h()?,r.u()?,r.u()?,r.u()?,r.u()?);
     let (unslimmed,evicted_order)=(r.hs()?,r.hs()?);
     let protect=match r.take(1)?[0]{0=>None,1=>Some(r.hs()?),_=>return Err("snapshot option tag".into())};
-    let n=r.n(32+2+8*6+32+20)?;let mut entries=Vec::with_capacity(n);
+    // 2026-10-28: the guard took 134 bytes a record (six u64 fields; put_rec writes five), so a snapshot of mostly
+    // minimal entries (past about 100,000 slimmed ones) was refused and open rebuilt from genesis (evidence/r4/hend/).
+    let n=r.n(REC_MIN)?;let mut entries=Vec::with_capacity(n);
     for _ in 0..n{
         let hash=r.h()?;let flags=u16::from_be_bytes(r.take(2)?.try_into().unwrap());let off=r.u()?;let import_seq=r.u()?;
         let total_work=U256::from_be_bytes::<32>(r.take(32)?.try_into().unwrap());let (cum_txs,cum_tx_bytes,cum_log_bytes)=(r.u()?,r.u()?,r.u()?);

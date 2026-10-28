@@ -154,7 +154,11 @@ const probeNetwork = async (fr) => fr.evaluate(async ({ CANARY, UDP, HOST_IP }) 
 const raw = (fr, text) => fr.evaluate((t) => pocol.raw(t), text);
 // pocol.navigate tears the calling frame down. Called within the evaluated function, the teardown can land before
 // Playwright receives the evaluate's answer ("Frame was detached"); scheduled for a later task, it cannot.
-const navigate = (fr, path) => fr.evaluate((p) => { setTimeout(() => { pocol.navigate(p); }, 0); }, path);
+// The navigation replaces the frame it runs in, and can do so before Playwright has the evaluate's own result: a store
+// run on 051dfaa failed 'Frame was detached' 24 ms into navigate(fr, '/') (evidence/r4/accept-051dfaa/). A detach is
+// the navigation happening; the caller's siteFrame wait is the check. Any other error is rethrown.
+const navigate = (fr, path) => fr.evaluate((p) => { setTimeout(() => { pocol.navigate(p); }, 0); }, path)
+  .catch((e) => { if (!/Frame was detached/.test(String(e && e.message))) throw e; });
 const req = (fr, kind, method, params) => fr.evaluate(async ([k, m, p]) => { try { return { result: await pocol.request(k, m, p) }; } catch (e) { return { error: { code: e.code, message: e.message, data: e.data } }; } }, [kind, method, params]);
 const msg = (id, kind, method, params) => JSON.stringify({ id, kind, payload: { method, params } });
 /** Confirmed site dictionary as stored (D103): the largest (epoch, seq) record under the key. */
@@ -297,13 +301,18 @@ async function main() {
     ok('BR18a site_navigate(/about.html): old frame torn down, new frame shows about.html, no new tab', (await fr.textContent('#about')) === 'About' && (await page.$$('#stage iframe')).length === 1 && b.ctx.pages().length === pagesBefore, `frame ${n}`);
     await navigate(fr, '/docs/'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('BR18b /docs/ -> docs/index.html', (await fr.textContent('#docs')).startsWith('Docs page'));
-    await fr.click('#home'); ({ fr, n } = await siteFrame(page, n + 1));
+    // A link in the site replaces the frame it was clicked in (BR18), so Playwright's click on that frame can stay
+    // pending after the navigation is done: on 051dfaa the click on #docs timed out at 30 s while the trace shows the
+    // viewer on /docs/index.html in a new frame (evidence/r4/accept-051dfaa/), as the #home click did on ad301e7.
+    // The click is a real one; the check is the new frame, not the click's return.
+    const clickAway = (f, sel) => { f.click(sel).catch(() => {}); };
+    clickAway(fr, '#home'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('link interception: relative ../ link -> site_navigate -> entry', (await fr.textContent('#t')) === 'PoCol on-chain site v1');
     // D99 nav bucket: three navigations in a row, then one per 2 s; the 4th is refused without teardown.
     const fourth = await req(fr, 'nav', 'site_navigate', ['/about.html']);
     ok('D99 4th rapid navigation -> -32005 {nav}, frame kept', fourth.error && fourth.error.code === -32005 && fourth.error.data.reason === 'nav' && (await fr.textContent('#t')) === 'PoCol on-chain site v1', JSON.stringify(fourth));
     await sleep(2100);
-    await fr.click('#docs'); ({ fr, n } = await siteFrame(page, n + 1));
+    clickAway(fr, '#docs'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('link interception: <a href=docs/> navigates inside the site', (await fr.textContent('#docs')).startsWith('Docs page'));
     await sleep(2100); await navigate(fr, '/a/../b.html'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('BR18c /a/../b.html -> viewer 404 page', (await fr.textContent('h1')) === '404' && (await page.textContent('#status')) === '404');

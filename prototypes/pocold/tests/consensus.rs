@@ -3105,6 +3105,22 @@ fn e4_checkpoint_kill_child(){
 /// window and slimmed below an 8-block slim depth, side blocks offloaded, and side blocks evicted by a side
 /// cap of 1 (remembered in the eviction FIFO). Replay from genesis writes checkpoints; the next open resumes
 /// from one and is the node replay from genesis gives, field by field.
+/// 2026-10-28: a snapshot whose entries are almost all the smallest record (no summary, no root, no body offset:
+/// a slimmed, offloaded entry) reads back. decode's count guard took a record to be at least 134 bytes, 8 more than
+/// put_rec writes (five u64 fields, not six), so past about 100,000 such entries every checkpoint was refused as
+/// "snapshot count beyond its bytes" and open rebuilt the store from genesis (evidence/r4/hend/).
+#[test] fn a_snapshot_of_minimal_entries_reads_back(){
+    use pocold::checkpoint::*;
+    let rec=|i:u64|Rec{hash:{let mut h=[0u8;32];h[..8].copy_from_slice(&(i+1).to_be_bytes());h},body_off:None,import_seq:i,total_work:U256::from(i),flags:0,cum_txs:0,cum_tx_bytes:0,cum_log_bytes:0,drawn:Address::ZERO,summary:None,root:None};
+    let snap=|n:u64|Snapshot{genesis:[7;32],params:Params{r_keep:2048,side_cap:256,k_hist:32,side_max:2,history_window:Some(32),slim_depth:Some(100),keep_full:false},
+        binding:Binding{records:n,end:1,hash:[2;32]},head:rec(n.max(1)-1).hash,next_seq:n,slim_cursor:1,history_cursor:1,evicted_total:0,unslimmed:vec![],evicted_order:vec![],protect:None,entries:(0..n).map(rec).collect()};
+    let s=snap(1000);let b=encode_snapshot(&s);
+    assert_eq!((b.len()-encode_snapshot(&snap(0)).len())/1000,126,"the smallest record is 126 bytes");
+    assert_eq!(decode(&b).unwrap(),s,"a snapshot of minimal entries reads back");
+    // Positive control for the guard itself: one record short is still refused, by the count or as truncated.
+    let mut short=b[..b.len()-32-126].to_vec();let seal=revm::primitives::keccak256(&short);short.extend_from_slice(&seal.0);
+    assert!(decode(&short).is_err(),"a snapshot missing a record is refused");
+}
 #[test] fn e4_checkpoint_resumes_slimmed_offloaded_and_evicting_chains(){
     let blocks=e44_blocks();let every=7u64;
     let lim:fn(&mut pocold::node::Limits)=|l|{l.slim_depth=Some(8);l.history_window=Some(4);l.side_cap=1;l.r_keep=24;};
