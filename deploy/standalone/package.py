@@ -7,6 +7,9 @@ root=Path(__file__).resolve().parents[2]; args.out.mkdir()
 if args.platform=='Android':
     files={'PoCol-testnet-arm64-debug.apk':root/'prototypes/pocol-android/app/build/outputs/apk/debug/app-debug.apk',
            'PoCol-testnet-arm64-unsigned.apk':root/'prototypes/pocol-android/app/build/outputs/apk/release/app-release-unsigned.apk'}
+    infos=list((root/'prototypes/pocold/target/aarch64-linux-android/release/build').glob('pocold-*/out/build-info.json'))
+    assert infos and len({json.loads(f.read_text())['compatibilitySha256'] for f in infos})==1, 'ambiguous Android build identity'
+    (args.out/'build-info.json').write_bytes(infos[0].read_bytes())
 else:
     suffix='.exe' if args.platform=='Windows' else ''
     files={n+suffix:root/'prototypes/pocold/target/release'/(n+suffix) for n in ['pocol','pocold','pocol-key','pocol-sign','pocol-site']}

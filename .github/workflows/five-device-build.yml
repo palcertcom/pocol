@@ -3,8 +3,6 @@ on:
   pull_request:
     branches: [main, codex/public-network-operations]
     paths: ['prototypes/**', 'deploy/standalone/**', '.github/workflows/five-device-build.yml']
-  push:
-    branches: [codex/five-device-launcher]
   workflow_dispatch:
 permissions:
   contents: read

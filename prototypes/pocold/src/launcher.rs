@@ -185,11 +185,29 @@ impl Home {
     pub fn key(&self) -> Result<Key, String> {
         let path = self.path.join("identity.pocol-key");
         // Any existing path, including a bad file or dangling link, must fail rather than rotate identity.
-        match fs::symlink_metadata(&path) {
-            Ok(_) => keyfile::load(&path),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => keyfile::generate(&path),
-            Err(e) => Err(e.to_string()),
+        let marker = self.path.join("identity.address");
+        let key = match fs::symlink_metadata(&path) {
+            Ok(_) => keyfile::load(&path)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if marker.exists()
+                    || self.path.join("state").exists()
+                    || self.path.join("network.pocol.json").exists()
+                {
+                    return Err("existing identity key is missing; restore its backup, never silently replace it".into());
+                }
+                keyfile::generate(&path)?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let address = format!("{:#x}", key.address());
+        if marker.exists() {
+            if read_bounded(&marker)? != address.as_bytes() {
+                return Err("key does not match this home's original public identity".into());
+            }
+        } else {
+            write_new(&marker, address.as_bytes())?;
         }
+        Ok(key)
     }
     pub fn address(&self) -> Result<String, String> {
         Ok(format!("{:#x}", self.key()?.address()))

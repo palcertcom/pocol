@@ -68,3 +68,20 @@ their public addresses. Never put secret keys in chat, Git or uploaded test arti
 - [Independent key operations](KEYS.md)
 - [Service, gateway, monitoring and recovery runbook](../../deploy/public-testnet/README.md)
 - [Compatibility and operations evidence](OPERATIONS.md)
+
+## Five-device standalone increment (29 October 2026)
+
+The owner requested ordinary independent operation on three prepared Linux VPS,
+one Windows PC and one Android phone. `deploy/standalone/` adds a common native
+launcher, fixed local identities, a bounded shared-genesis invitation and native
+release builds. The Android app hosts the Rust node itself, not a remote RPC-only
+wallet. Windows uses user-bound DPAPI key protection. These additions do not
+change any consensus/admission/lifetime/resource launch gate above.
+
+One-time genesis publication still requires public addresses generated on the
+devices. New identities can join P2P without an operator allowlist; mining still
+requires the existing bonded on-chain enrollment. No automatic funding authority
+or approval service is embedded. Public network deployment, cross-platform
+physical-device acceptance, mobile capacity/lifecycle testing and a stable private
+APK signing identity remain outstanding. The standalone README records the
+precise scope and commands.
