@@ -87,7 +87,7 @@ impl<'a> Wallet<'a>{
             Command::Cancel=>{self.quote=None;Ok(json!({"type":"cancelled"}))},
             Command::Mining{enabled}=>{
                 if enabled&&!self.status(n)["miningEligible"].as_bool().unwrap_or(false){return Err("This account is not eligible to mine. Register and wait for inclusion and eligibility first.".into())}
-                n.set_mining_key(if enabled{Some(self.home.key()?)}else{None});Ok(self.status(n))
+                n.set_mining_key(if enabled{Some(self.home.key()?)}else{None});let mut v=self.status(n);v["type"]=json!("mining");Ok(v)
             },
             Command::QuoteSend{to,amount:a}=>{
                 if to.len()!=42||!to.starts_with("0x"){return Err("Enter the full 0x address (42 characters)".into())}
@@ -113,7 +113,7 @@ impl<'a> Wallet<'a>{
                 let file=self.home.path.join("wallet-activity.json");
                 let bytes=serde_json::to_vec(&self.activity).map_err(|e|e.to_string())?;
                 // Public history only. Failure does not pretend that an already relayed transaction was unsent.
-                let saved=std::fs::write(file,bytes).is_ok();
+                let saved=save_activity(&file,&bytes).is_ok();
                 Ok(json!({"type":"submitted","hash":format!("{hash:#x}"),"historySaved":saved}))
             }
         }
@@ -133,6 +133,20 @@ impl<'a> Wallet<'a>{
         let result=json!({"type":"quote","quoteId":id,"kind":kind,"to":format!("{to:#x}"),"from":format!("{:#x}",self.key.address()),"amount":coins(value),"maximumFee":coins(cost),"maximumTotal":coins(value+cost),"chainId":n.chain.spec.chain_id(),"expiresInSeconds":60});
         self.quote=Some(Quote{id,deadline:Instant::now()+Duration::from_secs(60),kind,tx:Tx{chain_id:n.chain.spec.chain_id(),nonce,max_priority:priority,max_fee:fee,gas,to:Some(to),value,data}});Ok(result)
     }
+}
+fn save_activity(path:&std::path::Path,bytes:&[u8])->Result<(),String>{
+    let mut random=[0u8;16];getrandom::getrandom(&mut random).map_err(|_|"Secure randomness unavailable")?;
+    let temp=path.with_file_name(format!("wallet-activity-{}.tmp",types::hex(&random)));
+    let result=(||{
+        let mut options=std::fs::OpenOptions::new();options.write(true).create_new(true);
+        #[cfg(unix)]{use std::os::unix::fs::OpenOptionsExt;options.mode(0o600);}
+        let mut file=options.open(&temp).map_err(|e|e.to_string())?;
+        file.write_all(bytes).and_then(|_|file.sync_all()).map_err(|e|e.to_string())?;
+        drop(file);std::fs::rename(&temp,path).map_err(|e|e.to_string())?;
+        #[cfg(unix)]std::fs::File::open(path.parent().ok_or("Missing wallet directory")?).and_then(|d|d.sync_all()).map_err(|e|e.to_string())?;
+        Ok(())
+    })();
+    if result.is_err(){let _=std::fs::remove_file(temp);}result
 }
 /// Desktop uses anonymous child-process pipes. EOF stops the engine, not an exposed TCP admin port.
 pub fn stdio(home:&Home,stop:impl Fn()->bool)->Result<(),String>{

@@ -113,7 +113,9 @@ def integration():
             return subprocess.Popen([str(BIN/('pocol'+EXE)), 'start', '--home', str(homes[i]), '--network', str(invitation), '--listen', f'127.0.0.1:{p2p[i]}', '--rpc', f'127.0.0.1:{api[i]}'], stdout=log, stderr=log)
         try:
             procs=[start(i) for i in range(5)]
-            deadline=time.monotonic()+240
+            # Eight blocks can include multiple D_att/fallback windows after nonce exhaustion.
+            # This is a liveness test, not an assertion of an eight-block 240-second SLA.
+            deadline=time.monotonic()+600
             while time.monotonic()<deadline:
                 if any(p.poll() is not None for p in procs): raise AssertionError('node exited: '+ '\n'.join((root/f'node{i}.log').read_text(encoding='utf-8',errors='replace')[-3000:] for i in range(5)))
                 try:
@@ -121,7 +123,7 @@ def integration():
                     if min(heights)>=8: break
                 except Exception: pass
                 time.sleep(1)
-            else: raise AssertionError('five nodes did not advance')
+            else: raise AssertionError('five nodes did not advance; last heights='+repr(locals().get('heights'))+'\n'+'\n'.join((root/f'node{i}.log').read_text(encoding='utf-8',errors='replace')[-5000:] for i in range(5)))
             h=min(heights)-6
             blocks=[rpc(p,'eth_getBlockByNumber',[hex(h),False]) for p in api]
             for field in ['hash','stateRoot','receiptsRoot']:

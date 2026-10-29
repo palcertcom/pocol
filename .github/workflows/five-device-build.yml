@@ -38,6 +38,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
+      - name: Build native Windows wallet and render its actual WPF interface
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./deploy/standalone/build-windows-wallet.ps1
       - name: Build native binaries
         shell: bash
         run: |
@@ -52,10 +56,6 @@ jobs:
           cargo +1.99.1 test --locked --release --test consensus continuous_admission --manifest-path prototypes/pocold/Cargo.toml
           cargo +1.99.1 test --locked --release --test consensus final_ --manifest-path prototypes/pocold/Cargo.toml
           cargo +1.99.1 test --locked --release --lib --manifest-path prototypes/lp4-execution/Cargo.toml
-      - name: Build native Windows wallet and render its actual WPF interface
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./deploy/standalone/build-windows-wallet.ps1
       - name: Package explicit public allowlist
         shell: bash
         run: python deploy/standalone/package.py --platform "${{ runner.os }}" --out dist

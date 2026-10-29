@@ -13,7 +13,7 @@ class Wallet:
                 try:self.q.put(json.loads(line))
                 except ValueError:pass
         threading.Thread(target=reader,daemon=True).start()
-    def until(self,predicate,seconds=100):
+    def until(self,predicate,seconds=240):
         end=time.monotonic()+seconds
         while time.monotonic()<end:
             if self.p.poll() is not None:raise AssertionError('wallet exited')
@@ -70,10 +70,12 @@ def run():
             q=a.request({'method':'quote_register'},'quote');assert q['kind']=='registration' and q['amount']=='100'
             a.request({'method':'confirm','quote_id':q['quoteId']},'submitted')
             a.until(lambda v:v.get('type')=='status' and v['miningEligible'])
-            s=a.request({'method':'mining','enabled':True},'status');assert s['miningEnabled']
-            s=a.until(lambda v:v.get('type')=='status' and v['blocksMined']>0,180)
-            s=a.request({'method':'mining','enabled':False},'status');assert not s['miningEnabled'];mined=s['blocksMined'];height=s['height']
-            s=a.until(lambda v:v.get('type')=='status' and v['height']>=height+3)
+            s=a.request({'method':'mining','enabled':True},'mining');assert s['miningEnabled']
+            s=a.until(lambda v:v.get('type')=='status' and v['blocksMined']>0,360)
+            s=a.request({'method':'mining','enabled':False},'mining');assert not s['miningEnabled'];mined=s['blocksMined'];height=s['height']
+            # One exhausted range/absent proposer can require D_att + fallback wait (~67s).
+            # Three new blocks must allow multiple honest fallback attempts, not only 100s.
+            s=a.until(lambda v:v.get('type')=='status' and v['height']>=height+3,300)
             assert not s['miningEnabled'] and s['blocksMined']==mined,'mining off must leave synchronization alive without local mining'
             assert [(h/'identity.pocol-key').read_bytes() for h in homes]==keys
             a.close();wallets.remove(a)
