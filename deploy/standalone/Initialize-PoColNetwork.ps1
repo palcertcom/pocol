@@ -16,7 +16,7 @@ if (Test-Path -LiteralPath $Invitation) { throw 'A network invitation already ex
 $LinuxArchive = (Resolve-Path -LiteralPath $LinuxArchive).Path
 $SshKey = (Resolve-Path -LiteralPath $SshKey).Path
 foreach ($Command in @('ssh.exe', 'scp.exe', 'tar.exe')) { Get-Command $Command -ErrorAction Stop | Out-Null }
-foreach ($Name in @('pocol.exe','pocold.exe','pocol-key.exe','pocol-sign.exe','pocol-site.exe')) {
+foreach ($Name in @('pocol.exe','pocold.exe','pocol-key.exe','pocol-sign.exe','pocol-site.exe','PoCol-Wallet.exe')) {
     if (!(Test-Path -LiteralPath (Join-Path $Here $Name) -PathType Leaf)) { throw "Missing $Name" }
 }
 foreach ($Line in [IO.File]::ReadAllLines((Join-Path $Here 'SHA256SUMS'), [Text.Encoding]::UTF8)) {
@@ -34,7 +34,7 @@ $Tag = 'pocol-setup-' + [Guid]::NewGuid().ToString('N')
 $Work = Join-Path $Here $Tag
 New-Item -ItemType Directory -Path $Work | Out-Null
 $Public = @()
-Write-Host 'Experimental test coins only. The current protocol ends at block 20000.'
+Write-Host 'Experimental test coins only. The new network has no scheduled shutdown height or expiry date.'
 Write-Host 'SSH may ask for your local key passphrase and each server sudo password. Enter them only in the terminal.'
 Write-Host 'Verify any new SSH host fingerprint through the provider console. No host-key checks are disabled.'
 foreach ($Server in $Servers) {
@@ -58,7 +58,7 @@ $ChainId = Get-Random -Minimum 777916 -Maximum 2147483000
 $GenesisTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 180
 $Miners = @($Public | ForEach-Object { @{ id=$_; reward=$_ } })
 $Accounts = @(($Public + @($Desktop.address)) | ForEach-Object { @{ address=$_; wei='1000000000000000000000000' } })
-$Config = @{ chainId=$ChainId; genesisTime=$GenesisTime; registrationPerBlock=1; miners=$Miners; accounts=$Accounts }
+$Config = @{ continuous=$true; chainId=$ChainId; genesisTime=$GenesisTime; registrationPerBlock=1; miners=$Miners; accounts=$Accounts }
 $ConfigFile = Join-Path $Work 'public-genesis.json'
 [IO.File]::WriteAllText($ConfigFile, ($Config | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
 $Genesis = Join-Path $Work 'genesis'
@@ -81,4 +81,4 @@ Write-Host "Genesis time (UTC): $([DateTimeOffset]::FromUnixTimeSeconds($Genesis
 Write-Host "Import this SAME public file in the Android app: $Invitation"
 Write-Host 'The three server identities are initial miners. Windows and Android join as full validating nodes; mining requires the existing on-chain registration.'
 Write-Host 'Once installed, operation does not need this script or an assistant. Keep servers running.'
-Start-Process -FilePath $Node -ArgumentList 'start' -WorkingDirectory $Here
+Start-Process -FilePath (Join-Path $Here 'PoCol-Wallet.exe') -WorkingDirectory $Here

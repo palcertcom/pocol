@@ -5,6 +5,7 @@ final class Native {
     static native String importNetwork(String home, String path);
     static native String run(String home);
     static native String status();
+    static native String command(String json);
     static native void stop();
     private Native() {}
 }

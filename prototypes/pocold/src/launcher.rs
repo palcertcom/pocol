@@ -242,7 +242,13 @@ impl Home {
         &self,
         listen: Option<SocketAddr>,
         rpc: Option<SocketAddr>,
-        mut stop: impl FnMut(&node::Node) -> bool,
+        stop: impl FnMut(&mut node::Node) -> bool,
+    ) -> Result<(), String> {
+        self.run_mode(listen,rpc,true,stop)
+    }
+    pub fn run_mode(
+        &self, listen: Option<SocketAddr>, rpc: Option<SocketAddr>, mining: bool,
+        mut stop: impl FnMut(&mut node::Node) -> bool,
     ) -> Result<(), String> {
         let key = self.key()?;
         let invitation = self.import(&read_bounded(&self.path.join("network.pocol.json"))?)?;
@@ -265,7 +271,7 @@ impl Home {
         let cfg = node::Config {
             dir: data,
             name: "pocol".into(),
-            miner: Some(key),
+            miner: mining.then_some(key),
             listen,
             peers,
             rpc,
@@ -273,6 +279,7 @@ impl Home {
             log: true,
             limits: node::Limits {
                 state_store: true,
+                mem_budget: std::env::var("POCOL_MEMORY_BUDGET_BYTES").ok().map(|s|s.parse::<u64>().map_err(|_|"Invalid POCOL_MEMORY_BUDGET_BYTES")).transpose()?.unwrap_or(node::MEM_BUDGET),
                 ..Default::default()
             },
         };

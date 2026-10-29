@@ -522,7 +522,7 @@ impl Chain{
             self.materializations.fetch_add(1,std::sync::atomic::Ordering::Relaxed);&materialized};
         // 2. linkage and H_END.
         if x.h!=p.height+1{return blk("2 height")}
-        if x.h>cp.H_END{return blk("10a H_END")}
+        if cp.H_END!=0&&x.h>cp.H_END{return blk("10a H_END")}
         if let Some(c)=clock{ if crate::timing::is_future(x.ts,c,phi){return Err(Reject::Future)} }
         // 3. template form. proposer and a are committed (blockReject); sig is not (envReject).
         let tid=template_id(&x.ut_raw);
@@ -594,7 +594,7 @@ impl Chain{
         let entry=Entry{hash,header:x.clone(),body:b.body.clone(),height:x.h,parent:Some(p.hash),total_work:p.total_work.saturating_add(work(&x.target)),
             import_seq:0,signed,ts:x.ts,target:x.target,base_fee:ctx.base_fee,gas_used:x.gas_used,seal:seal(&tid,x.nonce),state:c.state,is_final,full:true,diff:c.diff,slim:false,
             result:Some(ParentResult{block_hash:B256::from(hash),winner:addr(&owner),shares}),receipts:c.receipts,tx_hashes,
-            cum_txs:p.cum_txs+b.body.txs.len() as u64,cum_tx_bytes:p.cum_tx_bytes+tx_bytes,cum_log_bytes:p.cum_log_bytes+log_bytes,pruned:false,drawn:ctx.proposer,
+            cum_txs:if self.spec.cp().H_END==0{b.body.txs.len() as u64}else{p.cum_txs+b.body.txs.len() as u64},cum_tx_bytes:if self.spec.cp().H_END==0{tx_bytes}else{p.cum_tx_bytes+tx_bytes},cum_log_bytes:if self.spec.cp().H_END==0{log_bytes}else{p.cum_log_bytes+log_bytes},pruned:false,drawn:ctx.proposer,
             ranges:ctx.assignment.ranges().iter().map(|r|(addr(&r.id()),r.start(),r.end_exclusive())).collect(),body_off:None,offloaded:false,trie:c.trie,summary:Some(Box::new(c.summary)),stored:c.stored};
         Ok((entry,ctx))
     }
@@ -618,11 +618,11 @@ impl Chain{
     /// Item 16 (consensus.md:170): the transaction count and raw bytes (D49: len(rawTx)) of p's branch plus
     /// `txs` within TX_CAP and TXBYTES_CAP. The one definition validation, the builder and template locking use.
     pub fn within_caps(&self,p:&Entry,txs:&[Vec<u8>])->bool{
-        let cp=self.spec.cp();let bytes=txs.iter().try_fold(p.cum_tx_bytes,|n,t|n.checked_add(t.len() as u64));
-        p.cum_txs.checked_add(txs.len() as u64).map_or(false,|n|n<=cp.TX_CAP)&&bytes.map_or(false,|n|n<=cp.TXBYTES_CAP)
+        let cp=self.spec.cp();let past_count=if cp.H_END==0{0}else{p.cum_txs};let past_bytes=if cp.H_END==0{0}else{p.cum_tx_bytes};let bytes=txs.iter().try_fold(past_bytes,|n,t|n.checked_add(t.len() as u64));
+        past_count.checked_add(txs.len() as u64).map_or(false,|n|n<=cp.TX_CAP)&&bytes.map_or(false,|n|n<=cp.TXBYTES_CAP)
     }
     /// What item 16 leaves for a child of p: (transactions, raw bytes).
-    pub fn caps_room(&self,p:&Entry)->(u64,u64){let cp=self.spec.cp();(cp.TX_CAP.saturating_sub(p.cum_txs),cp.TXBYTES_CAP.saturating_sub(p.cum_tx_bytes))}
+    pub fn caps_room(&self,p:&Entry)->(u64,u64){let cp=self.spec.cp();if cp.H_END==0{(cp.TX_CAP,cp.TXBYTES_CAP)}else{(cp.TX_CAP.saturating_sub(p.cum_txs),cp.TXBYTES_CAP.saturating_sub(p.cum_tx_bytes))}}
 
     /// Evidence (incentives.md "Evidence"). Type 1: RLP([1, ST1, ST2]); type 2:
     /// RLP([2, TemplateID, nonce, shareRoot1, sig1, shareRoot2, sig2]). Invalid

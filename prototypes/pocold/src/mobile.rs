@@ -14,6 +14,7 @@ use std::{
 };
 static STOP: AtomicBool = AtomicBool::new(false);
 static STATUS: Mutex<String> = Mutex::new(String::new());
+static COMMANDS: Mutex<std::collections::VecDeque<String>> = Mutex::new(std::collections::VecDeque::new());
 fn reply(result: Result<serde_json::Value, String>) -> *mut c_char {
     let value = result.unwrap_or_else(|e| serde_json::json!({"error":e}));
     CString::new(value.to_string())
@@ -56,15 +57,19 @@ pub unsafe extern "C" fn pocol_mobile_run(home: *const c_char) -> *mut c_char {
         let path = unsafe { text(home)? }.to_owned();
         let handle = threads::spawn("consensus", threads::CONSENSUS_STACK, move || {
             let home = Home::open(Path::new(&path))?;
+            let mut wallet=crate::wallet::Wallet::new(&home)?;
+            let mut response=serde_json::Value::Null;let mut response_id=0u64;
             let mut next = Instant::now();
-            home.run(None, None, |node| {
+            home.run_mode(None, None, false, |node| {
+                let command=COMMANDS.lock().ok().and_then(|mut q|q.pop_front());
+                if let Some(command)=command{response=wallet.handle(node,&command);response_id+=1;next=Instant::now();}
                 if Instant::now() >= next {
                     if let Ok(mut status) = STATUS.lock() {
-                        *status = node.status_json().to_string();
+                        let mut v=wallet.status(node);v["response"]=response.clone();v["responseId"]=serde_json::json!(response_id);*status=v.to_string();
                     }
                     next = Instant::now() + Duration::from_secs(2);
                 }
-                STOP.load(Ordering::Relaxed)
+                STOP.load(Ordering::Relaxed)||wallet.stopped
             })?;
             Ok(serde_json::json!({"state":"stopped"}))
         })
@@ -75,6 +80,17 @@ pub unsafe extern "C" fn pocol_mobile_run(home: *const c_char) -> *mut c_char {
     })
     .unwrap_or_else(|_| Err("native node failed".into()));
     reply(result)
+}
+#[no_mangle]
+pub unsafe extern "C" fn pocol_mobile_command(command:*const c_char)->*mut c_char{
+    reply(std::panic::catch_unwind(||{
+        let command=unsafe{text(command)?};
+        if command.len()>crate::wallet::MAX_COMMAND{return Err("Command exceeds 4 KiB".into())}
+        serde_json::from_str::<crate::wallet::Command>(command).map_err(|_|"Invalid wallet command")?;
+        let mut q=COMMANDS.lock().map_err(|_|"Wallet unavailable")?;
+        if q.len()>=8{return Err("Wallet busy, try again".into())}q.push_back(command.to_owned());
+        Ok(serde_json::json!({"queued":true}))
+    }).unwrap_or_else(|_|Err("Wallet command failed".into())))
 }
 #[no_mangle]
 pub extern "C" fn pocol_mobile_stop() {

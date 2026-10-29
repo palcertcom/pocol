@@ -14,6 +14,7 @@
 pub mod site;
 pub mod keyfile;
 pub mod launcher;
+pub mod wallet;
 #[cfg(target_os = "android")]
 mod mobile;
 pub mod testnet;

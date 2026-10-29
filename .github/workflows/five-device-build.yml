@@ -48,6 +48,14 @@ jobs:
           cargo +1.99.1 test --locked --release --lib --test net --manifest-path prototypes/pocold/Cargo.toml
           python deploy/standalone/test_launcher.py -v
           python deploy/standalone/test_launcher.py --integration
+          python deploy/standalone/test_wallet.py
+          cargo +1.99.1 test --locked --release --test consensus continuous_admission --manifest-path prototypes/pocold/Cargo.toml
+          cargo +1.99.1 test --locked --release --test consensus final_ --manifest-path prototypes/pocold/Cargo.toml
+          cargo +1.99.1 test --locked --release --lib --manifest-path prototypes/lp4-execution/Cargo.toml
+      - name: Build native Windows wallet and render its actual WPF interface
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./deploy/standalone/build-windows-wallet.ps1
       - name: Package explicit public allowlist
         shell: bash
         run: python deploy/standalone/package.py --platform "${{ runner.os }}" --out dist

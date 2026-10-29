@@ -49,6 +49,7 @@ fn command() -> Result<(), String> {
     let rest = args.get(1..).unwrap_or_default();
     let allowed: &[&str] = match command {
         "identity" => &["--home"], "start" => &["--home", "--network", "--listen", "--rpc"],
+        "wallet" | "import" => &["--home", "--network"],
         "network" => &["--from", "--seed", "--out"], "inspect" => &["--network"],
         "build-info" => { println!("{}", pocold::identity::BUILD_INFO); return Ok(()); }
         _ => return Err("usage: pocol identity [--home DIR] | start [--home DIR] [--network FILE] [--listen IP:PORT] [--rpc 127.0.0.1:PORT] | network --from GENESIS_DIR --seed IP:PORT... --out FILE | inspect --network FILE".into()),
@@ -112,6 +113,8 @@ fn command() -> Result<(), String> {
     if !home.path.join("network.pocol.json").is_file() {
         return Err("identity ready. Install the shared network.pocol.json beside PoCol once, then start again. Share only the public address above.".into());
     }
+    if command=="import" {return Ok(())}
+    if command=="wallet" {return pocold::wallet::stdio(&home,||STOP.load(Ordering::Relaxed))}
     let parse = |key: &str| {
         get(key)
             .map(|s| s.parse().map_err(|_| format!("invalid {key}")))

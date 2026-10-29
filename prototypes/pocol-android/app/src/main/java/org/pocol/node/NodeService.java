@@ -16,6 +16,10 @@ public final class NodeService extends Service {
             Bundle data = new Bundle(); data.putString("status", Native.status()); reply.setData(data);
             try { msg.replyTo.send(reply); } catch (RemoteException ignored) {}
         } else if (msg.what == 2) requestStop();
+        else if (msg.what == 3 && msg.replyTo != null) {
+            Message reply=Message.obtain(null,3);Bundle data=new Bundle();data.putString("result",Native.command(msg.getData().getString("command","{}")));reply.setData(data);
+            try { msg.replyTo.send(reply); } catch (RemoteException ignored) {}
+        }
         return true;
     }));
     private final Runnable renew = new Runnable() {

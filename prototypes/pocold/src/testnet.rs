@@ -18,6 +18,8 @@ use std::{collections::HashSet, path::Path};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Config {
+    #[serde(default)]
+    continuous: bool,
     chain_id: u64,
     genesis_time: u64,
     registration_per_block: u8,
@@ -130,10 +132,12 @@ pub fn prepare(config: &[u8], out: &Path) -> Result<(), String> {
         });
     }
     members.sort_by_key(|m| m.id);
-    let programs = SystemPrograms::v1();
+    let programs = if input.continuous {SystemPrograms::continuous()} else {SystemPrograms::v1()};
+    let mut cp=cfg.cp();
+    if input.continuous {for i in 45..=48{cp[i]=pocol_lp4_execution::fixed::U256::ZERO;}}
     let mut spec = GenesisSpec {
         chain_id: cfg.chain_id,
-        cp: cfg.cp(),
+        cp,
         alloc_root: [0; 32],
         m0_list: members,
         sys_code_hash: programs.sys_code_hash().0,
@@ -173,7 +177,7 @@ pub fn prepare(config: &[u8], out: &Path) -> Result<(), String> {
     let info = serde_json::json!({"chainId":cfg.chain_id, "genesisHash":crate::types::hex(&profile.genesis_hash()),
         "genesisTime":cfg.g_ts, "profileKind":"simnet", "keyMode":"independent-key-files", "forks":[[1,0]],
         "note":"Experimental candidate only; independent keys do not establish public-network readiness.",
-        "registrationPerBlock":cfg.r_max,
+        "registrationPerBlock":cfg.r_max,"continuous":input.continuous,
         "miners":input.miners.iter().map(|m|serde_json::json!({"id":m.id,"reward":m.reward})).collect::<Vec<_>>(),
         "calibration":{"hashesPerSecond":cfg.hash_rate,"class":"synthetic-fixture"},
         "timing":timing.to_json(),"admission":crate::admission_json(&admitted)});

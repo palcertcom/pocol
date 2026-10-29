@@ -1,156 +1,160 @@
-# PoCol on five independent devices
+# PoCol Wallet and continuous five-device network
 
-This increment targets three Linux servers, one native Windows PC and one Android
-ARM64 phone. Each runs the same Rust block validation, consensus, persistent state
-and P2P engine. Android is not an RPC-only wallet. No assistant, central signing
-service, Python, WSL or Docker is needed during normal operation.
+Run three Linux server miners, one native Windows wallet, and one native Android
+wallet. Both wallets contain the same full validating Rust/P2P engine and sign
+locally. Their mining switch starts/stops actual block production while validation
+and synchronization continue. No assistant or central signing/control service is
+needed after the one-time network setup.
 
-**Experimental test currency only. Not a public-mainnet release.** The existing
-launch gates in `development/public-network/PLAN.md` still apply. The network
-closes at block 19,000 and ends at 20,000 (about 53/56 hours at the nominal block
-interval). This release does not bypass those rules. The current resource model
-has a 6 GiB node budget; running an early bounded pilot on a 4 GiB VPS is not a
-worst-case capacity proof. Android's Java/runtime overhead is additional and a
-physical handset has not yet been qualified. Android and Windows cannot yet be
-claimed to have passed a real five-device network test.
+This is an experimental network with valueless test currency, not a qualified
+financial mainnet. The wallet is functional, not a balance simulation or an RPC-only
+mockup. Its primary color is #1aa9e4; it has Wallet, Activity, Mining and Settings
+screens, account transfers, receive/copy/share (Android), transaction review, and
+explicit bonded miner registration. No invented fiat price, reward yield or
+external assets are displayed. Activity lists transactions submitted by this
+installation, with inclusion/revert status and confirmation counts.
 
-## Once per device
+## Continuous protocol
 
-- Linux: extract the artifact ZIP, then its `PoCol-linux-x86_64.tar.gz`
-  (which preserves executable permissions), and run `sudo ./install-linux.sh`. It creates
-  a dedicated account, a private local identity and a service, and prints only the
-  public address. The service waits for the shared network file. It is enabled
-  across reboots and restarts after failure. Only a fresh installation is accepted.
-- Windows 10 x64 or newer: extract the checked release and double-click
-  `Start-PoCol.cmd`. The first run creates an identity under `%LOCALAPPDATA%\PoCol`
-  and displays its public address. It waits for the shared network file. This is
-  a native console node, not a Windows service; keep its window open. Automatic
-  startup after Windows reboot is not implemented by this increment.
-- Android 8+ ARM64: install the test APK, open PoCol Testnet and copy its public
-  address. The key stays in app-private storage and Android backup is disabled.
-  The initial CI APK is debug-signed for this test; the unsigned release APK is
-  also provided for an operator's retained signing key. Debug signing identities
-  change between clean CI runs: do not uninstall a running node to replace it,
-  because uninstalling erases its identity and state. A stable privately held
-  release signing key is required for durable app updates.
+The new bootstrap sets `continuous: true`. Its genesis explicitly encodes all four
+lifetime fields (`H_END`, `T_END`, `H_CLOSE`, `T_CLOSE`) as zero, meaning **no
+scheduled closing block, final block or expiration date**. This is not a larger
+hidden end height. A separate compiled system-program set keeps the registry open;
+finite profiles retain the original program bytes and behavior.
 
-The three prepared Linux endpoints are `108.165.128.89`, `108.165.128.90` and
-`108.165.128.91`, P2P TCP port `30300`. This repository does not assert that the
-port is open or that PoCol is running there. Only SSH was previously verified.
-Do not open native RPC on the Internet. Windows and Android use outgoing P2P;
-no home-router port forwarding is required for them to validate blocks.
+Continuous profiles apply TX_CAP and TXBYTES_CAP per block, and reset the historical
+log allowance at each block. Per-transaction, per-block, live-state, gas, peer and
+queue protections remain. Old cumulative transaction/log limits cannot gradually
+exhaust the ability to send. Existing finite networks are not silently converted.
+A new shared genesis and the same updated binaries on every device are required;
+never erase an existing identity or regenerate different genesis files per device.
 
-## Optional one-time bootstrap from Windows
+No fixed machine can promise infinite storage. History, replay indexes and some
+metadata still grow. The local memory model explicitly projects from observed
+journal records plus 2048 records of headroom, rechecks as records grow, and refuses
+inadequate local capacity without marking valid blocks invalid. It does not claim
+an infinite-history resource bound. `POCOL_MEMORY_BUDGET_BYTES` can set the launcher's
+local declared budget after provisioning resources; it does not change consensus.
+The default model uses 6 GiB; a 4 GiB server with a 3 GiB service cgroup remains a
+small pilot, not a worst-case capacity proof. Disk sizing, compaction and long-term
+load qualification remain operational work. Numeric heights retain the format's
+u64 representation; zero disables scheduled expiry, not hardware arithmetic.
 
-For the owner's already prepared hosts only, `Initialize-PoColNetwork.ps1`
-performs the initial server installation, collects public addresses through SSH,
-generates one admitted genesis, distributes the invitation, opens only P2P TCP
-30300 and starts the three services and the native Windows node. It uses the
-existing `pocol-admin` account and local `id_ed25519_pocol` SSH key with `-F none`.
-It never forwards or copies that private key. SSH host-key verification remains
-on. Enter SSH passphrases and sudo passwords only into their terminal prompts.
+## One-time setup from Windows
 
-Extract the Windows package and the Linux artifact ZIP on the PC, then run from
-PowerShell in the Windows package directory:
+Extract the five-device ZIP. Review `Initialize-PoColNetwork.ps1`, open PowerShell
+inside that directory, and run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-PoColNetwork.ps1 -LinuxArchive "C:\path\PoCol-linux-x86_64.tar.gz"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-PoColNetwork.ps1 -LinuxArchive .\PoCol-linux-x86_64.tar.gz
 ```
 
-Inspect the downloaded script before this process-scoped execution-policy
-exception. The script validates package checksums and equal engine compatibility
-before uploading. It is restricted to 108.165.128.89/.90/.91; it never contacts
-108.165.128.31. This is a fresh-install operation. If a step fails, it stops and
-keeps its public setup directory; it never erases existing state, rotates keys or
-tries to replace a partly deployed genesis. The real SSH deployment path still
-needs operator acceptance on the actual servers; CI checks syntax, not remote
-installation.
+The process-scoped policy exception is for this script only. It uses the existing
+`pocol-admin` account, local `%USERPROFILE%\.ssh\id_ed25519_pocol`, and `-F none`
+to avoid the previously broken SSH config permissions. Enter passphrases and sudo
+passwords only into your local terminal. Host-key verification remains enabled;
+verify new fingerprints through the provider console. No key is forwarded/copied.
 
-The wizard selects the three server identities as genesis miners and funds them
-and the Windows identity with valueless test currency. Windows and the phone
-join as independently validating nodes. It prints the shared `network.pocol.json`
-path: transfer that public file to the phone and import it in PoCol Testnet, then
-press Start. No public addresses or secrets need to be sent back to an assistant.
-The explicit manual genesis path below also supports different initial membership.
+The only allowed targets are the three prepared PoCol hosts:
+`108.165.128.89`, `108.165.128.90`, `108.165.128.91`. The unrelated `.31` host is never
+contacted. The script verifies Linux/Windows checksums and source compatibility,
+creates independent miner keys on their servers, collects only public addresses,
+creates one admitted continuous genesis, distributes its invitation, opens P2P TCP
+30300, starts server services and opens **PoCol-Wallet.exe** on Windows. Server RPC
+remains loopback-only. Existing state/identities are never overwritten. On a partial
+failure, retain the setup folder and the SAME genesis; do not blindly rerun or reset.
+The remote deployment path has not been exercised by CI.
 
-## One shared genesis, then ordinary operation
+Transfer the generated **network.pocol.json** to the phone. Install the ARM64 APK,
+open **PoCol Wallet → Settings → Import network file**, select that file, and
+connect. Windows imports the adjacent shared file automatically; Settings also
+supports explicit import while disconnected. All devices use the same invitation.
+Publish the invitation fingerprint through a trusted channel; a checksum is not
+publisher authentication. The old f1ad7e3 bundle is superseded for new deployments.
 
-The first network needs public identity addresses before its genesis can be
-published. No private key needs to leave any device. Do not generate a separate
-genesis per device, or invent fixed known keys to remove this one-time step.
-An operator uses the existing `pocold init-testnet` public-input configuration,
-selects initial miners/test allocations, and creates one invitation:
+## Everyday use
+
+- Windows 10 22H2 x64 / Windows 11: open **PoCol-Wallet.exe** or **Start-PoCol.cmd**.
+  Native WPF uses Windows' .NET Framework 4.8; no WSL, Docker, browser or Python.
+  The wallet starts the engine through private anonymous process pipes, not an
+  HTTP admin endpoint. Closing the application checkpoints and stops the engine.
+  Automatic startup after Windows reboot is not configured.
+- Android 8+ ARM64: open **PoCol Wallet** and connect. The full engine runs in a
+  separate foreground-service process with a notification and Stop control. Android
+  may suspend/kill it because of battery, heat or memory policy. Keep server miners
+  online; mobile 24/7 availability is not promised. After a reboot, reconnect manually.
+- Linux: `pocol-standalone.service` starts on reboot and restarts after failure. Its
+  installer is fresh-install only and preserves Unix executable modes in the tarball.
+
+**Send:** enter the full recipient and a decimal PCOL amount, review network,
+recipient, amount and maximum fee, then explicitly confirm/sign. The Rust engine
+parses up to 18 decimal places without floats. Quotes expire after 60 seconds and
+can be consumed once. A quote does not broadcast. Zero/system/precompile recipients,
+contract calls from the simple send screen, stale/offline states and insufficient
+available balance are refused. Inclusion is not advertised as irreversible finality.
+
+**Mining:** off by default on both wallets, including after restart. The three
+server keys are genesis miners. The PC/phone must hold an eligible registered
+identity to enable mining. A new identity can use **Review mining registration**,
+review the current bond and maximum fee, and explicitly confirm its transaction.
+Registration does not automatically enable mining. It needs funds, available
+registry capacity and network inclusion. The bootstrap funds the Windows identity
+with test coins; send test coins to the phone's public address to fund its bond and
+fees. Turning mining off does not deregister, release the bond or stop the wallet.
+Inactive/ejected identities follow existing registry rules; registration is never
+silently repeated and a toggle does not bypass eligibility.
+
+## Keys and updates
+
+Windows uses authenticated user-bound DPAPI ciphertext and rejects raw Unix keys,
+reparse points, hard links and altered ciphertext. Linux/Android retain strict
+0600/0400, same-user, single-link key checks. Keys never cross the wallet UI bridge,
+HTTP RPC or P2P. A home lock prevents concurrent engines. Missing, corrupt or
+substituted keys fail instead of silently rotating identity.
+
+This test build has **no portable encrypted recovery export**. Keep suitable
+private device/profile backups. Android backup is disabled; uninstalling erases
+identity and state. CI APKs are debug-signed for testing and a clean CI run may use
+a different debug certificate. Do not uninstall an existing key-bearing app to
+install a new certificate. Durable updates require an operator-retained private
+release signing key; the unsigned release APK is also built. No keystore/private
+key belongs in the release bundle or repository.
+
+## Validation and remaining qualification
+
+CI builds native Linux/Windows and the real ARM64 Android engine/JNI/APK. It runs
+portable identity/invitation controls, real-socket tests, five local validating
+processes, and a five-process wallet test with real transfer, one-shot review,
+bonded registration, mining on/off, continued synchronization and identity/history
+recovery. A compiled-contract execution test applies 20,002 blocks with real signed
+transfers beyond the old closing/ending heights and old time expiry. A continuous
+consensus test retains per-block caps and checks that local resource projections
+grow with history. Finite-profile regression tests remain required.
+
+The Windows build renders the actual WPF interface to a preview image with no
+mock account balance. Android physical lifecycle/UX/performance and a real five-host
+cross-platform soak remain unproven. Existing admission/RpcGuard/calibration/review
+conditions remain in `development/public-network/PLAN.md`; no audit or financial
+mainnet readiness is claimed.
 
 ```sh
-pocol network --from genesis --seed 108.165.128.89:30300 --seed 108.165.128.90:30300 --seed 108.165.128.91:30300 --out network.pocol.json
+cargo build --locked --release --bins --manifest-path prototypes/pocold/Cargo.toml
+python deploy/standalone/test_launcher.py -v
+python deploy/standalone/test_launcher.py --integration
+python deploy/standalone/test_wallet.py
+cargo test --locked --release --test consensus continuous_admission --manifest-path prototypes/pocold/Cargo.toml
+cargo test --locked --release --lib continuous_executes --manifest-path prototypes/lp4-execution/Cargo.toml
 ```
 
-Publish its displayed fingerprint alongside the file through a trusted channel.
-An invitation's checksum detects differences; it does not authenticate its
-publisher. All participants use the same invitation and source compatibility ID.
+Android: SDK35 / NDK27.2.12479018 / JDK17 / Gradle8.11.1,
+`bash deploy/standalone/build-android.sh`. Windows wallet:
+`powershell -File deploy/standalone/build-windows-wallet.ps1`.
+Reproduce continuous contracts with solc **0.8.28** and
+`node prototypes/lp4-execution/tests/compile_system_v1.cjs prototypes/lp4-execution/tests/data/system-continuous.json --continuous`.
+The script applies a checked, explicit continuous-mode branch to the original
+registry source; its original v1 artifact is unchanged.
 
-- Linux: place the shared file at `/opt/pocol-standalone/network.pocol.json`, allow
-  incoming TCP 30300, and start `pocol-standalone.service` once.
-- Windows: place it beside `pocol.exe` and open `Start-PoCol.cmd` again.
-- Android: tap **Import network file**, select the shared file, then **Start PoCol**.
-
-Nodes reconnect to the configured seeds automatically, recover local durable
-state and keep their original identities. There is no remote assistant control
-channel. The phone runs a user-visible foreground service with a Stop button;
-Android may still suspend/kill it because of system policy, heat or memory. It
-requests a bounded renewable wake lock while running. After a phone reboot,
-launch the app and press Start again; continuous mobile availability is not
-promised. The server nodes should remain online.
-
-Open joining means any compatible peer can connect and validate. Producing blocks
-also requires membership in the existing registry. An initial genesis miner can
-produce directly. A new identity must fund the existing bond and submit the
-ordinary registration transaction. There is **no automatic faucet or automatic
-registration transaction** in this increment; never describe joining alone as
-mining eligibility. An operator may include all five public identities initially
-or keep three server miners and use the PC/phone as independently validating
-joining nodes. This choice is recorded in the shared genesis, never hard-coded
-into the application.
-
-## Identity and recovery
-
-Linux/Android retain the strict 0600/0400, same-user, regular-file, single-link key
-checks. Windows stores authenticated DPAPI ciphertext bound to the Windows user,
-rejects raw Unix key files, reparse points, hard links and invalid ciphertext, and
-never requests the user's Windows password. DPAPI deliberately does not use
-machine-wide protection. The Windows file alone is not a portable recovery seed;
-retain a suitable Windows profile backup. A portable encrypted export workflow
-is not implemented. Do not upload private homes, key files or signing keystores.
-
-A launcher lock prevents concurrent startup/calibration in the same home. The
-first invitation binds the home; another network requires a separate home.
-Damaged keys are refused, never silently replaced. Stop the node before offline
-backup. The launcher checkpoints on a cooperative stop; a forced OS kill uses
-existing journal recovery. Transport workers are process-scoped: the executable
-or Android service process exits after the engine stops.
-
-## Build and verification
-
-`five-device-build.yml` builds exact source on Ubuntu and Windows, tests identity
-and malformed invitations, and runs five local processes (three miners plus two
-independent validating joiners), checking common confirmed roots and restart
-identity. These checks are **not** a cross-OS or physical multi-host acceptance.
-The Android job compiles the actual ARM64 Rust engine with NDK 27.2, packages its
-JNI bridge into an APK and preserves the unsigned release APK as well. Android
-runtime/permission/lifecycle tests on a physical device remain necessary.
-
-- Rust: `cargo +1.99.1 build --locked --release --bins --manifest-path prototypes/pocold/Cargo.toml`
-- Portable controls: `python deploy/standalone/test_launcher.py -v`
-- Five-process check: `python deploy/standalone/test_launcher.py --integration`
-- Android: SDK 35, NDK 27.2.12479018, JDK 17, Gradle 8.11.1; run
-  `bash deploy/standalone/build-android.sh` after installing the ARM64 Rust target.
-
-Every Rust source change updates the conservative compatibility fingerprint.
-Upgrade all five devices to the same source before using a new network invitation.
-Old b0181e7 binaries cannot connect to this increment.
-
-Primary platform references:
+Platform references:
+- https://learn.microsoft.com/en-us/dotnet/desktop/wpf/overview/
 - https://learn.microsoft.com/en-us/windows/win32/api/dpapi/nf-dpapi-cryptprotectdata
 - https://developer.android.com/develop/background-work/services/fgs/service-types
-- https://developer.android.com/ndk/guides/other_build_systems
-- https://developer.android.com/build/releases/agp-8-9-0-release-notes

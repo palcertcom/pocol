@@ -85,3 +85,20 @@ or approval service is embedded. Public network deployment, cross-platform
 physical-device acceptance, mobile capacity/lifecycle testing and a stable private
 APK signing identity remain outstanding. The standalone README records the
 precise scope and commands.
+
+
+## Wallet and continuous-genesis increment (2026-10-29)
+
+The owner requested native Android/Windows wallet interfaces (#1aa9e4), actual
+local mining controls and no scheduled network expiry. The new bootstrap creates
+a separate continuous genesis: all four lifetime fields zero, separate compiled
+registry programs, per-block transaction/log allowances, and explicit growing
+local resource projections. Existing finite networks are not migrated or erased.
+Both wallets sign locally after a one-use expiring review; bonded registration
+is explicit and mining is off by default. See deploy/standalone/README.md.
+
+This removes the earlier 19000/20000 shutdown from **new continuous profiles**;
+it does not close the existing memory, RpcGuard, calibration, external review,
+physical Android or real multi-host qualification gates. Long-term metadata,
+replay and disk growth require capacity work; infinite fixed-resource operation
+is not established. No live servers were changed by this increment.
