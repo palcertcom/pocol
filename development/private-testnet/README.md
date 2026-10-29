@@ -48,3 +48,20 @@ disconnection/reconnection, and observe convergence before the finite closing he
 
 The new GitHub workflow runs the local packaging rehearsal on the exact PR head.
 Its results, when available, remain separate from this saved local evidence.
+
+## CI follow-up: receipt convergence
+
+The [first GitHub run](https://github.com/palcertcom/pocol/actions/runs/40864420878)
+failed the receipt-block equality assertion immediately after each moving tip had
+included the test transaction. This timing did not establish a shared canonical
+inclusion: concurrent miners can include it in transient sibling blocks. The
+rehearsal now waits, with a 240-second limit, for the **same** inclusion hash on
+all nodes, for that hash to be canonical on each, and for six subsequent blocks
+on each node. Equality and success/balance assertions remain required. Persistent
+divergence still fails; no failure is converted to success by skipping a check.
+
+A fresh local rerun passed all six checks; its common comparison height was 9,
+with all heads advancing from 10 to 15 during the observation. See
+[R2 results](evidence/r2/result.json) and [rehearsal source digest](evidence/r2/rehearsal.sha256).
+The original evidence and the failed CI run remain separate. A passing local rerun
+is not itself a passing GitHub run.

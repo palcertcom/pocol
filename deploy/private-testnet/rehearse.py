@@ -91,7 +91,18 @@ def main():
         raw = subprocess.check_output([str(release / 'node1/bin/pocol-sign'), '--chain-id', '777911',
             '--account', 'alice', '--to', bob['address'], '--value', '12345', '--nonce', '0'], text=True).strip()
         tx = rpc(urls['node1'], 'eth_sendRawTransaction', [raw])
-        wait(lambda: all(rpc(url, 'eth_getTransactionReceipt', [tx]) for url in urls.values()), 180, 'transfer')
+        # A receipt on each moving tip does not imply one canonical inclusion block:
+        # concurrent miners can include the transaction on transient sibling branches.
+        # Keep the equality requirement and wait for a shared inclusion six blocks deep.
+        def transfer_converged():
+            receipts = [rpc(url, 'eth_getTransactionReceipt', [tx]) for url in urls.values()]
+            if not all(receipts) or len({r['blockHash'] for r in receipts}) != 1:
+                return False
+            height = int(receipts[0]['blockNumber'], 16)
+            return all(rpc(url, 'pocol_status')['head']['height'] >= height + 6 and
+                       rpc(url, 'eth_getBlockByNumber', [hex(height), False])['hash'] == receipts[0]['blockHash']
+                       for url in urls.values())
+        wait(transfer_converged, 240, 'confirmed convergent transfer')
         receipts = [rpc(url, 'eth_getTransactionReceipt', [tx]) for url in urls.values()]
         assert all(r['status'] == '0x1' for r in receipts)
         assert len({r['blockHash'] for r in receipts}) == 1
