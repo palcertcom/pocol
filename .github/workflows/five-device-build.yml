@@ -34,6 +34,10 @@ jobs:
           $tokens = $null; $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile("$PWD/deploy/standalone/Initialize-PoColNetwork.ps1", [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count) { $errors | Format-List; throw 'PowerShell syntax errors' }
+      - name: Keep the Windows package independent of the Visual C++ redistributable
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
       - name: Build native binaries
         shell: bash
         run: |

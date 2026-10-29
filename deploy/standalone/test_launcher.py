@@ -73,6 +73,16 @@ class Launcher(unittest.TestCase):
         for changed in mutations:
             path.write_text(json.dumps(changed), encoding='utf-8'); self.assertNotEqual(call('pocol', 'inspect', '--network', path, ok=False).returncode, 0)
         path.write_bytes(b' ' * (1048576 + 1)); self.assertNotEqual(call('pocol', 'inspect', '--network', path, ok=False).returncode, 0)
+    def test_build_digest_is_canonical_across_platforms(self):
+        info=json.loads(call('pocol','build-info').stdout)
+        h=hashlib.sha256(b'pocol-testnet-source-compatibility-v1\0')
+        for name, expected in sorted(info['sourceSha256'].items()):
+            data=(ROOT/'prototypes'/name).read_bytes(); encoded=name.encode('utf-8')
+            self.assertEqual(hashlib.sha256(data).hexdigest(),expected,name)
+            h.update(len(encoded).to_bytes(8,'big')); h.update(encoded)
+            h.update(len(data).to_bytes(8,'big')); h.update(data)
+        h.update(','.join(info['features']).encode('utf-8'))
+        self.assertEqual(h.hexdigest(),info['compatibilitySha256'])
     def test_cli_rejects_ambiguous_options(self):
         for args in [('identity', '--home'), ('identity', '--unknown', 'x'), ('identity', '--home', 'a', '--home', 'b')]:
             self.assertNotEqual(call('pocol', *args, ok=False).returncode, 0)

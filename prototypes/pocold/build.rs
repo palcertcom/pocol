@@ -31,19 +31,30 @@ fn main() {
         files.push(root.join(krate).join("Cargo.toml"));
         sources(&root.join(krate).join("src"), &mut files);
     }
-    // Bytewise UTF-8 path order, not Path's component order ("apply.rs" vs "apply/tests.rs").
-    files.sort_by(|a, b| a.to_str().unwrap().cmp(b.to_str().unwrap()));
+    // Sort the exact normalized relative names that enter the digest. Absolute host paths
+    // can use different separator spellings on Windows, even within one Cargo build.
+    let mut files: Vec<(String, PathBuf)> = files
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/");
+            (name, path)
+        })
+        .collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hash = Sha256::new();
     hash.update(b"pocol-testnet-source-compatibility-v1\0");
     let mut manifest = serde_json::Map::new();
-    for path in files {
+    for (name, path) in files {
         println!("cargo:rerun-if-changed={}", path.display());
-        let name = path
-            .strip_prefix(root)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .replace('\\', "/");
+        assert!(
+            !manifest.contains_key(&name),
+            "duplicate normalized source path"
+        );
         // Text files are hashed as bytes: Git must not rewrite line endings on release builds.
         let bytes = fs::read(path).expect("source bytes");
         hash.update((name.len() as u64).to_be_bytes());
