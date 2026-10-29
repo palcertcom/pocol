@@ -65,10 +65,12 @@ Local runs (evidence under `evidence/operations/`):
 | Rust library | 51 PASS | Existing library regressions |
 | Real-socket network/RPC | 55 PASS | Includes incompatible initial/repeated Hello, pipelined transaction fencing and bounded handshake/name checks |
 | Key/genesis CLI | 5 PASS | Independent generation, file checks and admission controls |
+| Final consensus and caps regression | 93 + 11 PASS | Seven existing expanded consensus measurements remain ignored; none added or disabled |
 | Operations controls | 7 PASS | Inventory, links/checksums, both backup locks, restore tampering/identity, independent digest reproduction, URL and duplicate-JSON controls |
 | Packaged four-node integration | 9 PASS | Independent transfers, late registration/mining, duplicate rejection, site publish/fetch, live-backup refusal, stopped-state restore and observation |
 | systemd unit syntax | PASS locally | Unit verification only; actual service activation/credential ownership still needs a target host |
 | Nginx TLS/rate test | Pending exact-head CI | Nginx is absent locally; the workflow installs it and runs the loopback test, without claiming a local pass |
+| Separate systemd service UID and root restore | Pending exact-head CI | Runs the service from a restrictive-mode bundle and restores root-made state with service UID/GID; uses loopback fixtures only |
 
 The packaged integration binary SHA-256 is
 `33b3c8e23d4bfb762526853863f562f856daa36296a8015a099f5f6237d6296b`;
@@ -92,6 +94,15 @@ filter correction followed the recorded packaged run, so final-source integratio
 and the actual non-loopback-interface control are required in CI. Local interface
 enumeration was unavailable (`netlink: Operation not permitted`); no route/security
 configuration was changed to bypass that restriction.
+
+Automated review of the first submitted operations commit found two real service
+permission defects: a 077 preparation umask could leave public bundles unreadable
+by the service UID, and root-created restored state was not owned by that UID. The
+installer now normalizes the verified public tree to directories/binaries 0755 and
+other files 0644. Root restore requires an explicit service owner and applies UID/GID
+with 0700 directories/0600 files. The runbook also updates StateDirectory alongside
+the restored data path under ProtectSystem=strict. The added CI drill starts the
+actual separate-UID service, checks LoadCredential key access, restores and restarts.
 
 The operations integration used the recorded packaged files. Subsequent preparer-only
 validation additionally rejects multicast/reserved/duplicate-host addresses and

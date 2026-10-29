@@ -40,7 +40,15 @@ for name, expected in manifest['sha256'].items():
     if h.hexdigest() != expected: raise SystemExit('Checksum mismatch: ' + name)
 PY
 chown -R root:root "$bundle"
-chmod -R go-w "$bundle"
+# Everything in the verified bundle is PUBLIC. Normalize modes even when the
+# preparer's umask was 077; secret credentials and state are outside this tree.
+python3 -B - "$bundle" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for path in [root, *root.rglob('*')]:
+    path.chmod(0o755 if path.is_dir() or path.parent == root / 'bin' else 0o644)
+PY
 python3 -B "$bundle/node_operator.py" verify --bundle "$bundle" --expected-sha256 "$expected"
 systemd-analyze verify "$bundle/pocol-testnet.service"
 if ! id -u pocol-testnet >/dev/null 2>&1; then

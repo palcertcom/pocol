@@ -125,13 +125,18 @@ fsync, and copies no keys. Keep the manifest hash separately:
 sudo systemctl stop pocol-testnet
 sudo python3 -B /opt/pocol-testnet/node_operator.py backup --out /backups/pocol-001
 sudo python3 -B /opt/pocol-testnet/node_operator.py restore --backup /backups/pocol-001 \
-  --expected-sha256 TRUSTED_BACKUP_MANIFEST_SHA256 --data /var/lib/pocol-testnet-restored
+  --expected-sha256 TRUSTED_BACKUP_MANIFEST_SHA256 --data /var/lib/pocol-testnet-restored --owner pocol-testnet
 ```
 
 Restore requires an absent destination and matching chain, genesis, implementation,
-node and miner address. It never overwrites or starts existing state. Verify the
-restored node through RPC and compare confirmed roots before changing the service's
-data path. Keep the original directory until the recovery drill passes.
+node and miner address. Root must name the service account; restored files/directories
+receive its UID/GID with modes 0600/0700. It never overwrites or starts existing state.
+When selecting the restored path in the unit, update BOTH `ExecStart` (add
+`--data /var/lib/pocol-testnet-restored`) and `StateDirectory=pocol-testnet-restored`.
+The latter grants the correct writable path under `ProtectSystem=strict`; changing
+only the command is insufficient. Reload systemd, start the restored instance, and
+compare confirmed roots through RPC. Keep the original directory until the recovery
+drill passes, and keep the original unit for rollback. Never run both instances.
 
 Wire v2 refuses old handshakes or any different compatibility fingerprint. A code
 change therefore needs a coordinated testnet upgrade and an explicit state migration

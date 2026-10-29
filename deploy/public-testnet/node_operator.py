@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import shutil
 import stat
 import subprocess
@@ -149,14 +150,20 @@ def launch(bundle, data, key):
         os.execv(args[0], args)
 
 
-def copy_files(source, target, names):
+def copy_files(source, target, names, owner=None):
     target.mkdir(mode=0o700)
     for name in sorted(names):
         dest = target / name; dest.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (source / name).open('rb') as inp, dest.open('xb') as out:
-            shutil.copyfileobj(inp, out, 1024 * 1024); out.flush(); os.fsync(out.fileno())
-        os.chmod(dest, 0o600)
-    for path in sorted((p for p in target.rglob('*') if p.is_dir()), reverse=True): sync_dir(path)
+            shutil.copyfileobj(inp, out, 1024 * 1024)
+            os.fchmod(out.fileno(), 0o600)
+            if owner is not None: os.fchown(out.fileno(), *owner)
+            out.flush(); os.fsync(out.fileno())
+    # Transfer directories only after their contents; the root stays private until complete.
+    for path in sorted((p for p in target.rglob('*') if p.is_dir()), reverse=True):
+        if owner is not None: os.chown(path, *owner)
+        sync_dir(path)
+    if owner is not None: os.chown(target, *owner)
     sync_dir(target); sync_dir(target.parent)
 
 
@@ -176,7 +183,11 @@ def backup(data, out):
         return {'backup': str(out), 'backupManifestSha256': digest(out / 'backup.json'), 'keysIncluded': False}
 
 
-def restore(bundle, source, data, expected):
+def restore(bundle, source, data, expected, owner=None):
+    ownership = None
+    if owner is not None:
+        if os.geteuid() != 0: raise ValueError('--owner requires root')
+        account = pwd.getpwnam(owner); ownership = (account.pw_uid, account.pw_gid)
     manifest, _ = verify(bundle)
     if data.exists(): raise ValueError('Restore target must not exist; existing state is never overwritten')
     if digest(source / 'backup.json') != expected: raise ValueError('Backup manifest digest mismatch')
@@ -185,9 +196,9 @@ def restore(bundle, source, data, expected):
         raise ValueError('Backup belongs to another network, node, release or key')
     verify_files(source / 'state', saved['sha256'], set())
     if read_json(source / 'state/network-binding.json') != saved['identity']: raise ValueError('Backup binding mismatch')
-    copy_files(source / 'state', data, saved['sha256'])
+    copy_files(source / 'state', data, saved['sha256'], ownership)
     verify_files(data, saved['sha256'], set())
-    return {'restored': str(data), 'started': False}
+    return {'restored': str(data), 'ownerUid': data.stat().st_uid, 'ownerGid': data.stat().st_gid, 'started': False}
 
 
 def main():
@@ -199,6 +210,7 @@ def main():
     parser.add_argument('--out', type=Path)
     parser.add_argument('--backup', type=Path)
     parser.add_argument('--expected-sha256')
+    parser.add_argument('--owner', help='Service account receiving restored state (root only)')
     args = parser.parse_args()
     bundle, data = args.bundle.absolute(), args.data.absolute()
     if args.command == 'verify':
@@ -209,7 +221,8 @@ def main():
         result = backup(data, args.out.absolute())
     else:
         if args.backup is None or not args.expected_sha256: parser.error('restore requires --backup and --expected-sha256')
-        result = restore(bundle, args.backup.absolute(), data, args.expected_sha256)
+        if os.geteuid() == 0 and args.owner is None: parser.error('root restore requires --owner SERVICE_ACCOUNT')
+        result = restore(bundle, args.backup.absolute(), data, args.expected_sha256, args.owner)
     print(json.dumps(result))
 
 
