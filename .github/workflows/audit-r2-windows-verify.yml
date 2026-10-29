@@ -8,7 +8,7 @@
 # Triggers:
 # - Manual dispatch with a required `commit` input (a full 40-character SHA). GitHub dispatches a
 #   workflow only once its file is on the default branch, so this path needs the file on `main`.
-# - pull_request, only for PRs into `claude/affectionate-pascal-rjhh2k` (the audit-repair base) from
+# - Pushes to main and PRs into main or the audit-repair base from
 #   this repository (never from a fork), when the repair paths change. The commit under test is the
 #   PR head SHA, not the merge commit. This path needs no merge into `main`.
 # The evidence (artifact audit-r2-windows-<sha>) is bound to the commit, and the run fails if the
@@ -18,6 +18,9 @@
 name: Audit repair r2 Windows verification
 
 on:
+  push:
+    branches: [main]
+    paths: ['prototypes/**', '.github/workflows/audit-r2-windows-verify.yml', '.github/scripts/audit-r2-windows-verify.ps1']
   workflow_dispatch:
     inputs:
       commit:
@@ -25,7 +28,7 @@ on:
         required: true
         type: string
   pull_request:
-    branches: [claude/affectionate-pascal-rjhh2k]
+    branches: [main, claude/affectionate-pascal-rjhh2k]
     types: [opened, synchronize, reopened]
     paths:
       - 'prototypes/lp1-node/**'
@@ -46,7 +49,7 @@ concurrency:
 jobs:
   windows:
     name: Windows Server 2022 (Rust 1.58.1 / 1.99.1, Node 22.22.0)
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2022
     timeout-minutes: 150
     defaults:
@@ -55,7 +58,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: never
       CARGO_INCREMENTAL: '0'
-      COMMIT_UNDER_TEST: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit }}
+      COMMIT_UNDER_TEST: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.commit || github.sha }}
     steps:
       - name: Validate the commit under test
         run: |

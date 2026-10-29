@@ -14,9 +14,8 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: Exact 40-character commit SHA to test (empty = tip of the selected branch)
-        required: false
-        default: ''
+        description: Exact 40-character lowercase commit SHA to test
+        required: true
         type: string
       include_slow:
         description: Also run the release differential and CLI harness with a full-size gsVersion
@@ -47,16 +46,27 @@ jobs:
         env:
           COMMIT_INPUT: ${{ inputs.commit }}
         run: |
-          if ($env:COMMIT_INPUT -and $env:COMMIT_INPUT -cnotmatch '^[0-9a-f]{40}$') {
-            throw 'commit must be empty or a full 40-character lowercase hex SHA'
+          if ($env:COMMIT_INPUT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'commit must be a full 40-character lowercase hex SHA'
           }
 
       - name: Check out the commit under test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.commit || github.sha }}
+          ref: ${{ inputs.commit }}
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Verify checkout and verification script
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -cne $env:EXPECTED_COMMIT) { throw "checkout SHA mismatch" }
+          $script = '.github/scripts/lp3-s1-windows-verify.ps1'
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { throw "verification script missing" }
+          Write-Output "Verified commit: $actual"
+          Get-FileHash -Algorithm SHA256 -LiteralPath $script | Format-List
 
       - name: Set up Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
