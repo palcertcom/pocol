@@ -69,8 +69,17 @@ def validate_inventory(value, rehearsal=False, join=False):
 
 
 def service(node):
-    credentials = 'LoadCredential=miner.key:/etc/pocol-testnet/miner.pocol-key\n' if node['minerAddress'] else ''
-    key_arg = ' --key-file ${CREDENTIALS_DIRECTORY}/miner.key' if node['minerAddress'] else ''
+    # systemd credentials are readable by the service but their filesystem metadata
+    # need not satisfy pocol-key's single-owner/single-link checks. Materialize a
+    # service-owned 0600 copy in a private, stop-cleaned runtime directory instead
+    # of weakening the Rust key loader or placing a secret in state/backups.
+    credentials = '''LoadCredential=miner.key:/etc/pocol-testnet/miner.pocol-key
+RuntimeDirectory=pocol-testnet
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+ExecStartPre=/usr/bin/install -m 0600 ${CREDENTIALS_DIRECTORY}/miner.key /run/pocol-testnet/miner.pocol-key
+''' if node['minerAddress'] else ''
+    key_arg = ' --key-file /run/pocol-testnet/miner.pocol-key' if node['minerAddress'] else ''
     return f'''[Unit]
 Description=PoCol experimental public testnet ({node['name']})
 Wants=network-online.target time-sync.target

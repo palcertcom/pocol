@@ -18,7 +18,8 @@ import node_operator as op
 from monitor import rpc
 
 TARGETS = [Path('/opt/pocol-testnet'), Path('/etc/pocol-testnet'), Path('/var/lib/pocol-testnet'),
-           Path('/var/lib/pocol-testnet-restored'), Path('/etc/systemd/system/pocol-testnet.service')]
+           Path('/var/lib/pocol-testnet-restored'), Path('/etc/systemd/system/pocol-testnet.service'),
+           Path('/run/pocol-testnet')]
 
 
 def command(args):
@@ -62,8 +63,14 @@ def main():
                 journal = command(['journalctl','-u','pocol-testnet','--no-pager','-n','40'])
                 raise RuntimeError('Service did not start: '+journal)
             command(['systemctl','start','pocol-testnet']); before = wait_node()
+            runtime = Path('/run/pocol-testnet')
+            metadata = (runtime / 'miner.pocol-key').stat()
+            assert metadata.st_uid == user.pw_uid and metadata.st_gid == user.pw_gid
+            assert metadata.st_mode & 0o777 == 0o600 and metadata.st_nlink == 1
+            assert runtime.stat().st_mode & 0o777 == 0o700
             frozen = rpc('http://'+config['rpc'],'eth_getBlockByNumber',[hex(before['head']['height']),False])
             command(['systemctl','stop','pocol-testnet'])
+            assert not runtime.exists(), 'Runtime key must be removed on stop'
             saved = op.backup(Path('/var/lib/pocol-testnet'), work / 'backup')
             restored = Path('/var/lib/pocol-testnet-restored')
             op.restore(Path('/opt/pocol-testnet'), work / 'backup', restored, saved['backupManifestSha256'], 'pocol-testnet')
@@ -76,7 +83,8 @@ def main():
             block = rpc('http://'+config['rpc'],'eth_getBlockByNumber',[frozen['number'],False])
             assert (block['hash'],block['stateRoot'],block['receiptsRoot']) == (frozen['hash'],frozen['stateRoot'],frozen['receiptsRoot'])
             result = {'result':'PASS','scope':'disposable systemd host, loopback only', 'serviceUser':'pocol-testnet',
-                      'checks':['restrictive umask bundle readable by service','LoadCredential passes key ownership checks',
+                      'checks':['restrictive umask bundle readable by service','credential copied to service-owned private runtime key',
+                                'runtime key removed on stop',
                                 'root restore assigns service UID/GID','restored StateDirectory starts and preserves roots'],
                       'restoredHeight':after['head']['height'],'publicLaunchReady':False}
             op.write_json(a.out,result); print(json.dumps(result))

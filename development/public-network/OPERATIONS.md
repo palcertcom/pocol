@@ -104,6 +104,26 @@ with 0700 directories/0600 files. The runbook also updates StateDirectory alongs
 the restored data path under ProtectSystem=strict. The added CI drill starts the
 actual separate-UID service, checks LoadCredential key access, restores and restarts.
 
+Exact-head CI at `f2be434ff8a27aa10e813b0b05fbc482c952b9f4` passed all Rust,
+Python, packaged integration, non-loopback listener and Nginx TLS/rate checks, but
+the new service drill failed. The systemd credential's metadata did not satisfy
+the strict Rust key-file checks. The original failure is retained in
+`evidence/operations/initial-systemd-credential-failure.log` (workflow run
+[40883255893](https://github.com/palcertcom/pocol/actions/runs/40883255893)).
+The unit now materializes a service-owned 0600 copy in a private 0700
+RuntimeDirectory, removed on stop, without relaxing the Rust checks or copying a
+secret into persistent state. The drill additionally checks owner, mode, link
+count and removal on stop; this correction still requires exact-head CI.
+The [systemd credential/runtime directory semantics](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+are distinct from the application's own key-file metadata policy.
+
+A subsequent final-core local integration passed all nine checks with binary
+`7b1bc349966d8a42d501575e7de452d6baf9ecd96985b482d36ec27d59415e23`
+and compatibility fingerprint
+`bfdf1d05559199057c3dfb83969839fe3fd723a195d4e332ed17ec485b36e4ca`.
+Its public evidence is retained separately in `evidence/operations/integration-final/`.
+It includes the listener correction but does not exercise systemd credentials.
+
 The operations integration used the recorded packaged files. Subsequent preparer-only
 validation additionally rejects multicast/reserved/duplicate-host addresses and
 noncanonical seed ports. Those controls are covered by the final unit tests and CI;

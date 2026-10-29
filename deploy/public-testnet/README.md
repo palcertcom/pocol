@@ -54,8 +54,12 @@ sudo bash deploy/public-testnet/install.sh /absolute/path/to/seed-1 TRUSTED_MANI
 The installer verifies a root-owned snapshot before running bundled code, refuses
 existing installations/state, and installs an inactive service. It does not generate
 keys, enable services, install a TLS certificate or change a firewall. The unit uses
-systemd `LoadCredential` to expose only the local miner key to its service user.
-The original key remains outside both the bundle and the state backup.
+systemd `LoadCredential` to deliver the local miner key. Before launch, the service
+copies that credential to its own mode-0600 file in the mode-0700
+`/run/pocol-testnet` runtime directory. This satisfies the unchanged strict key-file
+checks; systemd removes the runtime directory on stop. The original root-owned key
+and its temporary runtime copy stay outside both the bundle and the state backup.
+The runtime copy is plaintext and is not an encrypted keystore or HSM.
 
 Before activation on actual hosts:
 
