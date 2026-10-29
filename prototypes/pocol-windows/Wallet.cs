@@ -18,14 +18,15 @@ internal sealed class Wallet {
  readonly Window window; readonly JavaScriptSerializer json=new JavaScriptSerializer { MaxJsonLength=1048576 };
  readonly string folder=AppDomain.CurrentDomain.BaseDirectory;
  readonly string home=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"PoCol");
- Process engine; string address="",lastError=""; bool updating,closing,pending; Dictionary<string,object> state=new Dictionary<string,object>();
+ Process engine; string address="",lastError="",lastSubmitted=""; bool updating,closing,pending; Dictionary<string,object> state=new Dictionary<string,object>();
  T Get<T>(string name) where T:class { return window.FindName(name) as T; }
  static string Text(Dictionary<string,object> d,string key){object v;return d.TryGetValue(key,out v)&&v!=null?Convert.ToString(v,System.Globalization.CultureInfo.InvariantCulture):"";}
  static bool Flag(Dictionary<string,object> d,string key){object v;return d.TryGetValue(key,out v)&&v is bool&&(bool)v;}
  static Dictionary<string,object> Cmd(params object[] pairs){var d=new Dictionary<string,object>();for(int i=0;i<pairs.Length;i+=2)d[(string)pairs[i]]=pairs[i+1];return d;}
- void Message(string text){Get<TextBlock>("Message").Text=text;}
+ void Message(string text){lastSubmitted="";Get<TextBlock>("Message").Text=text;}
  void Hook(string name,Action action){Get<Button>(name).Click+=(s,e)=>action();}
  Wallet(){using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Wallet.xaml"))window=(Window)XamlReader.Load(stream);
+  Get<TextBlock>("Connection").ToolTip="Direct connections from this device, not the total number of nodes or miners.";
   foreach(string page in new[]{"Wallet","Activity","Mining","Settings"}){string p=page;Hook("Nav"+p,()=>Page(p));}
   Hook("ManageMining",()=>Page("Mining"));Hook("Connect",Start);Hook("Send",Send);Hook("Receive",Receive);Hook("CopyAddress",Copy);Hook("Import",Import);Hook("Disconnect",()=>Stop());Hook("Register",()=>Command(Cmd("method","quote_register")));
   Get<CheckBox>("MiningToggle").Click+=(s,e)=>{if(updating)return;bool on=Get<CheckBox>("MiningToggle").IsChecked==true;updating=true;Get<CheckBox>("MiningToggle").IsChecked=Flag(state,"miningEnabled");updating=false;Command(Cmd("method","mining","enabled",on));};
@@ -45,10 +46,34 @@ internal sealed class Wallet {
   }catch(Exception e){Get<Button>("Connect").IsEnabled=true;Message(e.Message);}}
  async Task Stop(){if(engine==null||engine.HasExited)return;Process current=engine;try{current.StandardInput.WriteLine("{\"method\":\"stop\"}");current.StandardInput.Flush();if(await Task.WhenAny(Task.Run(()=>current.WaitForExit()),Task.Delay(10000))!=null&&!current.HasExited)current.Kill();}catch(Exception e){Message(e.Message);}}
  void Command(Dictionary<string,object> command){if(engine==null||engine.HasExited){Message("Connect your wallet first.");return;}if(pending){Message("Please wait for the previous request.");return;}try{engine.StandardInput.WriteLine(json.Serialize(command));engine.StandardInput.Flush();pending=true;}catch(Exception e){pending=false;Message(e.Message);}}
- void Response(string raw){try{var d=json.Deserialize<Dictionary<string,object>>(raw);string type=Text(d,"type");if(type=="status"||type=="mining"){if(type=="mining")pending=false;state=d;Update();return;}if(type=="")return;pending=false;if(type=="error")Message(Text(d,"message"));else if(type=="quote")Review(d);else if(type=="submitted"){Message("Transaction submitted. Waiting for inclusion: "+Text(d,"hash"));if(!Flag(d,"historySaved"))MessageBox.Show(window,"The transaction was relayed, but its local history could not be saved. Keep this hash: "+Text(d,"hash"),"History not saved");}else Message(type);}catch(Exception){Message("Could not read a wallet response.");}}
- void Update(){pending=false;address=Text(state,"address");Get<TextBox>("Address").Text=address;Get<TextBlock>("Balance").Text=Text(state,"balance");Get<TextBlock>("Connection").Text=Text(state,"peers")+" peers · Block "+Text(state,"height")+" · Network "+Text(state,"chainId");Get<TextBlock>("WalletNote").Text=Text(state,"peers")=="0"?"Looking for peers. Your balance may be out of date.":"Your device is validating blocks. Mining is "+(Flag(state,"miningEnabled")?"on.":"off.");Get<TextBlock>("MiningState").Text=Text(state,"miningState");Get<TextBlock>("Mined").Text="Accepted blocks this session: "+Text(state,"blocksMined")+"\nRegistration bond: "+Text(state,"bond")+" PCOL";updating=true;Get<CheckBox>("MiningToggle").IsChecked=Flag(state,"miningEnabled");Get<CheckBox>("MiningToggle").IsEnabled=Flag(state,"miningEligible")||Flag(state,"miningEnabled");updating=false;
+ void Response(string raw){try{var d=json.Deserialize<Dictionary<string,object>>(raw);string type=Text(d,"type");if(type=="status"||type=="mining"){if(type=="mining")pending=false;state=d;Update();return;}if(type=="")return;pending=false;if(type=="error")Message(Text(d,"message"));else if(type=="quote")Review(d);else if(type=="submitted"){Message("Transaction submitted. Waiting for inclusion: "+Text(d,"hash"));lastSubmitted=Text(d,"hash");if(!Flag(d,"historySaved"))MessageBox.Show(window,"The transaction was relayed, but its local history could not be saved. Keep this hash: "+Text(d,"hash"),"History not saved");}else Message(type);}catch(Exception){Message("Could not read a wallet response.");}}
+ void Update(){address=Text(state,"address");Get<TextBox>("Address").Text=address;Get<TextBlock>("Balance").Text=Text(state,"balance");Get<TextBlock>("Connection").Text=Text(state,"peers")+" direct peers · Block "+Text(state,"height")+" · Network "+Text(state,"chainId");Get<TextBlock>("WalletNote").Text=Text(state,"peers")=="0"?"Looking for peers. Your balance may be out of date.":"Your device is validating blocks. Mining is "+(Flag(state,"miningEnabled")?"on.":"off.");Get<TextBlock>("MiningState").Text=Text(state,"miningState");Get<TextBlock>("Mined").Text="Accepted blocks this session: "+Text(state,"blocksMined")+"\nRegistration bond: "+Text(state,"bond")+" PCOL";updating=true;Get<CheckBox>("MiningToggle").IsChecked=Flag(state,"miningEnabled");Get<CheckBox>("MiningToggle").IsEnabled=Flag(state,"miningEligible")||Flag(state,"miningEnabled");updating=false;
   object lifetime;if(state.TryGetValue("lifetime",out lifetime)&&lifetime is Dictionary<string,object>){var life=(Dictionary<string,object>)lifetime;Get<TextBlock>("Lifetime").Text=Flag(life,"continuous")?"Continuous network · no scheduled closing block or expiry date":"Final block: "+Text(life,"finalHeight");}
-  var list=Get<StackPanel>("ActivityList");list.Children.Clear();object entries;if(state.TryGetValue("activity",out entries)&&entries is object[]){foreach(object entry in (object[])entries){var a=entry as Dictionary<string,object>;if(a==null)continue;var panel=new StackPanel();panel.Children.Add(Label(Text(a,"kind")=="registration"?"Mining registration":"Sent PCOL",18));panel.Children.Add(Label(Text(a,"amount")+" PCOL",24));panel.Children.Add(Label(Text(a,"state")+(a.ContainsKey("confirmations")?" · "+Text(a,"confirmations")+" confirmations":""),14));panel.Children.Add(new TextBox{Text=Text(a,"hash"),IsReadOnly=true,FontSize=11,BorderThickness=new Thickness(0),Margin=new Thickness(0,8,0,0)});list.Children.Add(new Border{Style=(Style)window.FindResource("Card"),Child=panel});}}if(list.Children.Count==0){list.Children.Add(Label("A fresh start",24));list.Children.Add(Label("Your transfers and registrations will appear here.",14));}}
+  var list=Get<StackPanel>("ActivityList");list.Children.Clear();
+  foreach(var a in Activities(state)){
+   string status=Text(a,"state"),hash=Text(a,"hash");
+   string detail=status+(a.ContainsKey("confirmations")?" · "+Text(a,"confirmations")+" confirmations":"");
+   var panel=new StackPanel();
+   panel.Children.Add(Label(Text(a,"kind")=="registration"?"Mining registration":"Sent PCOL",18));
+   panel.Children.Add(Label(Text(a,"amount")+" PCOL",24));
+   panel.Children.Add(Label(detail,14));
+   panel.Children.Add(new TextBox{Text=hash,IsReadOnly=true,FontSize=11,BorderThickness=new Thickness(0),Margin=new Thickness(0,8,0,0)});
+   list.Children.Add(new Border{Style=(Style)window.FindResource("Card"),Child=panel});
+   if(hash==lastSubmitted){
+    // Follow the current canonical receipt; inclusion is not irreversible finality.
+    string summary=status=="Included"?"Transaction included":status=="Reverted"?"Transaction reverted":status=="Pending"?"Transaction pending":"Transaction unconfirmed";
+    Get<TextBlock>("Message").Text=summary+(a.ContainsKey("confirmations")?" · "+Text(a,"confirmations")+" confirmations":"")+": "+hash;
+   }
+  }
+  if(list.Children.Count==0){list.Children.Add(Label("A fresh start",24));list.Children.Add(Label("Your transfers and registrations will appear here.",14));}
+ }
+ // JavaScriptSerializer's untyped nested JSON arrays can be ArrayList, not object[].
+ static IEnumerable<Dictionary<string,object>> Activities(Dictionary<string,object> snapshot){
+  object value;if(!snapshot.TryGetValue("activity",out value))yield break;
+  var entries=value as IList;if(entries==null)yield break;
+  foreach(object entry in entries){var item=entry as Dictionary<string,object>;if(item!=null)yield return item;}
+ }
+
  TextBlock Label(string text,double size){return new TextBlock{Text=text,FontSize=size,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,4,0,8),Foreground=new SolidColorBrush((Color)ColorConverter.ConvertFromString("#112639"))};}
  Window Dialog(string title,StackPanel body){return new Window{Title=title,Owner=window,WindowStartupLocation=WindowStartupLocation.CenterOwner,Width=500,SizeToContent=SizeToContent.Height,ResizeMode=ResizeMode.NoResize,Background=Brushes.White,FontFamily=new FontFamily("Segoe UI"),Content=new Border{Padding=new Thickness(28),Child=body}};}
  Button Btn(string title){return new Button{Content=title,Style=(Style)window.FindResource(typeof(Button)),Margin=new Thickness(0,12,0,0)};}
