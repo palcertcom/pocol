@@ -25,6 +25,7 @@ LOCAL = ['--delta', '1', '--phi', '1', '--t-exec', '1', '--delta-rel', '8', '--g
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work', type=Path, required=True)
+    parser.add_argument('--packaged', action='store_true', help='Run through release bundles; exercise backup/restore and monitoring')
     args = parser.parse_args()
     work = args.work.resolve()
     work.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -51,15 +52,30 @@ def main():
         ports.append(sock.getsockname()[1])
     for sock in held: sock.close()
     urls = [f'http://127.0.0.1:{p}' for p in ports[4:]]
+    data_paths = [work / f'data{i}' for i in range(4)]
+    if args.packaged:
+        sys.path.insert(0, str(ROOT / 'deploy/public-testnet'))
+        import prepare as public_prepare
+        import node_operator
+        import monitor
+        inventory = {'name': 'packaged-test', 'nodes': [
+            {'name': f'node{i+1}', 'ip': '127.0.0.1', 'p2pPort': ports[i], 'rpcPort': ports[i+4],
+             'rpcHost': f'rpc{i+1}.example.test', 'minerAddress': addresses[f'm{i+1}'], 'seeds': []} for i in range(4)]}
+        release = public_prepare.prepare(inventory, work / 'net', BIN.resolve(), work / 'release', rehearsal=True)
+        (evidence / 'release.json').write_text(json.dumps(release, indent=2))
     processes, logs, checks = {}, [], []
 
     def start(i):
         log = (evidence / f'node{i+1}.log').open('ab'); logs.append(log)
-        command = [str(BIN / 'pocold'), 'run', '--network', str(work / 'net'), '--data', str(work / f'data{i}'),
+        command = [str(BIN / 'pocold'), 'run', '--network', str(work / 'net'), '--data', str(data_paths[i]),
             '--name', f'node{i+1}', '--miner-key-file', str(keys / f'm{i+1}.pocol-key'),
             '--listen', f'127.0.0.1:{ports[i]}', '--rpc', f'127.0.0.1:{ports[i+4]}', '--state-store', '--log'] + LOCAL
         for j in range(4):
             if j != i: command += ['--peer', f'127.0.0.1:{ports[j]}']
+        if args.packaged:
+            bundle = work / 'release' / f'node{i+1}'
+            command = [sys.executable, '-B', str(bundle / 'node_operator.py'), 'run', '--bundle', str(bundle),
+                       '--data', str(data_paths[i]), '--key-file', str(keys / f'm{i+1}.pocol-key')]
         processes[i] = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
 
     def stop(i):
@@ -99,6 +115,9 @@ def main():
     try:
         for i in range(4): start(i)
         wait(lambda: all(rpc(u, 'pocol_status')['peers'] for u in urls), 'peer connections', 60)
+        build = json.loads(subprocess.check_output([str(BIN / 'pocold'), 'build-info'], text=True))
+        wait(lambda: all(rpc(u, 'pocol_status')['compatiblePeers'] >= 1 for u in urls), 'compatible handshakes', 60)
+        assert all(rpc(u, 'pocol_status')['compatibilitySha256'] == build['compatibilitySha256'] for u in urls)
         assert all(rpc(urls[i], 'pocol_status')['miner'].lower() == addresses[f'm{i+1}'] for i in range(4))
         assert all(len(rpc(u, 'pocol_getMiners')) == 3 for u in urls)
         ok('four nodes load independent keys; fourth key is not in genesis membership')
@@ -140,13 +159,35 @@ def main():
         height = min(rpc(u, 'pocol_status')['head']['height'] for u in urls) - 6
         blocks = [rpc(u, 'eth_getBlockByNumber', [hex(height), False]) for u in urls]
         assert len({(b['hash'], b['stateRoot'], b['receiptsRoot']) for b in blocks}) == 1
-        stop(3); start(3)
+        if args.packaged:
+            try:
+                node_operator.backup(data_paths[3], work / 'live-backup')
+                raise AssertionError('live backup should fail')
+            except BlockingIOError: pass
+            assert not (work / 'live-backup').exists()
+            ok('live backup refused while the node holds its process and journal locks')
+        stop(3)
+        if args.packaged:
+            backed = node_operator.backup(data_paths[3], work / 'backup')
+            restored = work / 'restored-node4'
+            node_operator.restore(work / 'release/node4', work / 'backup', restored, backed['backupManifestSha256'])
+            assert not list((work / 'backup').rglob('*.pocol-key'))
+            data_paths[3] = restored
+            (evidence / 'backup.json').write_text(json.dumps(backed, indent=2))
+        start(3)
         wait(lambda: rpc(urls[3], 'eth_getBlockByNumber', [hex(height), False])['hash'] == blocks[0]['hash'], 'restart', 60)
         assert rpc(urls[3], 'pocol_status')['miner'].lower() == addresses['m4']
         ok('four nodes agree on roots; newly registered miner restarts with its original identity')
+        if args.packaged:
+            ok('checksum-verified offline backup restores to a new directory and replays the same confirmed block')
+            observed = monitor.check(release, {f'node{i+1}': url for i, url in enumerate(urls)}, 180)
+            (evidence / 'observation.json').write_text(json.dumps(observed, indent=2))
+            (evidence / 'observation.prom').write_text(monitor.metrics(observed))
+            ok('packaged nodes advance through a 180-second observation with matching confirmed roots')
         report = {'result': 'PASS', 'scope': 'local independent-key/registration integration', 'checks': checks,
                   'publicLaunchReady': False, 'realMultiHostProven': False, 'binarySha256': digest(BIN / 'pocold'),
-                  'commonHeight': height, 'commonHash': blocks[0]['hash'], 'site': site,
+                  'commonHeight': height, 'commonHash': blocks[0]['hash'], 'site': site, 'packaged': args.packaged,
+                  'compatibilitySha256': build['compatibilitySha256'],
                   'transactions': {'transfer': transfer, 'registration': registration, 'duplicate': duplicate}}
         (evidence / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     finally:

@@ -19,6 +19,7 @@ fn main(){
 fn command(args:&[String])->i32{
     let cmd=args.get(1).map(|s|s.as_str()).unwrap_or("help");
     let r=match cmd{
+        "build-info"=>{println!("{}",pocold::identity::BUILD_INFO);Ok(())},
         "init-devnet"=>init(args),
         "init-testnet"=>pocold::testnet::init(args),
         "run"=>run(args),

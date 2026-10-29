@@ -8,8 +8,9 @@ acceptance decision; no real funds, infrastructure purchases or launch are impli
 
 ## Current truthful status
 
-Public launch is **blocked**. Independent key custody and a transaction-driven miner
-registration path are being implemented and exercised locally. The new candidate
+Public launch is **blocked**. Independent key custody and transaction-driven miner
+registration passed exact-head CI. A second increment adds strict wire compatibility,
+independent-key service bundles, offline recovery and cross-node monitoring. The candidate
 genesis still goes through `ExperimentalDevnet` admission, with all existing
 conditions visible. It does not admit chainId 777001 or silently reinterpret a
 simnet as the production profile.
@@ -25,13 +26,13 @@ approval or proof of Sybil resistance.
 
 | Gate | Required deliverable/evidence | Present status |
 | --- | --- | --- |
-| K1: Independent identities | OS-random per-node keys, no secrets in genesis/bundles, permission failures and backup/restart tests | Implemented for Unix key files; local tests recorded separately; encrypted keystore/HSM and recovery drill remain |
+| K1: Independent identities | OS-random per-node keys, no secrets in genesis/bundles, permission failures and backup/restart tests | Unix keys and service-local custody implemented; state recovery tested locally; operator secret-key recovery and encrypted keystore/HSM remain |
 | J1: Open miner enrollment | A non-genesis identity funds a bond, registers through an ordinary transaction, joins mining; duplicate/invalid operations rejected | Local four-node integration implemented; public faucet, eligibility churn/load and network-scale enrollment remain |
-| I1: Stable network identity | Published genesis, versioned wire/constants identity, reproducible release and compatibility rejection | Open; D-5/constants-digest release remains a protocol change |
+| I1: Stable network identity | Published genesis, versioned wire/constants identity, reproducible release and compatibility rejection | Experimental wire v2 and conservative source fingerprint implemented and tested; D-5 normative digest/adoption and independently reproduced binary release remain open |
 | A1: Honest admission | Approved profile, measured H_cal, real worst-case execution calibration, R18/R21 obligations, RpcGuard gaps closed | Open; synthetic calibration and seven existing conditions remain |
 | S1: Bounded historical state | K_eff and historical RPC behavior within the resource budget; near-cap measurements and fault/recovery tests | Open; do not bypass R21 or rely on average RSS |
-| N1: Internet exposure | Seed/bootstrap operations, hostile-peer and RPC overload tests, ingress controls, time synchronization, public endpoint monitoring | Open; local connectivity is not hostile-Internet acceptance |
-| L1: Sustained operation | Multi-host soak, partition/heal, restart/replay, backup/restore, release/rollback drill and bounded resource growth | Open; physical servers/access not supplied |
+| N1: Internet exposure | Seed/bootstrap operations, hostile-peer and RPC overload tests, ingress controls, time synchronization, public endpoint monitoring | Seed/join packaging, bounded handshakes, gateway configuration and monitoring implemented; actual Internet ingress acceptance and remaining RpcGuard controls open |
+| L1: Sustained operation | Multi-host soak, partition/heal, restart/replay, backup/restore, release/rollback drill and bounded resource growth | Four packaged processes passed local restore and 180-second progress/root comparison; physical servers, actual multi-host soak and upgrade drill remain open |
 | E1: Network lifetime/economics | Explicit approved choices for initial allocation, issuance/bonds, H_CLOSE/H_END and cumulative caps | Open; experimental defaults close at 19,000/20,000 blocks (~53/56 nominal hours) |
 | Q1: Release review | Exact-commit CI, independent security review, unresolved-finding ledger and public limitations | Open; AI-authored tests do not substitute for external review |
 
@@ -65,3 +66,5 @@ their public addresses. Never put secret keys in chat, Git or uploaded test arti
 - [Registry contract](../../prototypes/lp4-execution/contracts/system/PoColSystemV1.sol)
 - [Genesis and resource defaults](../../prototypes/lp4-execution/src/devnet.rs)
 - [Independent key operations](KEYS.md)
+- [Service, gateway, monitoring and recovery runbook](../../deploy/public-testnet/README.md)
+- [Compatibility and operations evidence](OPERATIONS.md)
