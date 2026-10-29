@@ -93,8 +93,9 @@ Use `--peer IP:PORT` for known peers. `pocol-sign --key-file FILE` and
 remain solely for existing disposable devnet fixtures.
 
 The first private-testnet bundler in `deploy/private-testnet/` still uses disposable
-labels and must not be presented as a secure public installer. Integrating local
-key custody into the eventual release/service workflow is a separate tracked step.
+labels. The later [public operations candidate](../../deploy/public-testnet/README.md)
+uses independent public addresses and per-service local keys. It has its own launch
+limitations and does not turn the private label-based bundle into a public release.
 
 ## Enrollment exercise
 

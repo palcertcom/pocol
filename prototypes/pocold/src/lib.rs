@@ -14,6 +14,7 @@
 pub mod site;
 pub mod keyfile;
 pub mod testnet;
+pub mod identity;
 pub mod secp_backend;
 /// A13 obligation 3 (enforced): every pocold thread is created here with an explicit stack
 /// reservation, and its resident stack cannot exceed that reservation (an overflow hits the

@@ -43,6 +43,12 @@ The exact-commit CI integration is separate evidence; it must be observed passin
 not inferred from earlier local binary results. No counts here are summed as a
 single independent security-coverage measure.
 
+On continuation, exact-head CI for `873fa2fdf8064a85a88603818a4ca7c3d29a81c4`
+was observed **PASS**, including the build, key/genesis controls and expanded
+integration: [Actions run 40869875650](https://github.com/palcertcom/pocol/actions/runs/40869875650).
+This resolves that pending validation only. Subsequent compatibility/operations work
+is reported separately in [OPERATIONS.md](OPERATIONS.md).
+
 The new enrollment path used the existing registry implementation. No Solidity,
 consensus, fork-choice or production-admission rule was replaced or disabled.
 The candidate profile changes genesis identity through its public inputs and
