@@ -6,6 +6,9 @@ publish = false
 license = "Apache-2.0"
 description = "PoCol local development node: consensus, mining, persistence, P2P and RPC over the LP4 execution layer. Local simnet devnets only."
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 pocol-lp4-execution = { path = "../lp4-execution" }
 revm = { version = "=19.7.0", features = ["serde"] }
@@ -28,7 +31,7 @@ zeroize = "=1.9.1"
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Networking_WinSock", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 [dev-dependencies]
 # C-1 E1: the tests compare every incremental state root with the full computation.

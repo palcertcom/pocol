@@ -567,9 +567,12 @@ impl Node{
         Ok(())
     }
     /// Runs until stop_at or channel closure.
-    pub fn run(&mut self){
+    pub fn run(&mut self){self.run_controlled(|_| false)}
+    /// The host can stop at event boundaries and publish local status. The process must exit
+    /// after return: existing transport workers are process-scoped. No consensus rules change.
+    pub fn run_controlled(&mut self, mut stop:impl FnMut(&Self)->bool){
         self.restart_production();
-        while !self.stopped{
+        while !self.stopped && !stop(self){
             // D-7: while the pool has a backlog, one event (if any is waiting) and one slice alternate. D-6: so do
             // one event and one release step while a dropped checkpoint's nodes are owed (the pool first).
             let ev=match self.deferred.pop_front(){Some(e)=>e,None=>if self.background_pending(){match self.rx.try_recv(){Ok(e)=>e,Err(mpsc::TryRecvError::Empty)=>{self.drain_light();self.background_step();continue}Err(_)=>break}}

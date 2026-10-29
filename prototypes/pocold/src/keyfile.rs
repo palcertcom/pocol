@@ -41,7 +41,7 @@ pub fn load(path: &Path) -> Result<Key, String> {
     Key::from_secret(&secret).map_err(|_| "invalid secp256k1 secret scalar".into())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn load(_: &Path) -> Result<Key, String> {
     Err("key-file support requires Unix ownership/permission checks in this release".into())
 }
@@ -77,7 +77,7 @@ pub fn generate(path: &Path) -> Result<Key, String> {
     Ok(key)
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn generate(_: &Path) -> Result<Key, String> {
     Err("key generation requires Unix ownership/permission checks in this release".into())
 }
@@ -116,3 +116,8 @@ pub fn account(args: &[String]) -> Result<Key, String> {
         _ => Err("provide exactly one --key-file PATH or devnet-only --account LABEL".into()),
     }
 }
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{load, generate};
