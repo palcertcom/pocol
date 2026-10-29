@@ -254,7 +254,7 @@ def main():
     chk = sub.add_parser('check')
     chk.add_argument('--release', type=Path, required=True)
     chk.add_argument('--rpc', action='append', required=True, metavar='NODE=http://127.0.0.1:PORT')
-    chk.add_argument('--observe', type=int, default=45)
+    chk.add_argument('--observe', type=int, default=180)
     chk.add_argument('--report', type=Path)
     args = parser.parse_args()
     prepare(args) if args.command == 'prepare' else check(args)

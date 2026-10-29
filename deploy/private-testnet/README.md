@@ -136,7 +136,7 @@ python3 deploy/private-testnet/private_testnet.py check \
   --rpc node1=http://127.0.0.1:18541 \
   --rpc node2=http://127.0.0.1:18542 \
   --rpc node3=http://127.0.0.1:18543 \
-  --observe 45 --report /tmp/pocol-private-health.json
+  --observe 180 --report /tmp/pocol-private-health.json
 ```
 
 The check requires network and node identity, store mode, the honest experimental
@@ -146,6 +146,12 @@ non-progress and divergent roots. It is an operational smoke test, **not** final
 security acceptance or proof that the processes live on different machines.
 Retain host evidence separately. `ExitOnForwardFailure` cannot prove RPC availability;
 the check does that through the tunnels.
+
+The default observation is 180 seconds: the configured attempt duration is 60
+seconds, and exhausting a finite nonce range can leave a healthy miner waiting for
+the next attempt. The earlier 30-second rehearsal interval was shorter than one
+attempt. This change tests eventual operational progress, not a ten-second block
+latency guarantee; no progress in the selected interval still fails the check.
 
 For Chrome, import a copy of `browser-profile.json` after changing its endpoint to
 the appropriate local tunnel port. It deliberately uses LN (trust in the operator's

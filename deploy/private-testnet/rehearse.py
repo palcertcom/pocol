@@ -110,10 +110,10 @@ def main():
         record('test currency transfer included on every node with identical receipt block and balance')
         wait(lambda: min(rpc(url, 'pocol_status')['head']['height'] for url in urls.values()) >= 8, 240, 'eight blocks')
         command = [sys.executable, str(HERE / 'private_testnet.py'), 'check', '--release', str(release),
-                   '--observe', '30', '--report', str(work / 'health.json')]
+                   '--observe', '180', '--report', str(work / 'health.json')]
         for name, url in urls.items():
             command += ['--rpc', name + '=' + url]
-        subprocess.run(command, check=True, timeout=120)
+        subprocess.run(command, check=True, timeout=300)
         record('health check verifies identity, progress and common block/state/receipt roots')
         reference = json.loads((work / 'health.json').read_text())
         height, common_hash = reference['commonHeight'], reference['commonHash']

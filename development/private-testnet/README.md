@@ -65,3 +65,21 @@ with all heads advancing from 10 to 15 during the observation. See
 [R2 results](evidence/r2/result.json) and [rehearsal source digest](evidence/r2/rehearsal.sha256).
 The original evidence and the failed CI run remain separate. A passing local rerun
 is not itself a passing GitHub run.
+
+## CI follow-up: operational observation window
+
+The [second GitHub run](https://github.com/palcertcom/pocol/actions/runs/40867325498)
+passed the confirmed transfer, then correctly failed its 30-second no-progress
+check. The downloaded artifact matched GitHub's SHA-256
+`28fb1863659e94ffbe081a0f9ef02a944094866a9bb10f93c99dee90fe9f8569`.
+Its three node logs show range exhaustion at height 9 and an attempt duration of
+60 seconds; the observation ended before that attempt could expire. These logs
+are preserved under `evidence/r3/failed-ci-node*.log`.
+
+The operational observation is now explicitly 180 seconds (three attempt durations),
+not a claim of a ten-second block-latency bound. Every node must still advance;
+the identity and common-root requirements remain. A fresh local rehearsal passed,
+with all heads progressing 8 to 27 and common comparison height 21. See
+[R3 result](evidence/r3/result.json). That run used the in-development independent-key
+binary whose digest is in the result, via the unchanged label-based path. GitHub
+must separately verify the private-branch binary. No failed run is relabeled passed.
