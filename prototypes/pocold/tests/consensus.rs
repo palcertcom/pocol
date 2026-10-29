@@ -2804,12 +2804,14 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
     for (what,arm) in [("journal read",0u8),("state.redb write while pinning a stored version",1),("state.redb write while dropping a refused checkpoint",2),
         // Review 2026-10-28 (F-A): a state.redb read that fails when the store is opened. Before, the store was set aside
         // as if damaged (state.redb.aside), its checkpoints lost, and the node replayed from genesis.
-        ("state.redb read at open",3)]{
+        ("state.redb read at open",3),("history.redb read at open",4),
+        ("history.redb write at open",5),("history.redb sync at open",6)]{
         let d=e44_dir(&format!("open-io-{arm}"));
         {let mut n=reopen(&e44_conf(&d,every));for b in blocks{n.import(b.clone(),None).unwrap();}}
         let ck=||{let st=pocold::state_store::StateStore::open(&d).unwrap();st.checkpoints().unwrap().iter().map(|c|c.0).collect::<Vec<_>>()};
         let before=ck();assert!(before.len()>=2,"positive control: checkpoints kept ({before:?})");
         let (jr,st)=(d.join("blocks.journal"),d.join(pocold::state_store::FILE));
+        let hist=d.join(pocold::history::FILE);
         // The genesis version is pinned first (the first state commit); the stored versions after it.
         // Case 2: the newest checkpoint is made unbound to the journal (refused), and dropping it fails.
         if arm==2{use redb::ReadableTable;let db=redb::Database::open(&st).unwrap();let w=db.begin_write().unwrap();
@@ -2817,12 +2819,15 @@ fn e44_reference(dir:&std::path::Path,tag:&str)->(pocold::node::Node,std::path::
              let (seq,bytes)={let (k,v)=t.last().unwrap().unwrap();(k.value(),v.value().to_vec())};let mut s=pocold::checkpoint::decode(&bytes).unwrap();
              s.binding.hash=[1;32];t.insert(seq,pocold::checkpoint::encode_snapshot(&s).as_slice()).unwrap();}
             w.commit().unwrap();}
-        match arm{0=>io_fault::arm_now(&jr,Op::Read),1=>io_fault::arm_at(&st,"state-txn",Op::Write,2),2=>io_fault::arm(&st,"drop-checkpoint",Op::Write),_=>io_fault::arm_now(&st,Op::Read)}
+        match arm{0=>io_fault::arm_now(&jr,Op::Read),1=>io_fault::arm_at(&st,"state-txn",Op::Write,2),2=>io_fault::arm(&st,"drop-checkpoint",Op::Write),3=>io_fault::arm_now(&st,Op::Read),4=>io_fault::arm_now(&hist,Op::Read),5=>io_fault::arm(&hist,"history-open-tables",Op::Write),_=>io_fault::arm(&hist,"history-open-tables",Op::Sync)}
         let r=pocold::node::Node::open(e44_conf(&d,every)(),admitted(&cfg(&["a","b","c"])));
-        let fired=if arm==0{io_fault::fired(&jr)}else{io_fault::fired(&st)};io_fault::disarm(&jr);io_fault::disarm(&st);
+        let fired=if arm==0{io_fault::fired(&jr)}else if arm>=4{io_fault::fired(&hist)}else{io_fault::fired(&st)};io_fault::disarm(&jr);io_fault::disarm(&st);io_fault::disarm(&hist);
         assert!(!fired.is_empty(),"{what}: positive control: the fault fired");
         let e=match r{Err(e)=>e,Ok(n)=>panic!("{what}: the open succeeded (resumed from {:?}, {} refused)",n.stats.resumed_from,n.stats.checkpoints_refused)};
-        assert!(e.contains(match arm{2=>"dropping checkpoint",3=>"I/O failure",_=>"could not be read"}),"{what}: {e}");
+        assert!(e.contains(match arm{2=>"dropping checkpoint",3..=6=>"I/O failure",_=>"could not be read"}),"{what}: {e}");
+        assert!(hist.exists(),"{what}: history.redb is kept");
+        assert!(!d.join(format!("{}.aside",pocold::history::FILE)).exists(),"{what}: history is not set aside");
+        assert!(!d.join(pocold::history::DAMAGED).exists(),"{what}: history is not marked damaged");
         assert!(st.exists(),"{what}: state.redb is kept");assert!(!d.join(format!("{}.aside",pocold::state_store::FILE)).exists(),"{what}: nothing is set aside");assert_eq!(ck(),before,"{what}: no checkpoint is dropped");
         let (mut g,gd)=e44_reference(&d,&format!("open-io-ref-{arm}"));
         let newest=(blocks.len() as u64/every)*every;

@@ -124,7 +124,30 @@ fn small()->Limits{
     for i in 0..200{let mut s=connect(&r);if i%2==0{let _=s.write_all(&hello(&r,"churn"));}drop(s);}
     assert!(wait_until(3000,||live(&r)==0),"live={}",live(&r));
     assert!(wait_until(3000,||threads()<=base+2),"threads {} vs {base}",threads());
-    let mut s=connect(&r);s.write_all(&hello(&r,"after")).unwrap();assert!(wait_until(500,||live(&r)==1),"still accepts peers");
+    // live==0 is not an accept-queue barrier: connections already accepted by TCP can still
+    // be waiting for the listener. Under single-core scheduling the original test observed
+    // live=0, then 79 more refusals before its final socket was processed. A bounded refusal
+    // during that backlog is valid. Require a Hello on OUR socket within the original 500 ms,
+    // retrying only closed/refused probes; another churn peer's live count cannot pass this.
+    let refused_before=r.net.counters.refused.load(Ordering::SeqCst);
+    let until=Instant::now()+Duration::from_millis(500);let mut attempts=0;let mut accepted=false;
+    while let Some(left)=until.checked_duration_since(Instant::now()){
+        attempts+=1;
+        if let Ok(mut s)=TcpStream::connect_timeout(&format!("127.0.0.1:{}",r.p2p).parse().unwrap(),left){
+            let _=s.set_read_timeout(Some(left));let _=s.set_write_timeout(Some(left));
+            if s.write_all(&hello(&r,"after")).is_ok(){
+                let mut len=[0;4];
+                if s.read_exact(&mut len).is_ok(){let n=u32::from_be_bytes(len) as usize;
+                    if n<=net::MAX_FRAME{let mut body=vec![0;n];
+                        if s.read_exact(&mut body).is_ok(){accepted=Instant::now()<=until&&matches!(Msg::decode(&body),Ok(Msg::Hello{chain_id,genesis,..}) if chain_id==r.chain_id&&genesis==r.genesis);}
+                    }
+                }
+            }
+        }
+        if accepted{break}
+        std::thread::yield_now();
+    }
+    assert!(accepted,"still accepts peers within 500 ms: attempts={attempts}, live={}, handshaking={}, refused before={refused_before}, after={}, threads={} base={base}",live(&r),r.net.counters.handshaking.load(Ordering::SeqCst),r.net.counters.refused.load(Ordering::SeqCst),threads());
 }
 #[test] fn rpc_connection_cap_refuses_excess_unread_and_keeps_serving(){let _g=serial();
     // network.md RPC_CONN_MAX: an excess connection is closed without being read (503).
