@@ -17,7 +17,7 @@ BIN = Path(os.environ.get('POCOLD_BIN_DIR', ROOT / 'prototypes/pocold/target/rel
 EXE = '.exe' if os.name == 'nt' else ''
 
 def call(name, *args, ok=True):
-    p = subprocess.run([str(BIN / (name + EXE)), *map(str, args)], capture_output=True, text=True, timeout=90)
+    p = subprocess.run([str(BIN / (name + EXE)), *map(str, args)], capture_output=True, text=True, encoding="utf-8", timeout=90)
     if ok and p.returncode: raise AssertionError(p.stderr)
     return p
 
@@ -29,7 +29,7 @@ def network(root, homes, seeds):
     public = root / 'public.json'
     public.write_text(json.dumps({'chainId': 777915, 'genesisTime': int(time.time()) + 5,
         'registrationPerBlock': 1, 'miners': [{'id': a, 'reward': a} for a in ids[:3]],
-        'accounts': [{'address': a, 'wei': str(10**24)} for a in ids]}))
+        'accounts': [{'address': a, 'wei': str(10**24)} for a in ids]}), encoding='utf-8')
     call('pocold', 'init-testnet', '--config', public, '--out', root / 'genesis')
     args = ['network', '--from', root / 'genesis', '--out', root / 'network.pocol.json']
     for seed in seeds: args += ['--seed', seed]
@@ -67,11 +67,11 @@ class Launcher(unittest.TestCase):
             self.assertNotEqual(call('pocol', 'identity', '--home', home, ok=False).returncode, 0)
     def test_invitation_rejects_other_build_extra_paths_and_bad_seeds(self):
         path = network(self.root, [self.root / 'a'], ['127.0.0.1:30300'])
-        original = json.loads(path.read_text()); fingerprint = json.loads(call('pocol', 'inspect', '--network', path).stdout)['networkFingerprint']
-        path.write_text(json.dumps(original, indent=4)); self.assertEqual(json.loads(call('pocol', 'inspect', '--network', path).stdout)['networkFingerprint'], fingerprint)
+        original = json.loads(path.read_text(encoding='utf-8')); fingerprint = json.loads(call('pocol', 'inspect', '--network', path).stdout)['networkFingerprint']
+        path.write_text(json.dumps(original, indent=4), encoding='utf-8'); self.assertEqual(json.loads(call('pocol', 'inspect', '--network', path).stdout)['networkFingerprint'], fingerprint)
         mutations = [dict(original, compatibilitySha256='0'*64), dict(original, seeds=[]), dict(original, seeds=['0.0.0.0:0']), dict(original, files={**original['files'], '../identity.pocol-key':'bad'}), dict(original, unexpected=True)]
         for changed in mutations:
-            path.write_text(json.dumps(changed)); self.assertNotEqual(call('pocol', 'inspect', '--network', path, ok=False).returncode, 0)
+            path.write_text(json.dumps(changed), encoding='utf-8'); self.assertNotEqual(call('pocol', 'inspect', '--network', path, ok=False).returncode, 0)
         path.write_bytes(b' ' * (1048576 + 1)); self.assertNotEqual(call('pocol', 'inspect', '--network', path, ok=False).returncode, 0)
     def test_cli_rejects_ambiguous_options(self):
         for args in [('identity', '--home'), ('identity', '--unknown', 'x'), ('identity', '--home', 'a', '--home', 'b')]:
@@ -99,13 +99,13 @@ def integration():
         for s in reserved: s.close()
         procs=[]; logs=[]
         def start(i):
-            log=open(root/f'node{i}.log','a'); logs.append(log)
+            log=open(root/f'node{i}.log','a',encoding='utf-8'); logs.append(log)
             return subprocess.Popen([str(BIN/('pocol'+EXE)), 'start', '--home', str(homes[i]), '--network', str(invitation), '--listen', f'127.0.0.1:{p2p[i]}', '--rpc', f'127.0.0.1:{api[i]}'], stdout=log, stderr=log)
         try:
             procs=[start(i) for i in range(5)]
             deadline=time.monotonic()+240
             while time.monotonic()<deadline:
-                if any(p.poll() is not None for p in procs): raise AssertionError('node exited: '+ '\n'.join((root/f'node{i}.log').read_text()[-3000:] for i in range(5)))
+                if any(p.poll() is not None for p in procs): raise AssertionError('node exited: '+ '\n'.join((root/f'node{i}.log').read_text(encoding='utf-8',errors='replace')[-3000:] for i in range(5)))
                 try:
                     heights=[int(rpc(p,'eth_blockNumber'),16) for p in api]
                     if min(heights)>=8: break
