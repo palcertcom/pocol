@@ -9,3 +9,10 @@ The R5 eviction-cache finding is addressed in the model, without changing retent
 The existing Windows script now includes checkpoint_source and eviction_memory in the io-fault suite. Its workflow covers main and PRs targeting main, binds checkout to the exact tested SHA and retains read-only permissions. The browser workflow runs Playwright 1.62.1's real Chromium with the MV3 extension and live network in memory/store modes, including partition/restart integration. Chromium is the tested engine; do not describe it as a separately verified Google Chrome branded release. Logs, checkout SHA and binary digest are retained. Failed runs remain failures.
 
 Still open: full A13 proof and other untested maximum-resource workloads, Windows results on these changes, browser results, network-profile boot blockers and unapproved consensus decisions. No budget increase or implicit decision approval.
+
+## Local follow-up
+The initial full release run passed 257 tests but failed the Linux-only pinned A13 total, which still expected the old model. This failure is retained in release-initial.log. The corrected pin is derived independently: eviction delta 2,581,272 - 98,304 = 2,482,968; protect delta (216-48)*6144 + 512 = 1,032,704; total delta 3,515,672. Devnet total is 3,237,735,992 B. The itemized breakdown test passes and asserts the new eviction term. Full consensus rerun follows separately.
+
+The network-profile candidate store model is 5,585,459,749 B (5.201864754 GiB), requiring 5.944988291 GiB after the existing 8/7 factor. It remains below 6 GiB; this does not lift the R21/R22/genesis boot blockers or close untested maximum workloads. The complete I/O-feature selection passes, including the new allocation and checkpoint-source tests. The old Genesis manual workflow is reconciled to require a full lowercase SHA, exact checkout match, script presence and recorded script hash.
+
+The final release consensus rerun passes 93 tests (7 ignored), preserved in consensus-final.log. Together with the unchanged passing targets from the initial run, 258 release cases pass; 115 I/O-feature cases pass (overlapping coverage).
