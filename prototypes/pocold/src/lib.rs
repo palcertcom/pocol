@@ -46,7 +46,7 @@ pub fn crash_point(step:&str){
 #[inline(always)]
 pub fn crash_point(_step:&str){}
 /// Storage fault tests (`--features io-fault`, absent from the release): deterministic I/O errors in
-/// state.redb. `arm(file,step,op)` makes the store at `file` fail its next `op` (a write or an fsync) with
+/// state.redb and history.redb. `arm(file,step,op)` makes the store at `file` fail its next `op` (a read, write or fsync) with
 /// an I/O error, once, after it next reaches `step` (`io_point`, beside the crash points). The faults are
 /// kept per file, so tests running in one process do not meet each other's. redb then refuses every
 /// read and write of that database (`PreviousIo`) until it is opened again, as after a real I/O error.

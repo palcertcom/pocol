@@ -1,7 +1,7 @@
 //! C-1 S1 (proposals/C1-STORAGE-DESIGN.md): canonical history off the heap. `history.redb` holds what a
 //! block's journal record does not: its receipts and the transaction index. Both are derived data
 //! (invariant I1): they are written for every validated block before its journal record (I3), can
-//! always be rebuilt by re-execution, and a store that does not open is deleted and rebuilt by replay.
+//! always be rebuilt by re-execution, and a damaged store is rebuilt by replay. An I/O failure stops open and preserves the store.
 //! Bodies and encoded headers stay in the journal, which is never compacted (storage.md:70).
 //! C-1 S4 adds a third table: each block's nonce ranges, so that an entry slimmed in memory is restored
 //! exactly (its header and ParentResult come back from its journal record).
@@ -44,7 +44,8 @@ impl HistoryError{pub fn is_io(&self)->bool{self.0.starts_with(IO)}}
 fn seal(block:&[u8;32],rec:&[u8])->B256{let mut b=Vec::with_capacity(32+rec.len());b.extend_from_slice(block);b.extend_from_slice(rec);keccak256(&b)}
 
 impl History{
-    /// Opens `dir/history.redb`. A file that redb cannot open (torn, truncated or foreign: an error or a
+    /// Opens `dir/history.redb`. An I/O failure preserves the file and fails open. A damaged file
+    /// that redb cannot open (torn, truncated or foreign: an error or a
     /// panic inside redb), one that fails redb's full integrity check (every page checksum: a flipped
     /// byte in an index key is caught only there), or one marked damaged, is moved aside (as
     /// `history.redb.aside`, replacing an older one) and a new store is created: replay refills it (I1).
@@ -53,10 +54,13 @@ impl History{
     pub fn open(dir:&Path)->Result<Self,HistoryError>{
         let path=dir.join(FILE);let marker=dir.join(DAMAGED);
         let create=|p:&Path|->Result<Database,HistoryError>{
-            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(HISTORY_CACHE);b.create(p)})).map_err(|_|HistoryError("redb panicked at open".into()))?.map_err(rerr)?;
+            let mut db=catch_unwind(AssertUnwindSafe(||{let mut b=Database::builder();b.set_cache_size(HISTORY_CACHE);
+                #[cfg(feature="io-fault")] {crate::io_fault::create(&b,p)}
+                #[cfg(not(feature="io-fault"))] {b.create(p)}})).map_err(|_|HistoryError("redb panicked at open".into()))?.map_err(rerr)?;
             // Ok(false): redb found damage and repaired what it could; the store is not trusted.
             match catch_unwind(AssertUnwindSafe(||db.check_integrity())){Ok(Ok(true))=>{}Ok(Err(e))=>{let e=rerr(e);if e.is_io(){return Err(e)}return Err(HistoryError("integrity check failed".into()))}_=>return Err(HistoryError("integrity check failed".into()))}
-            catch_unwind(AssertUnwindSafe(||->Result<(),HistoryError>{let w=db.begin_write().map_err(err)?;{w.open_table(RECEIPTS).map_err(err)?;w.open_table(TXIDX).map_err(err)?;w.open_table(RANGES).map_err(err)?;}w.commit().map_err(err)}))
+            crate::io_point(p,"history-open-tables");
+            catch_unwind(AssertUnwindSafe(||->Result<(),HistoryError>{let w=db.begin_write().map_err(rerr)?;{w.open_table(RECEIPTS).map_err(rerr)?;w.open_table(TXIDX).map_err(rerr)?;w.open_table(RANGES).map_err(rerr)?;}w.commit().map_err(rerr)}))
                 .map_err(|_|HistoryError("redb panicked at open".into()))??;
             Ok(db)};
         let first=if marker.exists(){Err(HistoryError("marked damaged".into()))}else{create(&path)};
