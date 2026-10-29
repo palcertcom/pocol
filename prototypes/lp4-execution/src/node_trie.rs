@@ -139,6 +139,46 @@ fn node_ref(n:&Node,d:usize)->Ref{
     }
 }
 
+/// A13 (C-1 E4.5): the largest serialization of each node kind (`Node::encode`): an account leaf (its
+/// storage trie's top included), a slot leaf, a branch without its children, and one child of a branch.
+pub const ACCT_LEAF_ENC:u128=1+32+1+8+32+32+32+1+32+20;
+pub const SLOT_LEAF_ENC:u128=1+32+1+32+32;
+pub const BRANCH_ENC:u128=1+1+2+32+1+33;
+pub const KID_ENC:u128=32+1+33;
+/// What a stored row adds to a node's serialization: its 32-byte id and its 4-byte reference count
+/// (pocold `state_store`).
+pub const ROW:u128=32+4;
+/// Branches on the path from a trie's top to a leaf, at most: one at each of the 64 nibbles of a key.
+pub const PATH_BRANCHES:u128=64;
+/// A13: the most bytes a store keeps for one version of a state of `accounts` accounts and `slots` nonzero
+/// slots, every key and value. A leaf per account and per slot; at most one branch per leaf (every branch
+/// has two children or more: `build` and `finish` make no other); at most one child per node, since each
+/// node but the world trie's top hangs from one branch (a storage trie's top hangs from its account's leaf,
+/// which ACCT_LEAF_ENC counts). A node that occurs more than once is stored once.
+pub fn version_bytes(accounts:u128,slots:u128)->Option<u128>{
+    let keys=accounts.checked_add(slots)?;
+    [accounts.checked_mul(ACCT_LEAF_ENC+ROW)?,slots.checked_mul(SLOT_LEAF_ENC+ROW)?,keys.checked_mul(BRANCH_ENC+ROW)?,keys.checked_mul(2*KID_ENC)?].iter().try_fold(0u128,|a,b|a.checked_add(*b))
+}
+/// A13: the most nodes an update puts in its batch, (branches, leaves, children of those branches), when it
+/// changes `accounts` accounts and `slots` slots and its child version holds at most `child_accounts`
+/// accounts and `child_slots` slots. Every node an update puts in the batch is a node of the child: the top
+/// of the subtree it returns, or below one. Branches: PATH_BRANCHES on each changed key's path, and at most
+/// one per leaf of the child. Leaves: each changed key's, and the leaf it displaces (`update` rebuilds a
+/// leaf's place with the old leaf in it, unchanged), and at most the child's. Children: at most 16 a branch,
+/// and at most one per node of the child.
+pub fn batch_nodes(accounts:u128,slots:u128,child_accounts:u128,child_slots:u128)->Option<(u128,u128,u128)>{
+    let (keys,child)=(accounts.checked_add(slots)?,child_accounts.checked_add(child_slots)?);
+    let branches=keys.checked_mul(PATH_BRANCHES)?.min(child);
+    Some((branches,keys.checked_mul(2)?.min(child),branches.checked_mul(16)?.min(child.checked_mul(2)?)))
+}
+/// A13: the most bytes a block's version adds to a store that holds its parent's: the batch's nodes that are
+/// not stored yet, which are among its branches and the changed keys' leaves (a displaced leaf is the
+/// parent's, unchanged), with their children. Arguments as `batch_nodes`.
+pub fn block_bytes(accounts:u128,slots:u128,child_accounts:u128,child_slots:u128)->Option<u128>{
+    let (branches,_,kids)=batch_nodes(accounts,slots,child_accounts,child_slots)?;
+    [accounts.min(child_accounts).checked_mul(ACCT_LEAF_ENC+ROW)?,slots.min(child_slots).checked_mul(SLOT_LEAF_ENC+ROW)?,branches.checked_mul(BRANCH_ENC+ROW)?,kids.checked_mul(KID_ENC)?].iter().try_fold(0u128,|a,b|a.checked_add(*b))
+}
+
 /// Where nodes and code are read from. (C-1 E5: a leaf keeps its key's preimage.)
 pub trait NodeStore{
     fn node(&self,id:&Id)->Option<Arc<Node>>;
@@ -276,6 +316,46 @@ fn walk(s:&dyn NodeStore,id:&Id,f:&mut dyn FnMut(&Key,&Val)){
         match &*n{Node::Leaf{key,val}=>f(key,val),Node::Branch{kids,..}=>for (c,_) in kids.iter().rev(){stack.push(*c)}}
     }
 }
+/// A leaf that differs between two versions (`NodeTrie::diff`): only in the first, only in the second, or under the
+/// same key in both with another value. (The key is read by the tests: the world and storage leaves carry their
+/// preimages.)
+#[cfg_attr(not(test),allow(dead_code))]
+enum Change<'a>{Gone(&'a Key,&'a Val),Came(&'a Key,&'a Val),Moved(&'a Key,&'a Val,&'a Val)}
+/// The key nibbles every key below a node shares: a branch's up to the nibble it branches at, a leaf's whole key.
+fn shared(n:&Node)->usize{match n{Node::Leaf{..}=>64,Node::Branch{at,..}=>usize::from(*at)}}
+fn kid(n:&Node,i:u8)->Option<Id>{match n{Node::Branch{mask,kids,..} if mask&(1<<i)!=0=>Some(kids[(mask&((1u16<<i)-1)).count_ones() as usize].0),_=>None}}
+fn read(s:&dyn NodeStore,id:&Id)->Arc<Node>{s.node(id).unwrap_or_else(||panic!("C-1 E4: trie node {} is missing from the store",B256::from(*id)))}
+/// Every leaf below `n`, each node read.
+fn leaves(s:&dyn NodeStore,n:&Node,f:&mut dyn FnMut(&Key,&Val)){
+    match n{Node::Leaf{key,val}=>f(key,val),Node::Branch{kids,..}=>for (c,_) in kids.iter(){leaves(s,&read(s,c),f)}}
+}
+/// The leaves that differ between the subtrees `a` and `b`, which hold the keys of one key range in two versions.
+fn diff_ids(s:&dyn NodeStore,a:Option<&Id>,b:Option<&Id>,f:&mut dyn FnMut(Change)){
+    match (a,b){
+        (Some(x),Some(y)) if x==y=>{}
+        (None,None)=>{}
+        (Some(x),None)=>leaves(s,&read(s,x),&mut |k,v|f(Change::Gone(k,v))),
+        (None,Some(y))=>leaves(s,&read(s,y),&mut |k,v|f(Change::Came(k,v))),
+        (Some(x),Some(y))=>diff_nodes(s,&read(s,x),&read(s,y),f),
+    }
+}
+/// As `diff_ids`, for two nodes at hand. All keys below `a` share its first `shared(a)` nibbles, and likewise for
+/// `b`: if those prefixes part before either ends, no key is in both; if one is longer, the shorter node's other
+/// children hold keys the longer one cannot.
+fn diff_nodes(s:&dyn NodeStore,a:&Node,b:&Node,f:&mut dyn FnMut(Change)){
+    let (la,lb)=(shared(a),shared(b));
+    if diverge(a.key(),b.key(),0)<la.min(lb){leaves(s,a,&mut |k,v|f(Change::Gone(k,v)));leaves(s,b,&mut |k,v|f(Change::Came(k,v)));return}
+    match (a,b){
+        (Node::Leaf{key,val:x},Node::Leaf{val:y,..})=>if x!=y{f(Change::Moved(key,x,y))},
+        _ if la==lb=>for i in 0..16u8{diff_ids(s,kid(a,i).as_ref(),kid(b,i).as_ref(),f)},
+        _ if la<lb=>{let own=nib(b.key(),la);
+            for i in 0..16u8{match (kid(a,i),i==own){(Some(x),true)=>diff_nodes(s,&read(s,&x),b,f),(None,true)=>leaves(s,b,&mut |k,v|f(Change::Came(k,v))),
+                (Some(x),false)=>leaves(s,&read(s,&x),&mut |k,v|f(Change::Gone(k,v))),(None,false)=>{}}}}
+        _=>{let own=nib(a.key(),lb);
+            for i in 0..16u8{match (kid(b,i),i==own){(Some(y),true)=>diff_nodes(s,a,&read(s,&y),f),(None,true)=>leaves(s,a,&mut |k,v|f(Change::Gone(k,v))),
+                (Some(y),false)=>leaves(s,&read(s,&y),&mut |k,v|f(Change::Came(k,v))),(None,false)=>{}}}}
+    }
+}
 fn root_of(n:Option<&Node>)->B256{match n{None=>keccak256([0x80u8]),Some(n)=>node_ref(n,0).root()}}
 
 /// One version of the state trie: its world trie's top node.
@@ -334,6 +414,27 @@ impl NodeTrie{
         ch.sort_unstable_by(|x,y|x.0.cmp(&y.0));
         let start=self.world.map(|id|(id,load(s,b,&id)));
         NodeTrie{world:update(s,b,start,0,&ch).map(|(id,_)|id)}
+    }
+}
+
+impl NodeTrie{
+    /// C-1 E4.4 (2026-10-27): the accounts and slots whose committed values differ between this version and `to`,
+    /// as `Touched::between` lists them for two whole states: an account in one version only, whole; one in both
+    /// with another leaf, with the slots whose leaves differ. It reads every node of `to` that this version does
+    /// not hold at the same place, the storage of an account only `to` has included, each through the store
+    /// (which checks it against its id); of this version, only where the two differ. Two nodes with the same `Id`
+    /// are the same subtree, so a node of `to` it does not read is one this version holds, under the same keys.
+    pub fn diff(&self,s:&dyn NodeStore,to:&NodeTrie)->Touched{
+        let mut t=Touched::default();
+        diff_ids(s,self.world.as_ref(),to.world.as_ref(),&mut |c|match c{
+            Change::Gone(_,Val::Acct{address,..})=>t.whole_account(*address),
+            Change::Came(_,Val::Acct{address,storage,..})=>{t.whole_account(*address);if let Some(st)=storage{walk(s,st,&mut |_,_|{})}}
+            Change::Moved(_,Val::Acct{address,storage:x,..},Val::Acct{storage:y,..})=>{let a=*address;t.account(a);
+                diff_ids(s,x.as_ref(),y.as_ref(),&mut |c|match c{Change::Gone(_,Val::Slot(_,k))|Change::Came(_,Val::Slot(_,k))|Change::Moved(_,_,Val::Slot(_,k))=>t.slot(a,*k),
+                    _=>panic!("C-1 E4: an account leaf in a storage trie")})}
+            _=>panic!("C-1 E4: a slot leaf in the world trie"),
+        });
+        t
     }
 }
 

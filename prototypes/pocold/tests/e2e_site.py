@@ -127,9 +127,12 @@ def main():
         print(json.dumps({"result": "PASS", "checks": n, "site": site, "work": work}))
         return 0
     except Exception as e:
-        print(json.dumps({"result": "FAIL", "error": str(e)[-500:], "work": work})); return 1
+        error = e
     finally:
         dn.stop(work)
+    time.sleep(2)  # the nodes stop: their logs and journals are whole when they are kept
+    kept = dn.keep_on_failure("e2e_site", work, {"error": str(error)[-500:], "passed": n})
+    print(json.dumps({"result": "FAIL", "error": str(error)[-500:], "work": work, "kept": kept})); return 1
 
 if __name__ == "__main__":
     sys.exit(main())

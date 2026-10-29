@@ -15,6 +15,7 @@ import { deflateSync } from 'node:zlib';
 import { connect } from 'node:net';
 import { build } from '../build.mjs';
 import { runLiveRp } from './live_rp.mjs';
+import { keepOnFailure } from './harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url)), EXT = dirname(HERE), POCOLD = join(EXT, '..', 'pocold');
 const BIN = (n) => join(POCOLD, 'target', 'release', n);
@@ -100,13 +101,20 @@ function publish(dir, port, cid, site) {
 }
 
 // ---------------- browser helpers ----------------
+// 2026-10-28: every browser context records a Playwright trace (DOM snapshots and screenshots). One closed after
+// a check failed while it was open, or still open when the driver stops, saves its trace into WORK/traces/, which
+// is kept with the nodes' logs and the inputs when the run fails (keepOnFailure); any other trace is dropped.
+const contexts = new Set(); let traces = 0;
+async function saveTrace(c, why) { try { mkdirSync(join(work, 'traces'), { recursive: true }); await c.ctx.tracing.stop({ path: join(work, 'traces', `${++traces}-${c.tag}-${why}.zip`) }); } catch {} }
 async function openBrowser(dist, tag) {
   const userDir = mkdtempSync(join(tmpdir(), 'pocol-chrome-' + tag + '-'));
   const ctx = await chromium.launchPersistentContext(userDir, { channel: 'chromium', headless: true, args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`] });
+  const rec = { ctx, tag, failedAtOpen: failed }; contexts.add(rec); await ctx.tracing.start({ screenshots: true, snapshots: true });
   let [sw] = ctx.serviceWorkers(); if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 20000 });
   const id = new URL(sw.url()).host; const opt = await ctx.newPage(); await opt.goto(`chrome-extension://${id}/options.html`);
   const send = (m) => opt.evaluate((x) => chrome.runtime.sendMessage(x), m);
-  return { ctx, id, opt, send, close: async () => { await ctx.close(); rmSync(userDir, { recursive: true, force: true }); } };
+  return { ctx, id, opt, send, close: async () => { contexts.delete(rec); if (failed > rec.failedAtOpen) await saveTrace(rec, 'failed'); else await ctx.tracing.stop().catch(() => {});
+    await ctx.close(); rmSync(userDir, { recursive: true, force: true }); } };
 }
 async function siteFrame(page, minFrame = 1) {
   await page.waitForFunction((n) => { const f = document.querySelector('#stage iframe#site'); return f && Number(f.dataset.frame) >= n; }, minFrame, { timeout: 60000 });
@@ -146,7 +154,11 @@ const probeNetwork = async (fr) => fr.evaluate(async ({ CANARY, UDP, HOST_IP }) 
 const raw = (fr, text) => fr.evaluate((t) => pocol.raw(t), text);
 // pocol.navigate tears the calling frame down. Called within the evaluated function, the teardown can land before
 // Playwright receives the evaluate's answer ("Frame was detached"); scheduled for a later task, it cannot.
-const navigate = (fr, path) => fr.evaluate((p) => { setTimeout(() => { pocol.navigate(p); }, 0); }, path);
+// The navigation replaces the frame it runs in, and can do so before Playwright has the evaluate's own result: a store
+// run on 051dfaa failed 'Frame was detached' 24 ms into navigate(fr, '/') (evidence/r4/accept-051dfaa/). A detach is
+// the navigation happening; the caller's siteFrame wait is the check. Any other error is rethrown.
+const navigate = (fr, path) => fr.evaluate((p) => { setTimeout(() => { pocol.navigate(p); }, 0); }, path)
+  .catch((e) => { if (!/Frame was detached/.test(String(e && e.message))) throw e; });
 const req = (fr, kind, method, params) => fr.evaluate(async ([k, m, p]) => { try { return { result: await pocol.request(k, m, p) }; } catch (e) { return { error: { code: e.code, message: e.message, data: e.data } }; } }, [kind, method, params]);
 const msg = (id, kind, method, params) => JSON.stringify({ id, kind, payload: { method, params } });
 /** Confirmed site dictionary as stored (D103): the largest (epoch, seq) record under the key. */
@@ -289,13 +301,18 @@ async function main() {
     ok('BR18a site_navigate(/about.html): old frame torn down, new frame shows about.html, no new tab', (await fr.textContent('#about')) === 'About' && (await page.$$('#stage iframe')).length === 1 && b.ctx.pages().length === pagesBefore, `frame ${n}`);
     await navigate(fr, '/docs/'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('BR18b /docs/ -> docs/index.html', (await fr.textContent('#docs')).startsWith('Docs page'));
-    await fr.click('#home'); ({ fr, n } = await siteFrame(page, n + 1));
+    // A link in the site replaces the frame it was clicked in (BR18), so Playwright's click on that frame can stay
+    // pending after the navigation is done: on 051dfaa the click on #docs timed out at 30 s while the trace shows the
+    // viewer on /docs/index.html in a new frame (evidence/r4/accept-051dfaa/), as the #home click did on ad301e7.
+    // The click is a real one; the check is the new frame, not the click's return.
+    const clickAway = (f, sel) => { f.click(sel).catch(() => {}); };
+    clickAway(fr, '#home'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('link interception: relative ../ link -> site_navigate -> entry', (await fr.textContent('#t')) === 'PoCol on-chain site v1');
     // D99 nav bucket: three navigations in a row, then one per 2 s; the 4th is refused without teardown.
     const fourth = await req(fr, 'nav', 'site_navigate', ['/about.html']);
     ok('D99 4th rapid navigation -> -32005 {nav}, frame kept', fourth.error && fourth.error.code === -32005 && fourth.error.data.reason === 'nav' && (await fr.textContent('#t')) === 'PoCol on-chain site v1', JSON.stringify(fourth));
     await sleep(2100);
-    await fr.click('#docs'); ({ fr, n } = await siteFrame(page, n + 1));
+    clickAway(fr, '#docs'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('link interception: <a href=docs/> navigates inside the site', (await fr.textContent('#docs')).startsWith('Docs page'));
     await sleep(2100); await navigate(fr, '/a/../b.html'); ({ fr, n } = await siteFrame(page, n + 1));
     ok('BR18c /a/../b.html -> viewer 404 page', (await fr.textContent('h1')) === '404' && (await page.textContent('#status')) === '404');
@@ -486,7 +503,9 @@ async function main() {
 // A stray rejection is a failed check, never a crash that skips the devnet shutdown in main's finally.
 process.on('unhandledRejection', (e) => ok('no unhandled rejection', false, (e && e.stack) || String(e)));
 try { await main(); } catch (e) { ok('e2e driver completed', false, e.stack || e.message); }
+for (const c of contexts) await saveTrace(c, 'open-at-end');
 const summary = { result: failed ? 'FAIL' : 'PASS', checks: results.length, failed, work };
+if (failed) { await sleep(2000); summary.kept = keepOnFailure('e2e_browser', work, { results }); } // the nodes stop first
 writeFileSync(join(EXT, 'tests', 'e2e_browser.last.json'), JSON.stringify({ ...summary, results }, null, 1) + '\n');
 console.log(JSON.stringify(summary));
 process.exit(failed ? 1 : 0);

@@ -9,7 +9,8 @@
                       that fails with UnsupportedPlatform elsewhere)
     lp4-execution     Rust 1.99.1, release: execution, admission scope, A13 execution model, proposal vectors
     pocold            Rust 1.99.1, release: journal v2 (store), P2P and RPC sockets (net), the RPC work
-                      deadline and light lane, admission, consensus
+                      deadline and light lane, admission, consensus; and with --features io-fault the deterministic
+                      storage fault tests (state_store, consensus)
     extension         Node 22.22.0 (official zip, SHA-256 pinned below): npm ci, build, unit suite
   Not included: the real-Chrome and live-devnet suites (Chromium/Playwright and Python devnets are not
   prepared for Windows). pocold's thread-count assertions read /proc and are reported as not measured on
@@ -154,6 +155,8 @@ foreach ($c in @(@('lp1-node', $RustLp1), @('lp4-execution', $RustMain), @('poco
 [void](Test-Cargo 'lp1-node-all' 'lp1-node' $RustLp1 @('test', '--locked', '--no-fail-fast') 90)
 [void](Test-Cargo 'lp4-execution' 'lp4-execution' $RustMain @('test', '--release', '--locked', '--no-fail-fast') 90)
 [void](Test-Cargo 'pocold' 'pocold' $RustMain @('test', '--release', '--locked', '--no-fail-fast') 90)
+# Deterministic storage faults (--features io-fault, absent from the release): the I/O fault tests of state_store and consensus.
+[void](Test-Cargo 'pocold-io-fault' 'pocold' $RustMain @('test', '--release', '--locked', '--no-fail-fast', '--features', 'io-fault', '--test', 'state_store', '--test', 'consensus') 90)
 $npm = $(if ($NodeDir) { Join-Path $NodeDir 'npm.cmd' } else { 'npm' }); $node = $(if ($NodeDir) { Join-Path $NodeDir 'node.exe' } else { 'node' })
 [void](Test-Program 'extension-npm-ci' 'pocol-extension' $npm @('ci', '--ignore-scripts', '--no-audit', '--no-fund') $NodeEnv)
 [void](Test-Program 'extension-build' 'pocol-extension' $node @('build.mjs') $NodeEnv)

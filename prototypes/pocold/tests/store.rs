@@ -18,25 +18,25 @@ fn store_with(src:&Path,name:&str,journal:&[u8])->PathBuf{
 #[test] fn append_reopen_and_torn_tail_at_every_offset(){
     let dir=tmp("torn");
     let payloads:Vec<Vec<u8>>=(0..4u8).map(|i|vec![i;100+i as usize]).collect();
-    {let mut r=store::open(&dir,&B).unwrap();assert!(r.payloads.is_empty());for p in &payloads[..3]{r.journal.append(p).unwrap();}}
+    {let mut r=store::open(&dir,&B).unwrap();assert!(r.payloads().is_empty());for p in &payloads[..3]{r.journal.append(p).unwrap();}}
     // The fourth append is interrupted: its bytes reach the journal, the commit count stays at 3.
     let committed=fs::read(dir.join("blocks.journal")).unwrap();
     let mut full=committed.clone();full.extend(store::encode_frame(&payloads[3]));
-    {let d=store_with(&dir,"extra",&full);let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads,payloads,"a complete record beyond the commit count is kept");assert!(!r.torn_tail);}
+    {let d=store_with(&dir,"extra",&full);let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads(),payloads,"a complete record beyond the commit count is kept");assert!(!r.torn_tail);}
     let last=OV+payloads[3].len();let prefix=full.len()-last;assert_eq!(prefix,committed.len());
     for cut in prefix+1..full.len(){
         let d=store_with(&dir,&format!("cut{cut}"),&full[..cut]);
         let r=store::open(&d,&B).unwrap_or_else(|e|panic!("cut {cut}: {e:?}"));
-        assert!(r.torn_tail,"cut {cut}");assert_eq!(r.payloads,payloads[..3].to_vec(),"cut {cut}: only complete records are committed");
+        assert!(r.torn_tail,"cut {cut}");assert_eq!(r.payloads(),payloads[..3].to_vec(),"cut {cut}: only complete records are committed");
         // Original torn bytes are preserved; the new journal holds exactly the verified prefix.
         assert_eq!(fs::read(d.join("blocks.journal.torn-0")).unwrap(),full[..cut].to_vec());
         assert_eq!(fs::read(d.join("blocks.journal")).unwrap(),full[..prefix].to_vec());
-        drop(r);let again=store::open(&d,&B).unwrap();assert!(!again.torn_tail);assert_eq!(again.payloads.len(),3);
+        drop(r);let again=store::open(&d,&B).unwrap();assert!(!again.torn_tail);assert_eq!(again.payloads().len(),3);
         let _=fs::remove_dir_all(&d);
     }
     // Cut exactly at a record boundary is a clean shorter journal (not torn).
     let d=store_with(&dir,"boundary",&full[..prefix]);
-    let r=store::open(&d,&B).unwrap();assert!(!r.torn_tail);assert_eq!(r.payloads.len(),3);
+    let r=store::open(&d,&B).unwrap();assert!(!r.torn_tail);assert_eq!(r.payloads().len(),3);
 }
 
 #[test] fn complete_record_corruption_is_never_skipped(){
@@ -86,7 +86,7 @@ fn three_records(name:&str)->(PathBuf,Vec<u8>){
     for off in 0..j.len(){for bit in 0..8{
         let mut bad=j.clone();bad[off]^=1<<bit;let d=store_with(&dir,"a04-flip",&bad);
         let r=store::open(&d,&B);
-        assert!(matches!(r,Err(StoreError::Corrupt(_))|Err(StoreError::Binding)),"offset {off} bit {bit}: {:?}",r.as_ref().map(|r|(r.payloads.len(),r.torn_tail)));
+        assert!(matches!(r,Err(StoreError::Corrupt(_))|Err(StoreError::Binding)),"offset {off} bit {bit}: {:?}",r.as_ref().map(|r|(r.payloads().len(),r.torn_tail)));
         assert_eq!(fs::read(d.join("blocks.journal")).unwrap(),bad,"offset {off} bit {bit}: files are never modified on corruption");
         let _=fs::remove_dir_all(&d);checked+=1;
     }}
@@ -108,23 +108,23 @@ fn three_records(name:&str)->(PathBuf,Vec<u8>){
     let mut swap=j[..40].to_vec();swap.extend_from_slice(&j[40+rec..40+2*rec]);swap.extend_from_slice(&j[40..40+rec]);swap.extend_from_slice(&j[40+2*rec..]);
     for (what,bad) in [("insert at boundary",ins),("delete at boundary",del),("two records beyond the commit count",dup2)]{
         let d=store_with(&dir,"a04-e",&bad);let r=store::open(&d,&B);
-        assert!(matches!(r,Err(StoreError::Corrupt(_))),"{what}: {:?}",r.as_ref().map(|r|r.payloads.len()));let _=fs::remove_dir_all(&d);
+        assert!(matches!(r,Err(StoreError::Corrupt(_))),"{what}: {:?}",r.as_ref().map(|r|r.payloads().len()));let _=fs::remove_dir_all(&d);
     }
     // Reordered complete records pass the framing layer; replay rejects them (unknown parent), so the
     // node still fails closed. Recorded here so the framing guarantee is not overstated.
-    let d=store_with(&dir,"a04-swap",&swap);let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads.len(),3);assert_ne!(r.payloads[0],vec![0x30;50]);
+    let d=store_with(&dir,"a04-swap",&swap);let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads().len(),3);assert_ne!(r.payloads()[0],vec![0x30;50]);
 }
 #[test] fn a04_zero_filled_tail_is_an_interrupted_append(){
     let (dir,j)=three_records("a04-zero");
     for n in [1usize,7,8,41,4096]{
         let mut z=j.clone();z.extend(std::iter::repeat_n(0u8,n));let d=store_with(&dir,"a04-z",&z);
         let r=store::open(&d,&B).unwrap_or_else(|e|panic!("{n} zero bytes: {e:?}"));
-        assert!(r.torn_tail&&r.payloads.len()==3,"{n} zero bytes");drop(r);let _=fs::remove_dir_all(&d);
+        assert!(r.torn_tail&&r.payloads().len()==3,"{n} zero bytes");drop(r);let _=fs::remove_dir_all(&d);
     }
     // Non-zero bytes after the committed end were never committed (the commit file counts 3 and ends
     // there): an interrupted append, recovered, with the original bytes kept (review finding).
     let mut g=j.clone();g.extend([0xde,0xad,0xbe,0xef,0x01,0x02,0x03,0x04,0x05]);let d=store_with(&dir,"a04-g",&g);
-    let r=store::open(&d,&B).unwrap();assert!(r.torn_tail&&r.payloads.len()==3);drop(r);
+    let r=store::open(&d,&B).unwrap();assert!(r.torn_tail&&r.payloads().len()==3);drop(r);
     assert_eq!(fs::read(d.join("blocks.journal.torn-0")).unwrap(),g,"original bytes kept");assert_eq!(fs::read(d.join("blocks.journal")).unwrap(),j);let _=fs::remove_dir_all(&d);
     // More than one maximal record of such bytes cannot be a single interrupted append.
     let mut big=j.clone();big.extend(std::iter::repeat_n(0x5au8,store::MAX_RECORD+OV+1));let d=store_with(&dir,"a04-big",&big);
@@ -148,7 +148,7 @@ fn three_records(name:&str)->(PathBuf,Vec<u8>){
     for slot in [0usize,4096]{
         let d=tmp("a04-c1");fs::create_dir_all(&d).unwrap();fs::copy(dir.join("blocks.journal"),d.join("blocks.journal")).unwrap();
         let mut bad=c.clone();bad[slot+3]^=0x10;fs::write(d.join("blocks.commit"),&bad).unwrap();
-        let r=store::open(&d,&B).unwrap_or_else(|e|panic!("slot {slot}: {e:?}"));assert_eq!(r.payloads.len(),3);drop(r);let _=fs::remove_dir_all(&d);
+        let r=store::open(&d,&B).unwrap_or_else(|e|panic!("slot {slot}: {e:?}"));assert_eq!(r.payloads().len(),3);drop(r);let _=fs::remove_dir_all(&d);
     }
     let d=tmp("a04-c2");fs::create_dir_all(&d).unwrap();fs::copy(dir.join("blocks.journal"),d.join("blocks.journal")).unwrap();
     let mut bad=c.clone();bad[3]^=0x10;bad[4099]^=0x10;fs::write(d.join("blocks.commit"),&bad).unwrap();
@@ -157,18 +157,18 @@ fn three_records(name:&str)->(PathBuf,Vec<u8>){
     // The first v2 layout (both slots adjacent, 128 bytes) is read and rewritten in the current layout.
     let d=tmp("a04-c3");fs::create_dir_all(&d).unwrap();fs::copy(dir.join("blocks.journal"),d.join("blocks.journal")).unwrap();
     let legacy=[&c[..64],&c[4096..4160]].concat();fs::write(d.join("blocks.commit"),&legacy).unwrap();
-    {let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads.len(),3);}
+    {let r=store::open(&d,&B).unwrap();assert_eq!(r.payloads().len(),3);}
     assert_eq!(fs::read(d.join("blocks.commit")).unwrap().len(),4096+64);
-    {let mut r=store::open(&d,&B).unwrap();r.journal.append(&[1u8;10]).unwrap();}assert_eq!(store::open(&d,&B).unwrap().payloads.len(),4);let _=fs::remove_dir_all(&d);
+    {let mut r=store::open(&d,&B).unwrap();r.journal.append(&[1u8;10]).unwrap();}assert_eq!(store::open(&d,&B).unwrap().payloads().len(),4);let _=fs::remove_dir_all(&d);
 }
 #[test] fn a04_v1_journal_migrates_only_when_fully_verified(){
     use sha2::{Digest,Sha256};
     let v1=|recs:&[Vec<u8>]|{let mut b=b"POCOLJ1\n".to_vec();b.extend(B);for p in recs{b.extend((p.len() as u32).to_be_bytes());b.extend(Sha256::digest(p));b.extend(p);b.push(1);}b};
     let recs:Vec<Vec<u8>>=(0..3u8).map(|i|vec![i;20]).collect();
     let d=tmp("a04-v1");fs::create_dir_all(&d).unwrap();fs::write(d.join("blocks.journal"),v1(&recs)).unwrap();
-    let r=store::open(&d,&B).unwrap();assert!(r.migrated_v1);assert_eq!(r.payloads,recs);drop(r);
+    let r=store::open(&d,&B).unwrap();assert!(r.migrated_v1);assert_eq!(r.payloads(),recs);drop(r);
     assert_eq!(fs::read(d.join("blocks.journal.v1-0")).unwrap(),v1(&recs),"original kept");
-    let again=store::open(&d,&B).unwrap();assert!(!again.migrated_v1);assert_eq!(again.payloads,recs);drop(again);
+    let again=store::open(&d,&B).unwrap();assert!(!again.migrated_v1);assert_eq!(again.payloads(),recs);drop(again);
     // A v1 journal with a tail (torn or a corrupted length) is ambiguous: refused, nothing modified.
     let mut t=v1(&recs);t.truncate(t.len()-3);let d=tmp("a04-v1t");fs::create_dir_all(&d).unwrap();fs::write(d.join("blocks.journal"),&t).unwrap();
     assert_eq!(store::open(&d,&B).err(),Some(StoreError::LegacyNeedsReview));assert_eq!(fs::read(d.join("blocks.journal")).unwrap(),t);
@@ -191,7 +191,7 @@ fn three_records(name:&str)->(PathBuf,Vec<u8>){
     }
     // Reopen (fresh handle) and read every record back by its recorded offset.
     let r=store::open(&dir,&B).unwrap();
-    assert_eq!(r.payloads.len(),5);
+    assert_eq!(r.payloads().len(),5);
     for (i,off) in offs.iter().enumerate(){
         let (h,b,res)=r.journal.read_at(*off).expect("read_at a committed offset");
         assert_eq!(h,vec![i as u8;20],"header bytes at record {i}");

@@ -65,6 +65,33 @@ def stop(work, only=None, sig=signal.SIGTERM):
         pids.pop(l)
     json.dump(pids, open(pidfile, "w"))
 
+def keep_on_failure(suite, work, extra=None):
+    """A failed run's evidence (2026-10-28), kept before anything cleans the work directory: every node log and
+    input under WORK (net/ with the genesis, profile and keys; site files), each node's blocks.journal (its blocks,
+    from which replay rebuilds the derived stores, I1) and `extra` (the run's checks and the values it drew;
+    net/devnet.json holds the genesis time and chain id). The derived stores (*.redb) are listed, not copied. Also
+    the commit, pocold's SHA-256 and the environment that changes a run. Into POCOL_E2E_KEEP or tests/failures/
+    (ignored by git), with manifest.json (every file's size and SHA-256). Returns the directory."""
+    import hashlib, shutil, re, datetime
+    sha = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H%M%S%fZ")
+    dest = os.path.join(os.environ.get("POCOL_E2E_KEEP") or os.path.join(ROOT, "tests", "failures"), f"{suite}-{stamp}-{os.getpid()}")
+    files, skipped = [], []
+    for base, _, names in os.walk(work):
+        for n in names:
+            src = os.path.join(base, n); rel = os.path.relpath(src, work)
+            if not os.path.isfile(src): continue
+            if re.search(r"\.redb(\.aside|\.damaged)?$", n): skipped.append({"path": rel, "bytes": os.path.getsize(src)}); continue
+            d = os.path.join(dest, "work", rel); os.makedirs(os.path.dirname(d), exist_ok=True); shutil.copyfile(src, d)
+            files.append({"path": rel, "bytes": os.path.getsize(d), "sha256": sha(d)})
+    os.makedirs(dest, exist_ok=True)
+    try: commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip() or None
+    except OSError: commit = None
+    env = {k: os.environ[k] for k in ("POCOLD", "POCOLD_RUN_ARGS", "POCOL_SIGN", "POCOL_E2E_KEEP") if k in os.environ}  # named one by one (review F9)
+    json.dump({"suite": suite, "work": work, "keptAt": stamp, "commit": commit, "pocold": {"path": BIN, "sha256": sha(BIN) if os.path.exists(BIN) else None},
+               "env": env, "files": files, "notCopied": skipped, "extra": extra or {}}, open(os.path.join(dest, "manifest.json"), "w"), indent=1)
+    print(f"kept the failed run's logs and inputs in {dest}", flush=True); return dest
+
 def status(work):
     out = {}
     for i, l in enumerate(labels(work)):

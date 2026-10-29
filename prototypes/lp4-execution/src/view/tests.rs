@@ -75,3 +75,31 @@ fn an_overlay_reads_and_merges_as_the_copy_it_replaces(){
         }
     }
 }
+
+/// D-7 (A13 store mode): a layer whose entries keep their code hash and not their code reads, checks
+/// code and merges as the layer that holds the copies (the pool's pending state, `drop_code_copies`).
+#[test]
+fn a_layer_without_its_code_copies_reads_and_merges_as_before(){
+    fn code_of(v:&dyn View,a:&Address)->Option<(Option<Vec<u8>>,Result<u64,String>)>{v.account(a).map(|x|(x.info.code.as_ref().map(|c|c.original_bytes().to_vec()),crate::code_caps::code_len(v,&x.info)))}
+    fn each(v:&dyn View)->Vec<(Address,Option<Vec<u8>>)>{let mut m=Vec::new();v.each_account(&mut |a,x|m.push((*a,x.info.code.map(|c|c.original_bytes().to_vec()))));m.sort();m}
+    let mut r=Rng(0xc0de);let mut dropped=0;
+    let all:Vec<Address>=(0..30u64).map(|i|Address::from_word(B256::from(U256::from(i)))).collect();
+    for case in 0..2000{
+        let mut parent=InMemoryDB::default();
+        for _ in 0..r.below(40){let c=changes(&mut r,&parent);crate::user_phase::commit_tx(&mut parent,c,r.below(2)==0);}
+        let mut over=Overlay::new(&parent);
+        for _ in 0..1+r.below(12){
+            if r.below(5)==0{let a=addr(&mut r);over.insert_info(a,AccountInfo{balance:U256::from(r.below(9)),nonce:r.below(3),code_hash:KECCAK_EMPTY,code:code(&mut r)});}
+            else{let c=changes(&mut r,&over);crate::user_phase::commit_tx_on(&mut over,c,true);}
+        }
+        let held=over.into_layer();let mut shed=held.clone();
+        dropped+=shed.code_copies();shed.drop_code_copies(&all);assert_eq!(shed.code_copies(),0,"case {case}: no entry keeps a copy");
+        let (x,y)=(LayerView{base:&parent,layer:&held},LayerView{base:&parent,layer:&shed});
+        same_view(&x,&y,&format!("case {case}"));
+        for a in &all{assert_eq!(code_of(&x,a),code_of(&y,a),"case {case}: code of {a}");}
+        assert_eq!(each(&x),each(&y),"case {case}: each_account");
+        let (m1,m2)=(Overlay::from_layer(&parent,held).merge(),Overlay::from_layer(&parent,shed).merge());same_state(&m1,&m2,&format!("case {case} merged"));
+        for (a,u) in &m1.accounts{assert_eq!(u.info.code.as_ref().map(|c|c.original_bytes()),m2.accounts[a].info.code.as_ref().map(|c|c.original_bytes()),"case {case}: merged code of {a}");}
+    }
+    assert!(dropped>1000,"the cases hold code copies to drop ({dropped})");
+}

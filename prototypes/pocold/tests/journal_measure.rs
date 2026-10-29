@@ -27,23 +27,25 @@ struct Net{chain:Chain,keys:HashMap<Address,Key>}
 fn net()->Net{let c=cfg();let d=devnet::build(&c).unwrap();let mut keys=HashMap::new();
     for m in &d.miners{keys.insert(m.id,Key::from_secret(&m.key.secret()).unwrap());}
     Net{chain:Chain::new(admitted()),keys}}
-fn try_seal(n:&Net,mut h:Header,body:Body,attempt:u32,start:u64)->Option<Block>{
-    let p=n.chain.full_entry(&h.parent_hash).unwrap();let ctx=n.chain.child_ctx(&p,attempt).unwrap();
+fn try_seal_on(chain:&Chain,keys:&HashMap<Address,Key>,mut h:Header,body:Body,attempt:u32,start:u64)->Option<Block>{
+    let p=chain.full_entry(&h.parent_hash).unwrap();let ctx=chain.child_ctx(&p,attempt).unwrap();
     let tid=template_id(&h.ut_raw);let mut shares=vec![];let mut x=start;
     loop{if (x as u128)>=ctx.assignment.nonce_max(){return None}let ph=pow_hash(&tid,x);if le_target(&ph,&ctx.t_share){if le_target(&ph,&ctx.target){break}shares.push(x);}x+=1;}
     let owner=addr(&ctx.assignment.owner(x).unwrap());
     h.nonce=x;shares.truncate(256);h.shares=shares;reseal(&mut h);
-    h.winner_sig=n.keys[&owner].sign_hash(&B256::from(pocold::hashes::win_msg(&tid,x,&share_root(&h))));reseal(&mut h);
+    h.winner_sig=keys[&owner].sign_hash(&B256::from(pocold::hashes::win_msg(&tid,x,&share_root(&h))));reseal(&mut h);
     Some(Block{header:h,body})}
-fn fallback(n:&Net,parent:[u8;32],a:u32)->Block{let p=n.chain.full_entry(&parent).unwrap();
-    for a in a..a+16{let (h,_,_)=n.chain.build_fallback(&p,a).unwrap();if let Some(b)=try_seal(n,h,Body::default(),a,0){return b}}panic!("no fallback solution")}
+fn fallback(n:&Net,parent:[u8;32],a:u32)->Block{fallback_on(&n.chain,&n.keys,parent,a)}
+fn fallback_on(chain:&Chain,keys:&HashMap<Address,Key>,parent:[u8;32],a:u32)->Block{let p=chain.full_entry(&parent).unwrap();
+    for a in a..a+16{let (h,_,_)=chain.build_fallback(&p,a).unwrap();if let Some(b)=try_seal_on(chain,keys,h,Body::default(),a,0){return b}}panic!("no fallback solution")}
 /// A signed a=0 block at ts = parent ts + T_blk (the window starts at parent ts + 1): on the ASERT schedule,
 /// like a fallback a=0 block (lower + dFbWait), so a long run of signed blocks does not harden the target
 /// (at parent ts + 1 each one ran 3 s ahead and the PoW work doubled every ~13 blocks).
-fn signed(n:&Net,parent:[u8;32],body:Body)->Block{
-    let p=n.chain.full_entry(&parent).unwrap();let ctx=n.chain.child_ctx(&p,0).unwrap();
-    for off in u64::from(n.chain.spec.cp().T_blk).saturating_sub(1)..u64::from(n.chain.spec.cp().D_att){let (h,_,_)=n.chain.build_signed(&p,&n.keys[&ctx.proposer],ctx.window.lower()+off,body.clone(),vec![]).unwrap_or_else(|e|panic!("build_signed: {e:?}"));
-        if let Some(b)=try_seal(n,h,body.clone(),0,0){return b}}panic!("no signed solution")}
+fn signed(n:&Net,parent:[u8;32],body:Body)->Block{signed_on(&n.chain,&n.keys,parent,body)}
+fn signed_on(chain:&Chain,keys:&HashMap<Address,Key>,parent:[u8;32],body:Body)->Block{
+    let p=chain.full_entry(&parent).unwrap();let ctx=chain.child_ctx(&p,0).unwrap();
+    for off in u64::from(chain.spec.cp().T_blk).saturating_sub(1)..u64::from(chain.spec.cp().D_att){let (h,_,_)=chain.build_signed(&p,&keys[&ctx.proposer],ctx.window.lower()+off,body.clone(),vec![]).unwrap_or_else(|e|panic!("build_signed: {e:?}"));
+        if let Some(b)=try_seal_on(chain,keys,h,body.clone(),0,0){return b}}panic!("no signed solution")}
 fn import(n:&mut Net,b:&Block){let (e,_)=n.chain.validate(b,None,0).unwrap_or_else(|e|panic!("h={} {e:?}",b.header.h));n.chain.insert(e);n.chain.retain();}
 
 // max_fee is set very high (1e15 wei) so a chain of full blocks, whose EIP-1559 base fee rises ~12.5%
@@ -167,13 +169,30 @@ fn kzg_input()->Vec<u8>{
 /// MODEXP(base, exp, mod) with `b`, `e`, `m` byte lengths: exponent all ones (the maximum iteration count
 /// for its length), base and modulus pseudo-random with the top bit set (the base even when b <= 8); the
 /// modulus odd, even (odd part times 2: CRT, two exponentiations) or a power of two ("pow2").
-fn modexp_input(b:usize,e:usize,m:usize,md_kind:&str)->Vec<u8>{
+fn modexp_input(b:usize,e:usize,m:usize,md_kind:&str)->Vec<u8>{modexp_input_bits(b,8*e,m,md_kind)}
+/// As `modexp_input`, with an exponent of `ebits` one bits (ceil(ebits/8) bytes), and one more modulus kind:
+/// "evenhalf", whose low floor(m/2) bytes are zero (2^(8·floor(m/2)) times an odd part), and "evenmax", 3·2^(8m-2)
+/// (the odd part 3, the largest power of two an odd part above 1 allows).
+fn modexp_input_bits(b:usize,ebits:usize,m:usize,md_kind:&str)->Vec<u8>{
+    let e=ebits.div_ceil(8);
     let mut v=vec![];for l in [b,e,m]{let mut w=[0u8;32];w[24..].copy_from_slice(&(l as u64).to_be_bytes());v.extend(w);}
     let fill=|n:usize,s:u8|->Vec<u8>{(0..n).map(|i|(i as u8).wrapping_mul(37).wrapping_add(s)).collect()};
     let mut base=fill(b,11);if let Some(x)=base.first_mut(){*x|=0x80;}if b<=8{if let Some(x)=base.last_mut(){*x&=!1}}
     let mut md=fill(m,101);if let Some(x)=md.first_mut(){*x|=0x80;}
-    match md_kind{"odd"=>{if let Some(x)=md.last_mut(){*x|=1}},"even"=>{if let Some(x)=md.last_mut(){*x=(*x|3)&!1}},_=>{md=vec![0u8;m];md[0]=0x80;}}
-    v.extend(base);v.extend(vec![0xffu8;e]);v.extend(md);v
+    match md_kind{"odd"=>{if let Some(x)=md.last_mut(){*x|=1}},"even"=>{if let Some(x)=md.last_mut(){*x=(*x|3)&!1}},
+        "evenhalf"=>{let h=m/2;for x in &mut md[m-h..]{*x=0}md[m-h-1]|=1;},"evenmax"=>{md=vec![0u8;m];md[0]=0xc0;},_=>{md=vec![0u8;m];md[0]=0x80;}}
+    let mut ex=vec![0xffu8;e];if ebits%8!=0{ex[0]=(1u8<<(ebits%8))-1;}
+    v.extend(base);v.extend(ex);v.extend(md);v
+}
+/// A MODEXP kind named `modexp_b{b}_e{bytes}_m{m}_{kind}` or `modexp_b{b}_n{bits}_m{m}_{kind}` (the exponent
+/// as a count of one bits), for shapes outside MODEXP_SHAPES (jm_modexp_sweep, JM_GAP_KINDS).
+fn modexp_named(name:&str)->Option<(String,u8,Vec<u8>,Vec<u8>)>{
+    let p:Vec<&str>=name.strip_prefix("modexp_")?.split('_').collect();if p.len()!=4{return None}
+    let b:usize=p[0].strip_prefix('b')?.parse().ok()?;let m:usize=p[2].strip_prefix('m')?.parse().ok()?;
+    let ebits:usize=if let Some(x)=p[1].strip_prefix('e'){x.parse::<usize>().ok()?*8}else{p[1].strip_prefix('n')?.parse().ok()?};
+    if !["odd","even","pow2","evenhalf","evenmax"].contains(&p[3]){return None}
+    let input=modexp_input_bits(b,ebits,m,p[3]);let n=input.len() as u16;
+    Some((name.to_string(),5,input.clone(),precompile_loop(5,&input,n,m as u16)))
 }
 const MODEXP_SHAPES:[(usize,usize,usize,&str);23]=[(1,32,1,"odd"),(8,32,8,"odd"),(8,32,8,"even"),(32,32,32,"odd"),(8,256,8,"even"),
     (1,1024,1,"odd"),(1,1024,1,"even"),(2,1024,2,"even"),(4,1024,4,"even"),(8,1024,8,"odd"),(8,1024,8,"even"),(8,1024,8,"pow2"),(8,4096,8,"even"),
@@ -201,7 +220,8 @@ fn compute_kinds()->Vec<(String,u8,Vec<u8>,Vec<u8>)>{
         v.push(pre(&format!("modexp_b{b}_e{e}_m{m}_{mk}"),5,input,n,m as u16));}
     v
 }
-fn compute_init(kind:&str)->Option<Vec<u8>>{if kind=="full_gas_compute"{return Some(vec![0x5b,0x60,0x00,0x56])}compute_kinds().into_iter().find(|k|k.0==kind).map(|k|k.3)}
+fn compute_init(kind:&str)->Option<Vec<u8>>{if kind=="full_gas_compute"{return Some(vec![0x5b,0x60,0x00,0x56])}
+    compute_kinds().into_iter().find(|k|k.0==kind).or_else(||modexp_named(kind)).map(|k|k.3)}
 /// One block body of `kind` at alice's `nonce` (advanced): the JM-KIND kinds or any compute kind.
 fn kind_body(kind:&str,alice:&Key,nonce:&mut u64,transfers_k:u64,bodymax_len:usize)->Body{
     let txs=match kind{
@@ -577,6 +597,15 @@ fn jm_exec_cost_per_gas(){
         let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.05||calls<3{let _=run();calls+=1;}
         let ns=t.elapsed().as_secs_f64()*1e9/calls as f64;
         println!("JM-PRECOMPILE {}",serde_json::json!({"kind":k,"address":addr,"inputBytes":input.len(),"ok":res.is_ok(),"gasPerCall":gas,"nsPerCall":ns,"nsPerGas":ns/gas as f64}));
+        // D-2: the MODEXP pocol's EVM runs at address 5 (pocol_lp4_execution::modexp), on the same input; the
+        // line above is revm's, the reference whose results and gas it returns.
+        if addr==5{
+            let ours=||pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX).map(|o|(o.gas_used,o.bytes));
+            assert_eq!(format!("{:?}",ours()),format!("{:?}",pc::modexp::berlin_run(&inp,u64::MAX).map(|o|(o.gas_used,o.bytes))),"{k}: pocol's MODEXP equals revm's");
+            let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.05||calls<3{let _=ours();calls+=1;}
+            let ns2=t.elapsed().as_secs_f64()*1e9/calls as f64;
+            println!("JM-PRECOMPILE-POCOL {}",serde_json::json!({"kind":k,"gasPerCall":gas,"nsPerCall":ns2,"nsPerGas":ns2/gas as f64,"revmNsPerCall":ns,"speedup":ns/ns2}));
+        }
     }
     let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");
     let p0=fallback(&n,g,0);import(&mut n,&p0);
@@ -597,6 +626,62 @@ fn jm_exec_cost_per_gas(){
         let net_ns=if gas>0{(med-empty_med)*1e6/gas as f64}else{0.0};
         println!("JM-EXEC {}",serde_json::json!({"kind":k,"txs":b.body.txs.len(),"bodyBytes":b.body.encode().len(),"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"reps":reps,
             "nsPerGasGross":if gas>0{med*1e6/gas as f64}else{0.0},"nsPerGasNet":net_ns,"projectedMsAt8M":empty_med+net_ns*8e6/1e6}));
+    }
+}
+
+/// D-2 and decision row 2: the cost per gas of MODEXP over a grid of shapes, for the precompile pocol's EVM runs
+/// at address 5 (pocol_lp4_execution::modexp) and for revm's (the reference whose results it returns, checked
+/// on every shape). Moduli of 1 to 1,024 bytes (JM_SWEEP_MODS): odd, even, a power of two, an even modulus whose
+/// low half is zero and 3·2^(8m-2) (JM_SWEEP_MKINDS); base as long as the modulus; exponents of all ones from
+/// the 200-gas floor up to the block's gas. A
+/// block of precompile_loop spends LOOP_GAS per call beside the precompile, so a full-gas block of a shape
+/// makes about (gas left) / (gas + LOOP_GAS) calls: projectedBlockMs is that count times the time per call.
+/// The JM_SWEEP_BLOCKS (default 4) shapes with the largest projection are then built as full-gas blocks and
+/// validated (median of 3, whole-state mode, genesis state). A measurement on this host over the grid it
+/// lists: it is not a proof of the maximum, and it gates nothing. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_modexp_sweep(){
+    use revm::precompile as pc;
+    // JUMPDEST 1, five PUSHes 15, GAS 2, a warm STATICCALL 100 (precompiles are warm), POP 2, PUSH2 3, JUMP 8.
+    const LOOP_GAS:u64=131;
+    let blocks_n:usize=std::env::var("JM_SWEEP_BLOCKS").ok().and_then(|s|s.parse().ok()).unwrap_or(4);
+    let time=|f:&dyn Fn()|{f();let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.03||calls<3{f();calls+=1;}t.elapsed().as_secs_f64()*1e9/calls as f64};
+    let list=|k:&str,d:&str|std::env::var(k).unwrap_or_else(|_|d.to_string()).split(',').map(str::to_string).collect::<Vec<_>>();
+    let mods:Vec<usize>=list("JM_SWEEP_MODS","1,4,8,9,12,16,17,24,32,33,48,64,96,128,256,512,1024").iter().map(|x|x.parse().unwrap()).collect();
+    let mkinds=list("JM_SWEEP_MKINDS","odd,even,pow2,evenhalf,evenmax");
+    let mut rows:Vec<(f64,String,serde_json::Value)>=vec![];
+    for m in mods{
+        let c=(m.div_ceil(8) as u64).pow(2);
+        let floor_bits=((600/c) as usize+1).max(2);
+        for mk in mkinds.iter().map(String::as_str){
+            if (mk=="evenhalf"||mk=="evenmax")&&m<2{continue}
+            for ebits in [floor_bits,256,2048,8192,32768]{
+                let input=modexp_input_bits(m,ebits,m,mk);let inp=revm::primitives::Bytes::from(input.clone());
+                // The deploy carrying the loop pays 53,000 plus 16 per byte of init code.
+                let avail=FULL_GAS-53_000-16*(input.len() as u64+30);
+                let ours=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);let theirs=pc::modexp::berlin_run(&inp,u64::MAX);
+                assert_eq!(format!("{ours:?}"),format!("{theirs:?}"),"m={m} {mk} ebits={ebits}: pocol's MODEXP equals revm's");
+                let gas=theirs.as_ref().map(|o|o.gas_used).unwrap();if gas+LOOP_GAS>avail{continue}
+                let t_ours=time(&||{let _=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);});
+                let t_revm=time(&||{let _=pc::modexp::berlin_run(&inp,u64::MAX);});
+                let calls=(avail/(gas+LOOP_GAS)) as f64;
+                let name=format!("modexp_b{m}_n{ebits}_m{m}_{mk}");
+                let v=serde_json::json!({"kind":name,"modBytes":m,"modKind":mk,"expBits":ebits,"gasPerCall":gas,"fastPath":m<=8,
+                    "pocolNsPerCall":t_ours,"revmNsPerCall":t_revm,"pocolNsPerBlockGas":t_ours/(gas+LOOP_GAS) as f64,"revmNsPerBlockGas":t_revm/(gas+LOOP_GAS) as f64,
+                    "callsPerBlock":calls,"projectedBlockMs":calls*t_ours/1e6,"revmProjectedBlockMs":calls*t_revm/1e6});
+                println!("JM-MODEXP-SWEEP {v}");rows.push((calls*t_ours/1e6,name,v));
+            }
+        }
+    }
+    rows.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap());
+    for (_,_,v) in rows.iter().take(10){println!("JM-MODEXP-SWEEP-TOP {v}");}
+    let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");
+    let p0=fallback(&n,g,0);import(&mut n,&p0);
+    for (proj,name,_) in rows.iter().take(blocks_n){
+        let b=signed(&n,p0.hash(),Body{txs:vec![deploy(&alice,0,FULL_GAS,0,compute_init(name).unwrap())],evidence:vec![]});
+        let (min,med,gas)=validate_ms(&n.chain,&b,3);
+        println!("JM-MODEXP-SWEEP-BLOCK {}",serde_json::json!({"kind":name,"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"projectedBlockMs":proj,"nsPerGas":med*1e6/gas as f64}));
     }
 }
 
@@ -1055,5 +1140,366 @@ fn jm_r14_import_by_mode(){
         let c=m.with_store(&s).unwrap();
         println!("JM-BOOT-TIMING {}",serde_json::json!({"run":r,"memoryPhaseMs":m.phase_ms,"storePhaseMs":s.phase_ms,"bootPhaseMs":c.phase_ms,"samples":[m.samples,s.samples],"storeFileBytes":file,"tExecMs":t_exec_ms}));
         assert!(c.phase_ms.iter().zip(m.phase_ms).all(|(c,m)|*c>=m));
+    }
+}
+/// R14/R19: the calibration workload against the blocks that take longest per gas (P2 of the 2026-10-27 request;
+/// a measurement on this host, not a bound, and it gates nothing). In one process: the admission calibration in
+/// memory and through a scratch state store (what a boot measures); then, for a whole-state node and a store-mode
+/// node, the validate time (median of 3) and the import time of one full-gas block of each kind in
+/// JM_GAP_KINDS, built on the devnet genesis state, and again after the state is grown towards the devnet caps
+/// (JM_GAP_SLOTS fresh slots, JM_GAP_ACCTS fresh accounts). Each kind block is followed by an empty block, so the
+/// base fee stays within the senders' fee cap. Prints JM-R14-CAL and JM-R14-GAP lines beside t_exec.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_r14_workload_gap(){
+    use pocol_lp4_execution::admission;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let kinds:Vec<String>=std::env::var("JM_GAP_KINDS").map(|s|s.split(',').map(str::to_string).collect()).unwrap_or_else(|_|["full_gas_compute","full_gas_transfers",
+        "modexp_b8_e1024_m8_even","modexp_b8_e4096_m8_even","modexp_b16_e1024_m16_odd","modexp_b16_e1024_m16_even","bn_pair_1","bn_mul","ecrecover","keccak_32KiB","mem_grow_mstore","sstore_fresh","create2_loop","cold_call","log0_loop","fill_accts"]
+        .map(str::to_string).to_vec());
+    let (slots_t,accts_t)=(env_n("JM_GAP_SLOTS",48_000),env_n("JM_GAP_ACCTS",19_000));
+    let t_exec_ms=u64::from(pocold::single_host_local().t_exec)*1000;
+    // The calibration a boot measures, for the profile these blocks run on.
+    let c=cfg();let d=devnet::build(&c).unwrap();
+    let m=admission::measure(&d.spec_bytes,&d.alloc,1).unwrap();
+    let sd=tmp("gap-cal");std::fs::create_dir_all(&sd).unwrap();let st=pocold::state_store::StateStore::open(&sd).unwrap();
+    let s=admission::measure_on_store(&d.spec_bytes,&d.alloc,1,&st).unwrap();drop(st);let _=std::fs::remove_dir_all(&sd);
+    println!("JM-R14-CAL {}",serde_json::json!({"workload":"GAS_LIMIT compute loop (admission::measure)","memoryPhaseMs":m.phase_ms,"storePhaseMs":s.phase_ms,"tExecMs":t_exec_ms}));
+    // The blocks: genesis-state kind blocks, the growth, then the kind blocks again.
+    let alice=devnet::account_key("alice");let mut h=net();let mut nonce=0u64;
+    let p0=fallback(&h,h.chain.head,0);import(&mut h,&p0);let mut seq:Vec<(Option<(String,String)>,Block)>=vec![(None,p0)];
+    let tk=pack_transfers(&h,h.chain.head,&alice).len() as u64;
+    let fill_slots=sstore_fresh_loop();
+    let sys:Vec<Address>=(0..5).map(pocol_lp4_execution::apply::program_address).collect();
+    let live=|h:&Net|{let st=&h.chain.head().state;let (mut sl,mut ac)=(0u64,0u64);
+        for (a,x) in &st.accounts{if sys.contains(a)||x.info().is_none(){continue}ac+=1;sl+=x.storage.values().filter(|v|!v.is_zero()).count() as u64;}(sl,ac)};
+    let kind_round=|h:&mut Net,nonce:&mut u64,seq:&mut Vec<(Option<(String,String)>,Block)>,state:&str,fills:&mut u64|{
+        for k in &kinds{
+            let b=if k=="fill_accts"{*fills+=1;let b=signed(h,h.chain.head,Body{txs:vec![deploy(&alice,*nonce,FULL_GAS,1_000_000,fill_accts_init((*fills+1)<<40))],evidence:vec![]});*nonce+=1;b}
+                else{kind_block(h,h.chain.head,k,&alice,nonce,tk,0)};
+            import(h,&b);seq.push((Some((state.to_string(),k.clone())),b));
+            let f=fallback(h,h.chain.head,0);import(h,&f);seq.push((None,f));
+        }
+    };
+    let mut fills=0u64;
+    kind_round(&mut h,&mut nonce,&mut seq,"genesis",&mut fills);
+    let t0=Instant::now();
+    loop{
+        let (sl,ac)=live(&h);let fill_s=sl+400<=slots_t;let fill_a=!fill_s&&ac+400<=accts_t;if !fill_s&&!fill_a{break}
+        let init=if fill_s{fill_slots.clone()}else{fills+=1;fill_accts_init((fills+1)<<40)};
+        let b=signed(&h,h.chain.head,Body{txs:vec![deploy(&alice,nonce,FULL_GAS,1_000_000,init)],evidence:vec![]});nonce+=1;import(&mut h,&b);seq.push((None,b));
+        let f=fallback(&h,h.chain.head,0);import(&mut h,&f);seq.push((None,f));
+    }
+    let (gs,ga)=live(&h);println!("JM-R14-GROWTH {}",serde_json::json!({"liveUserSlots":gs,"liveUserAccounts":ga,"height":h.chain.head().height,"buildSeconds":t0.elapsed().as_secs_f64()}));
+    kind_round(&mut h,&mut nonce,&mut seq,"grown",&mut fills);
+    for mode in ["whole-state","store"]{
+        let dir=tmp(&format!("gap-{mode}"));
+        let mut n=Node::open(Config{dir:dir.clone(),name:"jm".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,limits:Limits{state_store:mode=="store",..Default::default()}},admitted()).unwrap();
+        for (tag,b) in &seq{
+            if let Some((state,kind))=tag{
+                let (min,med,gas)=validate_ms(&n.chain,b,3);
+                let t=Instant::now();n.import(b.clone(),None).unwrap();let im=t.elapsed().as_secs_f64()*1e3;
+                assert_eq!(n.chain.head,b.hash(),"{kind}: imported as the head");
+                println!("JM-R14-GAP {}",serde_json::json!({"mode":mode,"state":state,"kind":kind,"txs":b.body.txs.len(),"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"importMs":im,
+                    "nsPerGas":if gas>0{med*1e6/gas as f64}else{0.0},"tExecMs":t_exec_ms,"overTExec":med.max(im)/t_exec_ms as f64}));
+            }else{n.import(b.clone(),None).unwrap();}
+        }
+        drop(n);let _=std::fs::remove_dir_all(&dir);
+    }
+}
+
+// ============================ R3-4: a store-mode node at the network's state caps ============================
+/// The journal_measure profile with the network's state caps (governance.md: ACCT_CAP 10^6, SLOT_CAP 4·10^6), its
+/// code, transaction and transaction-bytes caps, and its H_END and closing window (so that the ~30,000 blocks
+/// that fill those caps fit); every other parameter is the devnet's.
+fn scale_cfg()->DevnetConfig{let mut c=cfg();c.acct_cap=1_000_000;c.slot_cap=4_000_000;c.code_cap=1<<30;c.txbytes_cap=1<<33;c.tx_cap=10_000_000;
+    c.h_end=129_600;c.h_close=129_440;c.t_end_offset=10_368_000;c.t_close_offset=10_368_000-9_600;c.z_close=160;c}
+/// R3-4 (2026-10-27): a store-mode node grown to the network's state caps, measured beside what A13 computes for
+/// it. Separate processes on one directory, JM_SCALE_DIR, chosen by JM_SCALE_PHASE:
+/// - "grow" (the directory must not exist): a store-mode node of scale_cfg() builds and imports full-gas blocks of
+///   fresh slots and of fresh accounts, each followed by an empty block, until JM_SCALE_ACCTS (950,000) user
+///   accounts and JM_SCALE_SLOTS (3,800,000) user slots, whichever kind is further behind first. At JM_SCALE_STEPS
+///   (10) points on the way it prints JM-SCALE: the live counts from the head's state summary, RSS and VmHWM,
+///   state.redb's file, stored and allocated bytes and nodes, the node cache, the import times of the segment,
+///   and A13's count for one version of the same size (`node_trie::version_bytes`).
+/// - "reopen": opens the directory (from its last checkpoint) and prints the same; then builds a fallback branch
+///   from JM_SCALE_FORK (8) blocks below the head until it has more work, imports it (the reorg) and prints them
+///   again.
+/// - "verify": opens it once more, checks that the head is the branch's tip (which "reopen" wrote beside the
+///   directory, JM_SCALE_DIR.tip), and prints them.
+/// - "ckpt": opens it, times the checkpoint snapshot's encoding, then three checkpoints in a row with the store's
+///   node count before and after each (what each one's release of the oldest checkpoint frees). Since D-6's
+///   deferred release (2026-10-27) each checkpoint's time is its write alone; the release steps that follow
+///   are timed apart (their count, the longest, and their total). The first checkpoint's release runs between
+///   imports of empty blocks, as a live node's would, and those imports are timed.
+/// - "load" (R4-4, 2026-10-28; on a copy, it changes the directory): opens it, fills the pool to its gas bound
+///   with full-gas creations of fresh slots, imports a full-gas block of fresh slots from another sender (the pool
+///   is revalidated), then reorganizes onto a branch of such blocks from JM_SCALE_LOAD_FORK (24) blocks below the
+///   head; it prints the figures after each step and A13's items for the profile.
+/// Checkpoints are every JM_SCALE_CKPT journal records (the node's default, checkpoint::EVERY = 1,024).
+/// Every phase also prints JM-SCALE-A13: the bound `resources::check` computes for this profile at boot (the
+/// caps', not the live state's) and state.redb's computed file bound. The process holds the node only (the node
+/// builds its own blocks), so RSS and VmHWM are the node's and its allocator's. A measurement on this host, not
+/// a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_store_scale(){
+    use pocol_lp4_execution::node_trie::version_bytes;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let dir=PathBuf::from(std::env::var("JM_SCALE_DIR").expect("JM_SCALE_DIR"));
+    let phase=std::env::var("JM_SCALE_PHASE").unwrap_or_else(|_|"grow".into());
+    let c=scale_cfg();let d=devnet::build(&c).unwrap();
+    let spec=||Spec::new(d.admit(&pocold::single_host_local()).unwrap_or_else(|e|panic!("{e}")).0);
+    let keys:HashMap<Address,Key>=d.miners.iter().map(|m|(m.id,Key::from_secret(&m.key.secret()).unwrap())).collect();
+    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"jm".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:false,
+        limits:Limits{state_store:true,checkpoint_every:env_n("JM_SCALE_CKPT",pocold::checkpoint::EVERY),..Default::default()}},spec()).unwrap();(n,t.elapsed().as_secs_f64())};
+    let size=|f:&str|std::fs::metadata(dir.join(f)).map(|m|m.len()).unwrap_or(0);
+    {   let l=pocold::single_host_local();let lim=Limits{state_store:true,..Default::default()};let cp=spec().cp().clone();
+        let b=pocold::resources::check(&cp,l.k_hist,l.side_max,&lim,2).expect("the scale profile boots in store mode");
+        let f:u128=pocold::resources::state_file_parts(&cp,l.k_hist,l.side_max,&lim).unwrap().iter().sum();
+        println!("JM-SCALE-A13 {}",serde_json::json!({"phase":phase,"boundBytes":b.total.to_string(),"budgetRequiredBytes":pocold::resources::budget_required(b.total).unwrap().to_string(),
+            "stateFileBoundBytes":f.to_string(),"oneVersionAtCapsBytes":version_bytes(u128::from(cp.ACCT_CAP)+5,u128::from(cp.SLOT_CAP)+u128::from(cp.SYS_SLOT_MAX)).unwrap().to_string(),
+            "acctCap":cp.ACCT_CAP,"slotCap":cp.SLOT_CAP,"sysSlotMax":cp.SYS_SLOT_MAX,"gasLimit":cp.GAS_LIMIT,"hEnd":cp.H_END}));
+    }
+    let counts=|n:&Node|n.chain.head().summary.as_deref().map(|s|(s.user_accounts,s.user_slots,s.sys_slots));
+    let figures=|n:&Node,what:&str,extra:serde_json::Value|{
+        let st=n.state_store().unwrap();let (alloc,frag,meta)=st.file_stats().unwrap();let stored=st.stored_bytes().unwrap();
+        let (a,us,ss)=counts(n).unwrap_or((0,0,0));
+        let model=version_bytes(u128::from(a)+5,u128::from(us+ss)).unwrap();
+        println!("JM-SCALE {}",serde_json::json!({"phase":what,"height":n.chain.head().height,"userAccounts":a,"userSlots":us,"sysSlots":ss,
+            "rssBytes":rss_bytes(),"vmHwmBytes":vmhwm_bytes(),"stateFileBytes":size("state.redb"),"storedBytes":stored,"allocatedBytes":alloc,"fragmentedBytes":frag,"metadataBytes":meta,
+            "nodes":st.node_count().unwrap(),"nodeCacheBytes":st.cache_bytes(),"oneVersionModelBytes":model.to_string(),"storedOverModel":stored as f64/model.max(1) as f64,
+            "journalBytes":size("blocks.journal"),"historyBytes":size("history.redb"),"extra":extra}));
+    };
+    let alice=devnet::account_key("alice");
+    // How the open's checkpoint restore read the stored versions (whole, or through the parent's diff).
+    let read=|n:&Node|serde_json::json!({"whole":n.stats.versions_read.whole,"byDiff":n.stats.versions_read.by_diff,"openTiming":serde_json::to_value(&n.stats.open).unwrap()});
+    match phase.as_str(){
+        "grow"=>{
+            assert!(!dir.exists(),"JM_SCALE_DIR must not exist for the grow phase");
+            let (ta,ts,steps)=(env_n("JM_SCALE_ACCTS",950_000),env_n("JM_SCALE_SLOTS",3_800_000),env_n("JM_SCALE_STEPS",10));
+            let (mut n,_)=open();figures(&n,"grow start",serde_json::json!({}));
+            let (mut nonce,mut fills,mut step)=(0u64,0u64,1u64);let (mut build_ms,mut fill_ms,mut empty_ms)=(vec![],vec![],vec![]);let t0=Instant::now();
+            loop{
+                let (a,us,_)=counts(&n).expect("the head has its summary");
+                let (fa,fs)=(a as f64/ta as f64,us as f64/ts as f64);
+                if fa.min(fs)>=step as f64/steps as f64||(a>=ta&&us>=ts){
+                    let st=|v:&[f64]|serde_json::json!({"n":v.len(),"medianMs":if v.is_empty(){0.0}else{median(v.to_vec())},"maxMs":v.iter().cloned().fold(0.0,f64::max)});
+                    figures(&n,&format!("grow {step}/{steps}"),serde_json::json!({"seconds":t0.elapsed().as_secs_f64(),"buildFill":st(&build_ms),"importFill":st(&fill_ms),"importEmpty":st(&empty_ms),"checkpointsWritten":n.stats.checkpoints_written}));
+                    build_ms.clear();fill_ms.clear();empty_ms.clear();step+=1;
+                    if a>=ta&&us>=ts{break}
+                }
+                let slots=us<ts&&(fs<=fa||a>=ta);
+                let init=if slots{sstore_fresh_loop()}else{fills+=1;fill_accts_init((fills+1)<<40)};
+                let t=Instant::now();let b=signed_on(&n.chain,&keys,n.chain.head,Body{txs:vec![deploy(&alice,nonce,FULL_GAS,1_000_000,init)],evidence:vec![]});build_ms.push(t.elapsed().as_secs_f64()*1e3);nonce+=1;
+                let t=Instant::now();n.import(b,None).unwrap();fill_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let f=fallback_on(&n.chain,&keys,n.chain.head,0);let t=Instant::now();n.import(f,None).unwrap();empty_ms.push(t.elapsed().as_secs_f64()*1e3);
+            }
+        }
+        "reopen"=>{
+            let (mut n,open_s)=open();figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n)}));
+            let fork=env_n("JM_SCALE_FORK",8);let tip=n.chain.head;let tip_work=n.chain.get(&tip).unwrap().total_work;
+            let mut p=tip;for _ in 0..fork{p=n.chain.get(&p).unwrap().header.parent_hash;}
+            let (mut side,t)=(0u32,Instant::now());let mut imp=vec![];
+            while n.chain.get(&p).unwrap().total_work<=tip_work{let b=fallback_on(&n.chain,&keys,p,0);p=b.hash();let t=Instant::now();n.import(b,None).unwrap();imp.push(t.elapsed().as_secs_f64()*1e3);side+=1;}
+            assert_eq!(n.chain.head,p,"the heavier branch is the head");std::fs::write(dir.with_extension("tip"),p).unwrap();
+            figures(&n,"after the reorg",serde_json::json!({"forkDepth":fork,"sideBlocks":side,"reorgSeconds":t.elapsed().as_secs_f64(),"importMs":imp,"head":format!("{:x?}",&p[..8])}));
+        }
+        "verify"=>{
+            let (n,open_s)=open();
+            let tip=std::fs::read(dir.with_extension("tip")).expect("the reopen phase's tip");
+            assert_eq!(&n.chain.head[..],&tip[..],"the head after reopening is the reorg's tip");
+            figures(&n,"reopened after the reorg",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n),"head":format!("{:x?}",&n.chain.head[..8])}));
+        }
+        "ckpt"=>{
+            // What a checkpoint costs at this size (the import stalls the grow phase showed at each checkpoint):
+            // the snapshot's encoding alone, then three checkpoints in a row. KEPT = 2, so each of the first two drops
+            // a checkpoint whose versions date from about a thousand blocks back and releases the nodes only they
+            // held; the third drops the one the first wrote, which holds what the node holds now.
+            let (mut n,open_s)=open();figures(&n,"opened for the checkpoint timing",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"versionsRead":read(&n)}));
+            let t=Instant::now();let (bytes,roots)=pocold::checkpoint::encode(&n.chain,&pocold::checkpoint::Binding{records:0,end:0,hash:[0u8;32]}).unwrap();
+            let encode_ms=t.elapsed().as_secs_f64()*1e3;
+            let mut calls=vec![];
+            for i in 0..3{
+                let before=n.state_store().unwrap().node_count().unwrap();let t=Instant::now();n.checkpoint_now().unwrap();let ms=t.elapsed().as_secs_f64()*1e3;
+                // D-6 (2026-10-27): the dropped checkpoint's nodes are owed; release steps work them off, as the
+                // event loop runs them between events.
+                let (s0,r0)=(n.stats.release_steps,n.stats.released_rows);n.stats.release_step_max_ms=0;let t=Instant::now();
+                // The first checkpoint's release runs as a live node runs it: release steps (JM_SCALE_STEPS_PER_IMPORT,
+                // 20) between imports of empty blocks, whose times are recorded (each import's durable commit also
+                // writes the pages the steps before it left). The others run their steps back to back.
+                let mut imports=vec![];let per=env_n("JM_SCALE_STEPS_PER_IMPORT",20);
+                while n.release_pending(){
+                    if i==0{for _ in 0..per{if n.release_pending(){n.release_step();}}
+                        let b=fallback_on(&n.chain,&keys,n.chain.head,0);let t=Instant::now();n.import(b,None).unwrap();imports.push(t.elapsed().as_secs_f64()*1e3);}
+                    else{n.release_step();}
+                }
+                let release_ms=t.elapsed().as_secs_f64()*1e3;
+                let imp=if imports.is_empty(){serde_json::json!(null)}else{let mut v=imports.clone();v.sort_by(|a,b|a.partial_cmp(b).unwrap());
+                    serde_json::json!({"n":v.len(),"medianMs":v[v.len()/2],"maxMs":v[v.len()-1],"stepsBetween":per})};
+                let after=n.state_store().unwrap().node_count().unwrap();
+                calls.push(serde_json::json!({"call":i,"ms":ms,"nodesBefore":before,"nodesAfter":after,"nodesReleased":before.saturating_sub(after),
+                    "releaseSteps":n.stats.release_steps-s0,"releaseStepMaxMs":n.stats.release_step_max_ms,"releaseMs":release_ms,"rowsReleased":n.stats.released_rows-r0,"importsDuringRelease":imp}));
+            }
+            figures(&n,"after three checkpoints",serde_json::json!({"encodeMs":encode_ms,"snapshotBytes":bytes.len(),"roots":roots.len(),"entries":n.chain.blocks.len(),"checkpointNow":calls}));
+        }
+        "load"=>{
+            // R4-4 (2026-10-28): the heaviest local loads this test can drive, at the store's size. Each step prints the
+            // figures and VmHWM; the A13 items for the terms it reaches are printed beside them.
+            let l=pocold::single_host_local();let lim=Limits{state_store:true,..Default::default()};
+            let b=pocold::resources::derive(spec().cp(),l.k_hist,l.side_max,&lim,2).unwrap();
+            println!("JM-SCALE-A13-ITEMS {}",serde_json::json!(b.items.iter().map(|(k,v)|serde_json::json!([k,v.to_string()])).collect::<Vec<_>>()));
+            let (mut n,open_s)=open();figures(&n,"opened for the load",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from}));
+            // 1. The pool at its gas bound (POOL_GAS_BLOCKS × GAS_LIMIT): full-gas creations that each write fresh
+            // slots, so the pool's layer holds the most writes that gas can make.
+            let bound=pocold::node::pool_gas_bound(n.chain.spec.cp(),&lim).unwrap();let alice_nonce=nonce_of(&n,&alice);
+            let (mut pooled,mut refused)=(0u64,vec![]);let t=Instant::now();
+            for i in 0..bound/FULL_GAS+1{match n.submit_tx(deploy(&alice,alice_nonce+i,FULL_GAS,0,sstore_fresh_loop()),false){Ok(_)=>pooled+=1,Err(e)=>refused.push(e)}}
+            n.pool_settle();
+            figures(&n,"pool at its gas bound",serde_json::json!({"poolGasBound":bound,"pooled":pooled,"refused":refused,"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries(),"poolWritten":n.pool_written(),"seconds":t.elapsed().as_secs_f64()}));
+            // 2. A block at full gas of fresh slots from another sender: the pool is revalidated on the new head.
+            let bob=devnet::account_key("bob");let bob_nonce=nonce_of(&n,&bob);
+            let blk=signed_on(&n.chain,&keys,n.chain.head,Body{txs:vec![deploy(&bob,bob_nonce,FULL_GAS,0,sstore_fresh_loop())],evidence:vec![]});
+            let t=Instant::now();n.import(blk,None).unwrap();let imp=t.elapsed().as_secs_f64()*1e3;let t=Instant::now();n.pool_settle();
+            figures(&n,"a full-write block, pool revalidated",serde_json::json!({"importMs":imp,"revalidateMs":t.elapsed().as_secs_f64()*1e3,"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries()}));
+            // 3. A deep reorg: from JM_SCALE_LOAD_FORK (24, inside K_hist) blocks below the head, a branch of full-gas fresh-slot blocks
+            // from bob (between fallback blocks) until it has more work. The node rebuilds the branch's states and abandons the old window.
+            let fork=env_n("JM_SCALE_LOAD_FORK",24);let tip=n.chain.head;let tip_work=n.chain.get(&tip).unwrap().total_work;
+            let mut p=tip;for _ in 0..fork{p=n.chain.get(&p).unwrap().header.parent_hash;}
+            let mut nonce=nonce_at(&n,&bob,&p);let (mut side,mut imps)=(0u32,vec![]);let t=Instant::now();
+            // As in the grow phase, signed blocks and fallback blocks alternate.
+            let signed_parent=|n:&Node,p:&[u8;32]|n.chain.get(p).unwrap().signed;
+            // The builders read the parent's state: a pruned one (below the R21 cut) is rebuilt first, as the node's
+            // import does on NeedsRebuild (a pruned entry's own state is the shared empty one).
+            while n.chain.get(&p).unwrap().total_work<=tip_work{
+                n.ensure_state(&p).unwrap();
+                let blk=if signed_parent(&n,&p){fallback_on(&n.chain,&keys,p,0)}else{
+                    let b=signed_on(&n.chain,&keys,p,Body{txs:vec![deploy(&bob,nonce,FULL_GAS,0,sstore_fresh_loop())],evidence:vec![]});nonce+=1;b};p=blk.hash();
+                let ti=Instant::now();n.import(blk,None).unwrap();imps.push(ti.elapsed().as_secs_f64()*1e3);side+=1;}
+            assert_eq!(n.chain.head,p,"the heavier branch is the head");n.pool_settle();
+            imps.sort_by(|a,b|a.partial_cmp(b).unwrap());
+            figures(&n,"after a deep reorg of full-write blocks",serde_json::json!({"forkDepth":fork,"sideBlocks":side,"reorgSeconds":t.elapsed().as_secs_f64(),
+                "importMedianMs":imps[imps.len()/2],"importMaxMs":imps[imps.len()-1],"poolLive":n.pool_live(),"poolLayerEntries":n.pool_layer_entries()}));
+        }
+        p=>panic!("JM_SCALE_PHASE {p}"),
+    }
+}
+fn nonce_of(n:&Node,k:&Key)->u64{nonce_at(n,k,&n.chain.head)}
+fn nonce_at(n:&Node,k:&Key,at:&[u8;32])->u64{
+    n.chain.view_of(at).expect("a retained state").v().account(&k.address()).map(|x|x.info.nonce).unwrap_or(0)}
+
+// ============================ R4-4: the journal and the stores up to H_END (2026-10-28) ============================
+/// The journal, history.redb and state.redb of a store-mode node of `scale_cfg()` (the network's state caps and its
+/// H_END of 129,600) imported up to H_END, measured, then the open of that directory. Phases (JM_HEND_PHASE) on one
+/// directory (JM_HEND_DIR):
+/// - "grow" (the directory must not exist): signed empty blocks from genesis to H_END (or JM_HEND_TOP). At
+///   JM_HEND_STEPS (20) points it prints JM-HEND: the height, the journal's bytes and records, history.redb's and
+///   state.redb's file sizes, RSS and VmHWM, and the segment's import times. Every empty block's journal record is the
+///   same size up to its shares, so the bytes per record are printed too.
+/// - "reopen": opens the directory in a fresh process (from its newest checkpoint), and prints the open's time and
+///   `OpenTiming`, VmHWM after the open, and RSS after the open with the node alive (after malloc_trim): the open's
+///   transient is VmHWM minus that RSS (condition `open-replay-transient`).
+/// Empty blocks are the cheapest records there are; a block's body adds its bytes (at most BODY_MAX each, and a
+/// branch's transactions at most TXBYTES_CAP in all). A measurement on this host, not a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_journal_to_hend(){
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let dir=PathBuf::from(std::env::var("JM_HEND_DIR").expect("JM_HEND_DIR"));
+    let phase=std::env::var("JM_HEND_PHASE").unwrap_or_else(|_|"grow".into());
+    let c=scale_cfg();let d=devnet::build(&c).unwrap();
+    let spec=||Spec::new(d.admit(&pocold::single_host_local()).unwrap_or_else(|e|panic!("{e}")).0);
+    let keys:HashMap<Address,Key>=d.miners.iter().map(|m|(m.id,Key::from_secret(&m.key.secret()).unwrap())).collect();
+    // JM_HEND_LOG=1: the node's log on stderr (a refused checkpoint says why).
+    let open=||{let t=Instant::now();let n=Node::open(Config{dir:dir.clone(),name:"hend".into(),miner:None,listen:None,peers:vec![],rpc:None,stop_at:None,log:std::env::var("JM_HEND_LOG").is_ok(),
+        limits:Limits{state_store:true,..Default::default()}},spec()).unwrap();(n,t.elapsed().as_secs_f64())};
+    let size=|f:&str|std::fs::metadata(dir.join(f)).map(|m|m.len()).unwrap_or(0);
+    let h_end=spec().cp().H_END;let top=env_n("JM_HEND_TOP",h_end).min(h_end);
+    let figures=|n:&Node,what:&str,extra:serde_json::Value|{
+        println!("JM-HEND {}",serde_json::json!({"phase":what,"height":n.chain.head().height,"hEnd":h_end,"records":n.journal_records(),"journalBytes":size("blocks.journal"),
+            "bytesPerRecord":size("blocks.journal") as f64/n.journal_records().max(1) as f64,"historyBytes":size("history.redb"),"stateFileBytes":size("state.redb"),
+            "rssBytes":rss_bytes(),"vmHwmBytes":vmhwm_bytes(),"blocksKnown":n.chain.blocks.len(),"extra":extra}));
+    };
+    match phase.as_str(){
+        // "continue": a store a grow left (stopped, or killed) is opened and grown on to the top.
+        "grow"|"continue"=>{
+            if phase=="grow"{assert!(!dir.exists(),"JM_HEND_DIR must not exist for the grow phase");}else{assert!(dir.exists(),"JM_HEND_DIR must exist to continue");}
+            let steps=env_n("JM_HEND_STEPS",20);let (mut n,secs)=open();
+            figures(&n,if phase=="grow"{"grow start"}else{"continue: opened"},serde_json::json!({"openSeconds":secs,"resumedFrom":n.stats.resumed_from,"openTiming":n.stats.open}));
+            let mut next=1u64;while next*top/steps<=n.chain.head().height&&next<steps{next+=1;}
+            let (mut build_ms,mut import_ms)=(vec![],vec![]);let t0=Instant::now();
+            while n.chain.head().height<top{
+                let t=Instant::now();let b=signed_on(&n.chain,&keys,n.chain.head,Body::default());build_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let t=Instant::now();n.import(b,None).unwrap();import_ms.push(t.elapsed().as_secs_f64()*1e3);
+                let h=n.chain.head().height;
+                if h>=next*top/steps||h==top{
+                    let st=|v:&[f64]|serde_json::json!({"n":v.len(),"medianMs":if v.is_empty(){0.0}else{median(v.to_vec())},"maxMs":v.iter().cloned().fold(0.0,f64::max)});
+                    figures(&n,&format!("grow {next}/{steps}"),serde_json::json!({"seconds":t0.elapsed().as_secs_f64(),"build":st(&build_ms),"import":st(&import_ms),"checkpointsWritten":n.stats.checkpoints_written}));
+                    build_ms.clear();import_ms.clear();next+=1;
+                }
+                // The event loop's background steps between events (D-6 release, D-7 pool).
+                while n.release_pending(){n.release_step();}
+            }
+            assert_eq!(n.chain.head().height,top);
+        }
+        "reopen"=>{
+            let base=rss_bytes();let (n,open_s)=open();let hwm=vmhwm_bytes();trim_heap();
+            figures(&n,"reopened",serde_json::json!({"openSeconds":open_s,"resumedFrom":n.stats.resumed_from,"openTiming":serde_json::to_value(&n.stats.open).unwrap(),
+                "rssBeforeOpen":base,"vmHwmAfterOpen":hwm,"rssAfterOpenTrimmed":rss_bytes(),"transientBytes":hwm-rss_bytes()}));
+        }
+        p=>panic!("JM_HEND_PHASE {p}"),
+    }
+}
+
+// ============================ R4-6: a randomized MODEXP search beside the grid (2026-10-28) ============================
+/// The shape sweep (`jm_modexp_sweep`) is a grid, not a proof of the slowest MODEXP input. This draws JM_RND_N (3,000)
+/// inputs from a seeded generator (JM_RND_SEED, printed, so a run is reproduced from its seed): modulus lengths
+/// log-uniform over 1..1,024 bytes, with random structure (odd, even with a random count of trailing zero bits,
+/// a power of two, all ones, a short top word), base lengths below, at and above the modulus's, and exponents of
+/// 1..96 bytes with random leading zero bytes (which change the adjusted exponent length, so the gas). Each input's
+/// result and gas are checked equal to revm's; its time per call is measured; and the JM_RND_BLOCKS (4) slowest
+/// per unit of block gas are built as full-gas blocks and validated (median of 3), as the sweep does. A search,
+/// not a bound. Release only.
+#[test]
+#[ignore="measurement: run in release with --ignored --nocapture"]
+fn jm_modexp_random(){
+    use revm::precompile as pc;
+    const LOOP_GAS:u64=131;
+    let env_n=|k:&str,d:u64|std::env::var(k).ok().and_then(|s|s.parse().ok()).unwrap_or(d);
+    let (seed,n_samples,blocks_n)=(env_n("JM_RND_SEED",0x5eed_2026_1028),env_n("JM_RND_N",3000),env_n("JM_RND_BLOCKS",4) as usize);
+    let mut s=seed|1;let mut next=||{s^=s<<13;s^=s>>7;s^=s<<17;s};
+    let time=|f:&dyn Fn()|{f();let t=Instant::now();let mut calls=0u64;while t.elapsed().as_secs_f64()<0.02||calls<3{f();calls+=1;}t.elapsed().as_secs_f64()*1e9/calls as f64};
+    println!("JM-MODEXP-RANDOM-SEED {seed:#x} samples {n_samples}");
+    let mut rows:Vec<(f64,serde_json::Value,Vec<u8>,usize)>=vec![];let mut skipped=0u64;
+    for i in 0..n_samples{
+        let m=((2f64.powf((next()%10_000) as f64/10_000.0*10.0)) as usize).clamp(1,1024);
+        let b=match next()%4{0=>0,1=>(m/2).max(1),2=>m,_=>m+(next()%64) as usize};
+        let e=1+(next()%96) as usize;let lead=if next()%3==0{(next()%e as u64) as usize}else{0};
+        let mut md:Vec<u8>=(0..m).map(|_|next() as u8).collect();let mk=next()%6;
+        match mk{0=>{md[m-1]|=1}1=>{let t=1+(next()%(8*m as u64).max(2)) as usize;let t=t.min(8*m-1);for k in 0..t{md[m-1-k/8]&=!(1<<(k%8));}md[m-1-t/8]|=1<<(t%8);}
+            2=>{md=vec![0;m];md[0]=1<<(next()%8);}3=>{md=vec![0xff;m];}4=>{md[0]=0;if m>1{md[1]|=1}}_=>{}}
+        let base:Vec<u8>=(0..b).map(|_|next() as u8).collect();let mut ex:Vec<u8>=(0..e).map(|_|next() as u8).collect();for x in ex.iter_mut().take(lead){*x=0;}
+        let mut input=vec![];for l in [b,e,m]{let mut w=[0u8;32];w[24..].copy_from_slice(&(l as u64).to_be_bytes());input.extend(w);}
+        input.extend(&base);input.extend(&ex);input.extend(&md);
+        let inp=revm::primitives::Bytes::from(input.clone());
+        let ours=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);let theirs=pc::modexp::berlin_run(&inp,u64::MAX);
+        assert_eq!(format!("{ours:?}"),format!("{theirs:?}"),"sample {i} (seed {seed:#x}): pocol's MODEXP equals revm's");
+        let avail=FULL_GAS-53_000-16*(input.len() as u64+30);
+        let Ok(gas)=theirs.as_ref().map(|o|o.gas_used) else{skipped+=1;continue};if gas+LOOP_GAS>avail||input.len()>u16::MAX as usize{skipped+=1;continue}
+        let t=time(&||{let _=pocol_lp4_execution::modexp::berlin_run(&inp,u64::MAX);});
+        let per_gas=t/(gas+LOOP_GAS) as f64;let calls=(avail/(gas+LOOP_GAS)) as f64;
+        rows.push((per_gas,serde_json::json!({"sample":i,"baseBytes":b,"expBytes":e,"expLeadingZeroBytes":lead,"modBytes":m,"modKind":mk,"gasPerCall":gas,"nsPerCall":t,
+            "nsPerBlockGas":per_gas,"projectedBlockMs":calls*t/1e6}),input,m));
+    }
+    rows.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap());
+    println!("JM-MODEXP-RANDOM-SUMMARY {}",serde_json::json!({"seed":format!("{seed:#x}"),"drawn":n_samples,"measured":rows.len(),"skippedOverBlockGasOrError":skipped,
+        "maxNsPerBlockGas":rows.first().map(|r|r.0),"medianNsPerBlockGas":rows.get(rows.len()/2).map(|r|r.0)}));
+    for (_,v,_,_) in rows.iter().take(10){println!("JM-MODEXP-RANDOM-TOP {v}");}
+    let mut n=net();let g=n.chain.head;let alice=devnet::account_key("alice");let p0=fallback(&n,g,0);import(&mut n,&p0);
+    for (_,v,input,m) in rows.iter().take(blocks_n){
+        let init=precompile_loop(5,input,input.len() as u16,(*m) as u16);
+        let b=signed(&n,p0.hash(),Body{txs:vec![deploy(&alice,0,FULL_GAS,0,init)],evidence:vec![]});
+        let (min,med,gas)=validate_ms(&n.chain,&b,3);
+        println!("JM-MODEXP-RANDOM-BLOCK {}",serde_json::json!({"sample":v["sample"],"gasUsed":gas,"validateMsMin":min,"validateMsMedian":med,"projectedBlockMs":v["projectedBlockMs"],"nsPerGas":med*1e6/gas.max(1) as f64}));
     }
 }

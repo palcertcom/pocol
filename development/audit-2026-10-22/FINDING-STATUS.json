@@ -1,14 +1,14 @@
 {
  "auditedSnapshot": "090eae4",
  "repairBranch": "claude/audit-repair-a01-a14",
- "pr": "https://github.com/raedrasheed/Proof-of-Collaboration/pull/27",
+ "pr": "https://github.com/raedrasheed/Proof-of-Collaboration/pull/27 (unreachable from this session's GitHub account since 2026-10-25); working repository since 2026-10-27: palcertcom/pocol, where #1 mirrored PR #27 and was merged at the owner's direction as 13f1eac (not acceptance), and https://github.com/palcertcom/pocol/pull/2 (draft) carries the follow-up into claude/affectionate-pascal-rjhh2k",
  "commits": {
   "prHead": "latest commit on claude/audit-repair-a01-a14",
-  "lastImplementation": "24cc167 (R14/R19 for a store-mode boot: the calibration blocks also timed through a scratch state store on the node's disk). Before it: 90c4185 (relay test, kills R5), 78fe971 (PR #27 resume point, documents only). Local commits after 733a52d are not pushed: GitHub refused this session's credentials from 2026-10-25 15:46 UTC (pr27/RESUME.md). Before them: 8584283 (D-7 re-insertion: a transaction returned from an abandoned block is offered to the peers; local relay policy). After it, tests only: d939d1a and 0833b6c (e2e_browser: a navigation race and a receipt read once across a short fork). Before it: ee14458 (D-7 at 4·GAS_LIMIT; A13 pool, overlay and code terms after the revm code-loading audit; --state-store). After it, tests only: 9bd9bc0 (jm_r14_import_by_mode), 919a50c (e2e_integrated settles pools before v3). Before it: fc24969 (C-1 E5 part 3). Before it: 53a80e9 (E4.4 Windows test fix), 5722c23 and 90ba824 (E5 parts 2 and 1), 3c0fe15 (E4.4 follow-up), 314de11 (E4.5), 45d540f (E4.4 Windows test fix), 1a5b792 (E4.4, D-6), b91c490, 8f4b473, 6c6e192, f8a58bb, 7606a31 (E4.1-E4.3), 4ad4e83 (E3), 1774b90 (E2), 28594cc (E1), ddb0de2 (S4), 4b49d03 and bef6c4f (S3a), b517b0f (S1), d1604d0 (D-7), d567ce1 (S2); earlier: the decision-package commit after af2f3a8, af2f3a8, 6e99b19, 2ce03c1, 49b2bc2, 462fffc; .github/ is unchanged since a03e089",
-  "integrationTested": "24cc167 (evidence/d7-bound/accept-24cc167/ and r14-store-boot/): lp4 196/0 and pocold 233/0 with 23 ignored on its prototypes tree; e2e in both modes: devnet 44/44, site 21/21, browser 80/80, integrated 20/20 two runs of two per mode. Before: 8584283 (evidence/d7-bound/accept-8584283/): pocold 231/0 with 22 ignored; e2e in both modes: devnet 43/43, site 21/21, integrated 20/20 in three runs of three per mode (in each, node c offered its 7 returned transactions after the heal); browser: store 80/80, whole-state FAIL 1 of 49 (a navigation race in the test, fixed in d939d1a); browser on d939d1a: whole-state 3 of 3, store 1 of 3 (BR14 read a receipt once across a short fork; fixed in 0833b6c); browser on 0833b6c: PASS 80/80 in three runs of three per mode. Not rerun on 8584283 (unchanged by it): lp4, lp1-node, the crash/kill/damage steps, the spec-depth and deep-reorg tests, the A13 models, RSS, R14 and churn (their last runs are on 9bd9bc0). The 919a50c integrated reruns (evidence/d7-bound/integrated-919a50c/): 2 of 4 FAIL, the node defect fixed in 8584283. Before: 9bd9bc0 (evidence/d7-bound/accept-9bd9bc0/): lp4 193/0; pocold 229/0 with 22 ignored; crash steps, kills and damage, the store-mode spec-depth test, the deep-reorg tests; e2e in whole-state mode: devnet 43/43, site 21/21, browser 80/80, integrated FAIL 1 of 11 (a race in the test after the heal; fixed in 919a50c, whose reruns then exposed the defect fixed in 8584283); e2e in store mode (--state-store): devnet 43/43, site 21/21, browser 80/80, integrated 19/19; extension 234/234; lp1-node 137 passed and the 11 Windows-only store_journal tests UnsupportedPlatform on Linux. Before: fc24969 (evidence/c1-e4/accept/): lp4 193/0; pocold 221/0 with 20 ignored (each listed with where it ran); crash steps, kills and damage, the store-mode spec-depth test; e2e_devnet 42/42; e2e_site 20/20; extension 234/234; lp1-node 137 passed and the 11 Windows-only store_journal tests UnsupportedPlatform on Linux. Earlier: 3c3792e for the full LP10 integration before round 3",
-  "witnessTested": "24cc167 (evidence/d7-bound/witnesses-24cc167.log, rust and live parts): A01, A02, A03, A04, A05, A10, A11 NOT_REPRODUCED with controls OK; the extension witnesses last ran on 8584283 (extension unchanged). Before: 8584283 (evidence/d7-bound/witnesses-8584283.log and witnesses-8584283-rerun.log; the first run lost A02, A05 and A10 to a full disk, rerun after space was freed): every witness NOT_REPRODUCED with its positive control OK (A01-A14; whole-state mode). Before: 9bd9bc0 (evidence/d7-bound/witnesses-9bd9bc0.log): every witness NOT_REPRODUCED with its positive control OK (A01-A14; whole-state mode). Before: 3c3792e",
-  "chromeTested": "24cc167: e2e_browser 80/80 and e2e_integrated 20/20 (two runs) in both modes. Before: 0833b6c: PASS 80/80 in three runs of three per mode; 8584283: e2e_integrated 20/20 in three runs of three per mode, e2e_browser store 80/80 (whole-state: see integrationTested). Before: 9bd9bc0: real-Chromium e2e_browser 80/80 in both modes; e2e_integrated 19/19 in store mode (whole-state: see integrationTested). Before: fc24969: real-Chromium e2e_browser 79/79 and LP10 e2e_integrated 18/18 (evidence/c1-e4/accept/). Before: 3c3792e",
-  "windowsTested": "not run on 78fe971, 90c4185 or 24cc167: they are not pushed (GitHub credentials refused in this session). Before: 8584283 (Windows CI run 66, PASS on every check, the two relay tests included); 919a50c (run 65, PASS). Before: 9bd9bc0 (Windows CI run 64, PASS on every check). Before: fc24969 (Windows CI run 61, PASS on every check: lp1 12 + 150, lp4 193, pocold 221, extension 234; evidence/c1-e4/windows-runs.md). Runs 59 (cc929a7) and 60 (45d540f) failed in one E4.4 test's harness, fixed in 45d540f and 53a80e9. A Windows pass is not acceptance"
+  "lastImplementation": "Node code after ad301e7: Node::open sets aside a store found damaged before genesis is pinned (the release at open, 93a40d0, could mark it damaged and open then panicked; Windows run 40589342452). Node code after dd85cc0: the D-6 review fixes (state_store: Fault::Storage against Fault::Broken, deleted nodes uncached inline, the flag after commit, FORMAT 3, stored_bytes with the release rows; node: pool slices and release steps alternate, open does not mark the store damaged on a storage error). Node code after b6d57e8: 93a40d0 (D-6 deferred checkpoint release: a dropped checkpoint's nodes owed in a release table, worked off by release_step between events and by release_all at open; A13 file term with the owed set and its rows) and 22a82c2 (release steps fsynced; jm_store_scale times imports during a release). After them tests, a comment and evidence only: e4_checkpoint_release_runs_at_open_and_between_events and RELEASE_SLICE's measured figures, with this evidence. Node code after b8fb7ab: 5abbaf3 (review fixes 1 and 4: checkpoint restore builds the boxed entry map as it restores; stored_versions and held_versions_bytes read one inventory, held_runs) and b6d57e8 (D-6 open: a stored version whose parent's version was read is read through NodeTrie::diff and its summary moved, every node still read and checked; the open from a checkpoint at the network's state caps 801 -> 262 s). After them tests and evidence only: e6d07b2 (the D-7 run test measures the hold, not QUEUE_WAIT admission), bc38d41 (jm_store_scale ckpt phase), fbe6062 (evidence). Node code before them: b8fb7ab (MODEXP trivial powers on wide even moduli to revm, independent review finding 1); tests only between b8fb7ab and 5abbaf3: 3705559 (the pacer test seen from the client; e2e_integrated's partition nodes stopped). Node code after 2839f2a: b46658a (lp4 modexp.rs, the MODEXP precompile at address 5 with an exact one-word fast path; results, gas and errors are revm 19.7's) and 0c2ad75 (its wide even-modulus path: q·2^t with t > 64, Newton inverse, CRT; jm_modexp_sweep). After them tests, documents and evidence only: b66ba65 (modexp tests), d30dc71 (jm_store_scale), d45dfe2 (wrapper_overhead_interleaved, §3b-2, decision rows 1-2). Tests only between 2839f2a and b46658a: 8d80354 (a13_row_is_what_state_redb_keeps_per_node), 69d5794 (a_blocks_addition_is_at_most_a_whole_version, the P6 premise), 073923f (e2e_integrated: the reorg-recovery views count only while the canonical version holds), 92f6a80 and 2c40a9f (e2e_integrated: the majority branch must be heavier by total work before the heal; 2c40a9f renames the helper that shadowed the run directory), 6a1e480 (send_pacer_closes_a_slow_reader_after_grace: bounds on the send time, after the Windows run on 182d73a). 2839f2a on claude/memory-r14-followup (palcertcom/pocol#2): store-mode import no longer re-executes the head (restore_canonical's S3a condition is whole-state mode's). Before it: 892dca6 (the four A13 reductions: the pool layer without code copies, state.redb counting shared nodes once and by kind, the batch by node kind, the chain's entries boxed). Both on top of the merged 13f1eac. Before that merge: 24cc167 (R14/R19 for a store-mode boot: the calibration blocks also timed through a scratch state store on the node's disk). Before it: 90c4185 (relay test, kills R5), 78fe971 (PR #27 resume point, documents only). Local commits after 733a52d are not pushed: GitHub refused this session's credentials from 2026-10-25 15:46 UTC (pr27/RESUME.md). Before them: 8584283 (D-7 re-insertion: a transaction returned from an abandoned block is offered to the peers; local relay policy). After it, tests only: d939d1a and 0833b6c (e2e_browser: a navigation race and a receipt read once across a short fork). Before it: ee14458 (D-7 at 4·GAS_LIMIT; A13 pool, overlay and code terms after the revm code-loading audit; --state-store). After it, tests only: 9bd9bc0 (jm_r14_import_by_mode), 919a50c (e2e_integrated settles pools before v3). Before it: fc24969 (C-1 E5 part 3). Before it: 53a80e9 (E4.4 Windows test fix), 5722c23 and 90ba824 (E5 parts 2 and 1), 3c0fe15 (E4.4 follow-up), 314de11 (E4.5), 45d540f (E4.4 Windows test fix), 1a5b792 (E4.4, D-6), b91c490, 8f4b473, 6c6e192, f8a58bb, 7606a31 (E4.1-E4.3), 4ad4e83 (E3), 1774b90 (E2), 28594cc (E1), ddb0de2 (S4), 4b49d03 and bef6c4f (S3a), b517b0f (S1), d1604d0 (D-7), d567ce1 (S2); earlier: the decision-package commit after af2f3a8, af2f3a8, 6e99b19, 2ce03c1, 49b2bc2, 462fffc; .github/ is unchanged since a03e089",
+  "integrationTested": "a01148e (node code as e453851; the heal check of e2e_integrated fixed, test only): Linux release suites lp4 211/0, pocold 246/0 (evidence/memory-r14/release-a01148e.log); e2e_integrated 20/20 in 5 of 5 runs, three whole-state and two store (evidence/memory-r14/integrated-rerun/; c reorganized in all five). Before: e453851 (evidence/memory-r14/accept-e453851/, witnesses-e453851.log; every node change of the deferred release and its fixes): devnet 44/44, site 21/21, browser 80/80 in both modes; integrated 20/20 twice in store mode, and in whole-state mode 20/20 once and one FAIL at the heal, where c was not the side that reorganized (a and b adopted c's heavier branch; fork choice by total work as specified; the test assumed c; fixed in the test only, reruns in evidence/memory-r14/integrated-rerun/); boot timing 8-19 ms in memory, 12-37 ms through the store; witnesses 17 NOT_REPRODUCED, every control OK. Before: ad301e7 (accept-ad301e7/): every step PASS except e2e_browser in whole-state mode (BR18, a Playwright click timed out at 44 of 45 checks while the host was loaded; it passed 80/80 on e453851), witnesses 17 NOT_REPRODUCED. Before: fbe6062 (evidence/memory-r14/accept-fbe6062/, witnesses-fbe6062.log; node code as b6d57e8): e2e in both modes: devnet 44/44, site 21/21, browser 80/80, integrated 20/20 in two runs each; boot timing 8-20 ms in memory, 11-23 ms through the store; witnesses A01, A02 (R9, R13, SYS_SLOT_MAX), A03, A04, A05, A06 (3), A07, A08, A09, A10, A11, A12, A14: 17 NOT_REPRODUCED with every control OK; release suites on its tree lp4 211/0, pocold 239/0 (release-b6d57e8.log). Before: d45dfe2 (evidence/memory-r14/accept-d45dfe2/, witnesses-d45dfe2.log; node code as 0c2ad75): the same steps, all PASS, 17 witnesses NOT_REPRODUCED. Before: 8d80354 (evidence/memory-r14/accept-8d80354/, witnesses-8d80354.log; node code as 2839f2a): e2e in both modes: devnet 44/44, site 21/21, browser 80/80; integrated: store 20/20 in two runs, whole-state run 1 FAIL 1 of 20 (a race in the test's reorg-recovery check, evidence/memory-r14/integrated-race/, fixed in 073923f) and run 2 20/20; reruns of the fixed test on 073923f: 5 of 6, one store run timed out because the test took the taller branch for the heavier (D133 compares total work; fixed in 92f6a80, whose helper shadowed the run directory, renamed in 2c40a9f); on 2c40a9f six of six 20/20, three per mode (evidence/memory-r14/accept-int-2c40a9f/); boot timing 8-18 ms in memory, 11-24 ms through the store; witnesses A01, A02 (R9, R13, SYS_SLOT_MAX), A03, A04, A05, A10, A11 NOT_REPRODUCED with controls OK. Mutation controls on 2839f2a's tree: 25 mutants, 24 killed, P6 equivalent (proof in evidence/memory-r14/README.md). 2839f2a (evidence/memory-r14/): lp4 200/0 (on 892dca6's tree), pocold 236/0 with 24 ignored; the A13 models 5/5; jm_r14_workload_gap with POCOL_ROOT_CHECK=0 before and after the fix. The R14/R19 gap (MODEXP with an even modulus, 1.2-1.6 s against t_exec = 1 s) stays open: the boot calibration's pass does not close it. Before: 24cc167 (evidence/d7-bound/accept-24cc167/ and r14-store-boot/): lp4 196/0 and pocold 233/0 with 23 ignored on its prototypes tree; e2e in both modes: devnet 44/44, site 21/21, browser 80/80, integrated 20/20 two runs of two per mode. Before: 8584283 (evidence/d7-bound/accept-8584283/): pocold 231/0 with 22 ignored; e2e in both modes: devnet 43/43, site 21/21, integrated 20/20 in three runs of three per mode (in each, node c offered its 7 returned transactions after the heal); browser: store 80/80, whole-state FAIL 1 of 49 (a navigation race in the test, fixed in d939d1a); browser on d939d1a: whole-state 3 of 3, store 1 of 3 (BR14 read a receipt once across a short fork; fixed in 0833b6c); browser on 0833b6c: PASS 80/80 in three runs of three per mode. Not rerun on 8584283 (unchanged by it): lp4, lp1-node, the crash/kill/damage steps, the spec-depth and deep-reorg tests, the A13 models, RSS, R14 and churn (their last runs are on 9bd9bc0). The 919a50c integrated reruns (evidence/d7-bound/integrated-919a50c/): 2 of 4 FAIL, the node defect fixed in 8584283. Before: 9bd9bc0 (evidence/d7-bound/accept-9bd9bc0/): lp4 193/0; pocold 229/0 with 22 ignored; crash steps, kills and damage, the store-mode spec-depth test, the deep-reorg tests; e2e in whole-state mode: devnet 43/43, site 21/21, browser 80/80, integrated FAIL 1 of 11 (a race in the test after the heal; fixed in 919a50c, whose reruns then exposed the defect fixed in 8584283); e2e in store mode (--state-store): devnet 43/43, site 21/21, browser 80/80, integrated 19/19; extension 234/234; lp1-node 137 passed and the 11 Windows-only store_journal tests UnsupportedPlatform on Linux. Before: fc24969 (evidence/c1-e4/accept/): lp4 193/0; pocold 221/0 with 20 ignored (each listed with where it ran); crash steps, kills and damage, the store-mode spec-depth test; e2e_devnet 42/42; e2e_site 20/20; extension 234/234; lp1-node 137 passed and the 11 Windows-only store_journal tests UnsupportedPlatform on Linux. Earlier: 3c3792e for the full LP10 integration before round 3",
+  "witnessTested": "e453851 (evidence/memory-r14/witnesses-e453851.log): the Rust, live and extension parts, 17 NOT_REPRODUCED, every control OK; also ad301e7 (witnesses-ad301e7.log), the same. Before: fbe6062 (evidence/memory-r14/witnesses-fbe6062.log; node code as b6d57e8): the Rust, live and extension parts, 17 NOT_REPRODUCED, every control OK. Before: d45dfe2 (witnesses-d45dfe2.log): the same, 17 NOT_REPRODUCED. Before: 24cc167 (evidence/d7-bound/witnesses-24cc167.log, rust and live parts): A01, A02, A03, A04, A05, A10, A11 NOT_REPRODUCED with controls OK; the extension witnesses last ran on 8584283 (extension unchanged). Before: 8584283 (evidence/d7-bound/witnesses-8584283.log and witnesses-8584283-rerun.log; the first run lost A02, A05 and A10 to a full disk, rerun after space was freed): every witness NOT_REPRODUCED with its positive control OK (A01-A14; whole-state mode). Before: 9bd9bc0 (evidence/d7-bound/witnesses-9bd9bc0.log): every witness NOT_REPRODUCED with its positive control OK (A01-A14; whole-state mode). Before: 3c3792e",
+  "chromeTested": "e453851: e2e_browser 80/80 in both modes; e2e_integrated 20/20 twice in store mode and once in whole-state mode, one whole-state FAIL at the heal (the test's assumption, fixed in the test; evidence/memory-r14/accept-e453851/README.md). ad301e7: e2e_browser whole-state 44 of 45 then a click timeout (BR18), store 80/80. Before: fbe6062: e2e_browser 80/80 and e2e_integrated 20/20 (two runs) in both modes (evidence/memory-r14/accept-fbe6062/). Before: d45dfe2, the same. Before: 24cc167: e2e_browser 80/80 and e2e_integrated 20/20 (two runs) in both modes. Before: 0833b6c: PASS 80/80 in three runs of three per mode; 8584283: e2e_integrated 20/20 in three runs of three per mode, e2e_browser store 80/80 (whole-state: see integrationTested). Before: 9bd9bc0: real-Chromium e2e_browser 80/80 in both modes; e2e_integrated 19/19 in store mode (whole-state: see integrationTested). Before: fc24969: real-Chromium e2e_browser 79/79 and LP10 e2e_integrated 18/18 (evidence/c1-e4/accept/). Before: 3c3792e",
+  "windowsTested": "e453851 (every node change of the deferred release and its fixes; run 40600109673, PASS on every check: lp1 12 + 150, lp4 211, pocold 245, extension 234; evidence/windows-e453851/). Also ad301e7 (run 40595988585) and dd85cc0 (run 40592643692), PASS. 93a40d0 (run 40585164582) PASS. 22a82c2: run 40589342452 FAILED one test, a defect of 93a40d0 in open on a store damaged at open, fixed after ad301e7 (evidence/windows-22a82c2/RUN.md). Before: 206eaa4 (evidence only, node code as b6d57e8; Windows CI run 40583789163, PASS on every check: lp1 12 + 150, lp4 211, pocold 239, extension 234; evidence/windows-206eaa4/); also 71eb650 and fbe6062, the same. Before: bc38d41 (node code as b6d57e8; run 40572992585, PASS on every check; evidence/windows-bc38d41/). Before, on palcertcom/pocol#2: b8fb7ab, d45dfe2, b66ba65, 563a0c3, 7624419, 2c40a9f, 69d5794, 2839f2a, f65b44a (each PASS; one FAIL on 182d73a, the pacer test, fixed in 6a1e480). Earlier: not run on 78fe971, 90c4185 or 24cc167: they are not pushed (GitHub credentials refused in this session). Before: 8584283 (Windows CI run 66, PASS on every check, the two relay tests included); 919a50c (run 65, PASS). Before: 9bd9bc0 (Windows CI run 64, PASS on every check). Before: fc24969 (Windows CI run 61, PASS on every check: lp1 12 + 150, lp4 193, pocold 221, extension 234; evidence/c1-e4/windows-runs.md). Runs 59 (cc929a7) and 60 (45d540f) failed in one E4.4 test's harness, fixed in 45d540f and 53a80e9. A Windows pass is not acceptance"
  },
  "axes": {
   "implemented": "YES | PARTIAL",
@@ -210,6 +210,136 @@
     "run": 66,
     "commit": "8584283",
     "result": "PASS on every check (the re-insertion relay and its two tests)"
+   },
+   {
+    "run": "palcertcom/pocol 40499609598",
+    "commit": "2fb3961",
+    "result": "PASS on every step (lp1 store journal 12/0, lp1-node 150/0, lp4 196/0, pocold 233/0, extension 234/0); evidence/windows-2fb3961/"
+   },
+   {
+    "run": "palcertcom/pocol 40507248611",
+    "commit": "f65b44a",
+    "result": "PASS on every step (lp4 200/0, pocold 235/0; node code as 892dca6); evidence/windows-f65b44a/"
+   },
+   {
+    "run": "palcertcom/pocol 40510911424",
+    "commit": "2839f2a",
+    "result": "PASS on every step (lp4 200/0, pocold 236/0); evidence/windows-2839f2a/"
+   },
+   {
+    "run": "palcertcom/pocol 40512470697",
+    "commit": "c0a0e66",
+    "result": "PASS (evidence only; node code as 2839f2a)"
+   },
+   {
+    "run": "palcertcom/pocol 40516277272, 40516762578",
+    "commit": "8d80354, 799e809",
+    "result": "cancelled: replaced by a newer push (the workflow keeps one pending run per PR)"
+   },
+   {
+    "run": "palcertcom/pocol 40518244446",
+    "commit": "69d5794",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0, both new tests included; node code as 2839f2a); evidence/windows-69d5794/"
+   },
+   {
+    "run": "palcertcom/pocol 40522024488",
+    "commit": "182d73a",
+    "result": "FAIL, 1 test: send_pacer_closes_a_slow_reader_after_grace (no close within the test's 5 s wait, counted from the request and so including the batch's execution); test-only fix: wait to 20 s, bounds on the send time from s_v = max(GRACE, A/R), PACER line on stdout; evidence/windows-182d73a/"
+   },
+   {
+    "run": "palcertcom/pocol 40525606586",
+    "commit": "2c40a9f",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0; the pacer test as before 6a1e480); evidence/windows-2c40a9f/"
+   },
+   {
+    "run": "palcertcom/pocol 40530131878",
+    "commit": "7624419",
+    "result": "PASS on every step (lp4 201/0, pocold 237/0), with 6a1e480's pacer test: PACER sendTimeS 0.502009, acceptedBytes 32940, s_v 0.5 s, pacerLateMaxMs 2 (ENFORCE_SLACK 200), pacerWaits 10, closed 1092 ms after the request; every network.md:237-256 bound holds on Windows; the 182d73a delay's cause stays unestablished; evidence/windows-7624419/"
+   },
+   {
+    "run": "palcertcom/pocol 40535963171",
+    "commit": "563a0c3",
+    "result": "PASS on every step (lp4 201/0, pocold 238/0); PACER close 1 ms after s_v; evidence/windows-563a0c3/"
+   },
+   {
+    "run": "palcertcom/pocol 40538722157",
+    "commit": "b66ba65",
+    "result": "PASS on every step (lp4 205/0 with the four modexp tests, pocold 238/0): the first Windows run of the MODEXP precompile (b46658a); PACER close 10 ms after s_v; evidence/windows-b66ba65/"
+   },
+   {
+    "run": "palcertcom/pocol 40546902481",
+    "commit": "d45dfe2",
+    "result": "PASS on every step (lp4 208/0 with the seven modexp tests, pocold 238/0): the first Windows run of the wide even path (0c2ad75); PACER close 2 ms after s_v; evidence/windows-d45dfe2/"
+   },
+   {
+    "run": "palcertcom/pocol 40550009922",
+    "commit": "b8fb7ab",
+    "result": "PASS on every step (lp4 209/0 with the eight modexp tests, pocold 238/0): MODEXP's trivial powers handed to revm (review finding 1); PACER close 1 ms after s_v; evidence/windows-b8fb7ab/"
+   },
+   {
+    "run": "palcertcom/pocol 40550825203",
+    "commit": "beed0d2",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab)"
+   },
+   {
+    "run": "palcertcom/pocol 40557534874",
+    "commit": "7e565b7",
+    "result": "PASS on every step (lp4 209/0, pocold 238/0), the first with 3705559's pacer test: client window 0.508 s (bounds 0.45 to 1.0), first byte 517 ms against an honest reader's 504 ms, pacer lateness 7 ms; evidence/windows-7e565b7/"
+   },
+   {
+    "run": "palcertcom/pocol 40558373933",
+    "commit": "d104891",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab): client window 0.509 s, first byte 732 ms against an honest reader's 783 ms, pacer lateness 10 ms; evidence/windows-d104891/"
+   },
+   {
+    "run": "palcertcom/pocol 40561773086",
+    "commit": "b47fb85",
+    "result": "PASS on every step (evidence only; node code as b8fb7ab): client window 0.506 s, first byte 741 ms against an honest reader's 746 ms, pacer lateness 3 ms; evidence/windows-b47fb85/"
+   },
+   {
+    "run": "palcertcom/pocol 40572992585",
+    "commit": "bc38d41",
+    "result": "PASS on every step (lp4 211/0, pocold 239/0; node code as b6d57e8): the stored-version diff tests, the checkpoint tests with the middle-version damage case, a13_counts_a_handle_for_every_held_version and the D-7 run test pass on Windows; client window 0.504 s, first byte 583 ms against an honest reader's 562 ms, pacer lateness 3 ms; evidence/windows-bc38d41/"
+   },
+   {
+    "run": "palcertcom/pocol 40575426466",
+    "commit": "fbe6062",
+    "result": "PASS on every step (evidence only; node code as b6d57e8; lp4 211/0, pocold 239/0): client window 0.504 s, first byte 721 ms against an honest reader's 721 ms, pacer lateness 1 ms; evidence/windows-fbe6062/"
+   },
+   {
+    "run": "palcertcom/pocol 40578404549",
+    "commit": "71eb650",
+    "result": "PASS on every step (evidence only; node code as b6d57e8; lp4 211/0, pocold 239/0): client window 0.504 s, first byte 737 ms against an honest reader's 795 ms, pacer lateness 1 ms; evidence/windows-71eb650/"
+   },
+   {
+    "run": "palcertcom/pocol 40583789163",
+    "commit": "206eaa4",
+    "result": "PASS on every step (evidence only; node code as b6d57e8; lp4 211/0, pocold 239/0): client window 0.504 s, first byte 751 ms against an honest reader's 784 ms, pacer lateness 3 ms; evidence/windows-206eaa4/"
+   },
+   {
+    "run": "palcertcom/pocol 40585164582",
+    "commit": "93a40d0",
+    "result": "PASS on every step (lp4 211/0, pocold 240/0; the deferred checkpoint release): client window 0.506 s, pacer lateness 3 ms; evidence/windows-93a40d0/"
+   },
+   {
+    "run": "palcertcom/pocol 40589342452",
+    "commit": "22a82c2",
+    "result": "FAIL, one test (pocold 239/1): e4_checkpoint_damage_falls_back_to_a_verified_state, case 'a missing node only a middle version names'. Open panicked (state store read failed: state store damaged) because the release at open (93a40d0) had marked the store damaged when the removed node was also owed, and open went on to pin genesis's version in it. The node the case removes is chosen from a HashSet, so it varies by run; a Linux sweep over the candidates reproduced it (14 of 363). Fixed in the commit after ad301e7 (a store found damaged before genesis is pinned is set aside and started empty), with e4_checkpoint_open_rebuilds_a_store_its_release_finds_damaged; evidence/windows-22a82c2/RUN.md"
+   },
+   {
+    "run": "palcertcom/pocol 40592643692",
+    "commit": "dd85cc0",
+    "result": "PASS on every step (lp4 211/0, pocold 241/0): client window 0.514 s, pacer lateness 10 ms; evidence/windows-dd85cc0/"
+   },
+   {
+    "run": "palcertcom/pocol 40595988585",
+    "commit": "ad301e7",
+    "result": "PASS on every step (lp4 211/0, pocold 244/0): client window 0.505 s, pacer lateness 2 ms; evidence/windows-ad301e7/"
+   },
+   {
+    "run": "palcertcom/pocol 40600109673",
+    "commit": "e453851",
+    "result": "PASS on every step (lp4 211/0, pocold 245/0): the damage test that failed on 22a82c2, e4_checkpoint_open_rebuilds_a_store_its_release_finds_damaged and e4_release_steps_alternate_with_pool_slices pass on Windows; client window 0.503 s, pacer lateness 2 ms; evidence/windows-e453851/"
    }
   ],
   "defectsFoundAndFixed": [
@@ -324,12 +454,13 @@
    "CAPS-SUSTAINABILITY N1-N8 (proposals/CAPS-SUSTAINABILITY.md)",
    "RPCGUARD P1-P4 (proposals/RPCGUARD-R2-PROPOSALS.md)",
    "every journal mitigation (JOURNAL-GROWTH-AND-REPLAY.md §7)",
-   "D-2",
+   "D-2 (proposals/OPEN-DECISIONS.md row 1: option (a) is not local alone; at t_exec = 2 s the timing gates R2/R3/R7 need dFbWait and D_att, CP fields, evidence/memory-r14/d2-gate.log)",
    "D-3",
    "D-4",
    "D-5",
    "the A13 key-path assumption (paths of at most 21 nodes): presented 2026-10-25 with its rationale, worst case and the conservative alternative (proposals/DECISION-PACKAGE.md); not adopted",
-   "the R14/R19 calibration workload: whether the admission timing should include state-heavy blocks (they exceed t_exec = 1 s in both modes on this host; presented 2026-10-25 in proposals/DECISION-PACKAGE.md; not adopted)"
+   "the R14/R19 calibration workload: whether the admission timing should calibrate on the slowest kinds per gas (presented 2026-10-25; restated 2026-10-27 in proposals/OPEN-DECISIONS.md row 2 with the measurement of A13-DERIVATION §3b: with the test-only root checks off, only MODEXP with an even modulus exceeds t_exec = 1 s, at 1.2-1.6 s; the state-heavy figures cited before were measured with those checks on); not adopted",
+   "store mode as the default for the network profile (a local default; proposals/OPEN-DECISIONS.md row 9): presented 2026-10-27, recommended to stay opt-in; not adopted"
   ],
   "note": "Passing tests approve nothing. The implementation uses the recommended alternatives of the six consensus proposals provisionally."
  },
@@ -938,7 +1069,14 @@
     "5722c23",
     "53a80e9",
     "fc24969",
-    "ee14458"
+    "ee14458",
+    "892dca6",
+    "2839f2a",
+    "b46658a",
+    "0c2ad75",
+    "b8fb7ab",
+    "5abbaf3",
+    "b6d57e8"
    ],
    "implemented": "YES",
    "verified": {
@@ -957,7 +1095,8 @@
      "Review R3-3 (af2f3a8): consensus::replay_restores_each_adopted_branch_with_the_work_live_did (fail-before: 4 rebuilds and 76 re-executions at open against live's 0 and 2)",
      "tests/network_budget.rs: the network profile model, 150.83 GiB before C-1 S2 and 105.83 GiB after (gate 120.95 GiB); the test asserts it does not fit 6 GiB",
      "journal track, rounds 1-3c (JOURNAL-GROWTH-AND-REPLAY.md): #[ignore] measurements in tests/journal_measure.rs (JM-BYTES, JM-REPLAY, JM-KIND, JM-EXEC, JM-STATE, JM-CREATE, JM-TXSTATE, jm_deep_reorg_latency, JM-OPENMEM-FRESH) on code whose src equals fa97594's; they measure and assert nothing about time (evidence/journal-r3/ on 7f587bb, journal-r3b/ on e3dfb47, journal-r3c/ on 1d094de)",
-     "C-1 E4/E5 (store mode, opt-in; D-6 checkpoints), evidence/c1-e4/: consensus::{e4_a_store_node_answers_as_a_whole_state_node, e4_store_node_at_the_r_keep_boundary_answers_as_a_whole_state_node, e4_store_node_rebuilds_a_fork_below_k_hist_as_a_whole_state_node, e4_store_node_at_the_spec_depth_2048_and_2049_answers_as_a_whole_state_node (release, --ignored), e4_checkpoint_open_resumes_and_equals_replay_from_genesis, e4_checkpoint_open_releases_what_a_crash_left_in_the_store, e4_checkpoint_survives_kills, e4_checkpoint_damage_falls_back_to_a_verified_state (17 cases), e4_checkpoint_crash_at_each_step (--features crash-test, 22 cases), e4_checkpoint_refuses_an_entry_bound_to_its_siblings_record, e4_checkpoint_resumes_slimmed_offloaded_and_evicting_chains, e4_checkpoint_resumes_with_replays_protect_set, e5_entries_without_a_state_share_one_empty_state, e5_a_closing_node_leaves_its_versions_to_the_next_open}; tests/state_store.rs (7); mutation controls mutants-e42/e43/e44/e44-retest.log and mutants-final.log (30 of 30 killed on fc24969); the deep-reorg --ignored tests (2048/2049 adoption, D133 at 400, A11) passed on fc24969; disk and time evidence/c1-e4/disk-impact-final.md; tests/network_budget.rs: the network profile model 27.92 GiB whole-state and 9.67 GiB in store mode (gate 11.05), neither fits 6 GiB"
+     "C-1 E4/E5 (store mode, opt-in; D-6 checkpoints), evidence/c1-e4/: consensus::{e4_a_store_node_answers_as_a_whole_state_node, e4_store_node_at_the_r_keep_boundary_answers_as_a_whole_state_node, e4_store_node_rebuilds_a_fork_below_k_hist_as_a_whole_state_node, e4_store_node_at_the_spec_depth_2048_and_2049_answers_as_a_whole_state_node (release, --ignored), e4_checkpoint_open_resumes_and_equals_replay_from_genesis, e4_checkpoint_open_releases_what_a_crash_left_in_the_store, e4_checkpoint_survives_kills, e4_checkpoint_damage_falls_back_to_a_verified_state (17 cases), e4_checkpoint_crash_at_each_step (--features crash-test, 22 cases), e4_checkpoint_refuses_an_entry_bound_to_its_siblings_record, e4_checkpoint_resumes_slimmed_offloaded_and_evicting_chains, e4_checkpoint_resumes_with_replays_protect_set, e5_entries_without_a_state_share_one_empty_state, e5_a_closing_node_leaves_its_versions_to_the_next_open}; tests/state_store.rs (7); mutation controls mutants-e42/e43/e44/e44-retest.log and mutants-final.log (30 of 30 killed on fc24969); the deep-reorg --ignored tests (2048/2049 adoption, D133 at 400, A11) passed on fc24969; disk and time evidence/c1-e4/disk-impact-final.md; tests/network_budget.rs: the network profile model 27.92 GiB whole-state and 9.67 GiB in store mode (gate 11.05), neither fits 6 GiB",
+     "R3 on palcertcom/pocol#2 (2026-10-27): jm_store_scale (release, ignored; evidence/memory-r14/scale-d30dc71/): a store-mode node grown to 950,000 accounts and 3,800,300 slots under the network's state caps, A13 bound 5,255,359,885 B for that profile; measured VmHWM 474 MiB growing, 539 MB after an open from a checkpoint (477 MB after 5abbaf3), state.redb 2,056 MiB, stored versions 0.20 of one version's model; a depth-8 reorg adopted in 1.53 s; the open from a checkpoint 783-801 s on d30dc71 and 262 s on bc38d41 (b6d57e8: stored versions read through NodeTrie::diff). A measurement under a synthetic workload, not a bound. Tests: lp4 node_trie::tests::{diff_lists_what_differs_and_reads_every_node_only_the_second_version_holds, diff_of_raw_clustered_keys_is_exactly_the_rows_that_differ}; consensus::e4_checkpoint_open_resumes_and_equals_replay_from_genesis (versions read 3 whole, 32 by diff), e4_checkpoint_damage_falls_back_to_a_verified_state (a node only a middle version names); network_budget::a13_counts_a_handle_for_every_held_version; release suites lp4 211/0, pocold 239/0 (evidence/memory-r14/release-b6d57e8.log)"
     ],
     "witnessOnRepair": "n/a (source review)",
     "commits": {
@@ -970,8 +1109,8 @@
    },
    "partiallyResolved": [
     "OPEN: gas monotonicity in the domain fields (§4.1)",
-    "OPEN: R14/R19 timing is not a worst-case bound (§4.2); measured (journal round 3, §3.2a): one valid one-tx full-gas MODEXP block (small even modulus) validates in about 1.0 s, above the devnet t_exec = 1 s",
-    "OPEN: allocator overhead and fragmentation (§4.3b); the boot gate keeps a 1/8 reserve for them, which is a margin, not a proof; the model total (5,581,426,268 B = 5.198 GiB at the round-3 code, 8039a09 and later; 5,577,343,580 B = 5.194 GiB at fa97594; 5,627,687,516 B = 5.241 GiB at 9ce5a7c) counts requested bytes",
+    "OPEN: R14/R19 timing is not a worst-case bound (§4.2); measured (journal round 3, §3.2a): one valid one-tx full-gas MODEXP block (small even modulus) validates in about 1.0 s, above the devnet t_exec = 1 s — 2026-10-28 (round 4, evidence/r4/boot/): after round 3's MODEXP fast paths, the slowest valid block measured validates in 0.40 s (shape sweep, median) against t_exec = 1 s, in whole-state mode; a grid and a seeded random search, not a bound. Still OPEN: what would bound it is decision row 2 (calibrating on the slowest kinds), not approved.",
+    "OPEN: allocator overhead and fragmentation (§4.3b); the boot gate keeps a 1/8 reserve for them, which is a margin, not a proof; the model total (5,581,426,268 B = 5.198 GiB at the round-3 code, 8039a09 and later; 5,577,343,580 B = 5.194 GiB at fa97594; 5,627,687,516 B = 5.241 GiB at 9ce5a7c) counts requested bytes — 2026-10-28: 5,581,321,485 B on 1074b47; 5,581,616,397 B (5.198 GiB) after the side set (87d2392); 5,581,944,077 B (5.199 GiB) after the side set's own 76 B term (review F-C); the gate is model × 8/7 ≤ 6 GiB, i.e. model ≤ 5.25 GiB (evidence/r4/README.md § 4).",
     "OPEN, CRITICAL, partly addressed (decision package C-2 items 1-3, 49b2bc2 and 2ce03c1: on the same near-cap state, 380 transfers 22,553 ms before and 655 ms after on one loaded host; a CREATE2 block 4,862 -> 562 ms; an empty child 777 -> 465 ms, the state root remaining; the MODEXP block unchanged; evidence/c2-execution/). As measured in round 3 (journal round 3c, JOURNAL-GROWTH-AND-REPLAY.md §3.2d): a valid block of 380 transfers validates in about 10.2 s on a devnet state with accounts, slots and code near the caps, above T_blk = 4 s. Causes: every USER transaction runs code_caps::validate_snapshot and two whole-snapshot clones (native::execute_for_profile, build_engine), and every scan keccaks every runtime (code_caps::code_len), so each scan is O(accounts + slots + logical code bytes). On the same state a CREATE2-heavy child takes about 2.4 s and an empty block about 0.41 s; the create term code_caps::current_total is 0.47-0.54 s per 247-create block at the devnet ACCT_CAP (§3.2c). Lower bounds on the worst case",
     "OPEN: CPU costs (world-root rebuild, chain scans, pool re-execution, deep-fork rebuild) (§4.5–4.7); the whole world root is recomputed on every block (about +0.23 s per block near the devnet SLOT_CAP/ACCT_CAP; about 14.4 s per block at network caps, synthetic; §3.2b); the devnet open at H_END takes up to about 7.3 h, plus about 8.5 min for the TX_CAP-bounded transfer blocks (§3.3); pool re-execution of 50 abandoned one-tx MODEXP transactions in an adopting reorg took about 50 s (§5.3)",
     "OPEN: RetentionStore and the redb trie are not implemented (§4.10); the specification's node targets <= 750 MiB plus 192 MiB RPC (network.md:158), pocold's in-memory architecture needs 5.198 GiB of model at the round-3 code (5.194 GiB at fa97594; 5.241 GiB at 9ce5a7c)",
@@ -984,7 +1123,8 @@
     "DERIVED with stated revm 19.7 facts: execution memory, operation classes (§4.4, §3a)",
     "No guaranteed process-memory ceiling exists (§2b)",
     "PARTLY ADDRESSED (C-1 E4/E5, fc24969): the redb trie (state.redb) and D-6 checkpoints are implemented as an opt-in store mode; store mode answers as whole-state mode on every compared block, receipt and state query, and open from a checkpoint equals replay from genesis. Its network-profile model is 9.67 GiB (gate 11.05), above 6 GiB, so it is not the default and the network profile does not boot. Open: the D-7 value (owner), the code one execution reads (a gas-derived bound, not done), the pool's and the rebuild's code sets (E5), and state.redb's file factor at the adversarial scale (condition store-file-factor) [superseded on 2026-10-25: the D-7 value is approved and implemented, and the code sets are derived; see the D-7 entry]",
-    "PARTLY ADDRESSED (D-7 and the code-loading audit, ee14458; A13-DERIVATION §2d): the pool's layer follows its 4·GAS_LIMIT bound; a created account keeps every slot it loaded (one per 100 gas, witnessed), so the overlay and layer terms count it; store-mode code read by an execution stays one CODE_CAP set (an account load costs as little as 100 gas). Network model: store mode 7.61 GiB (gate 8.69), whole-state 25.24 GiB; above the 5.25 GiB cap by 2.36 GiB, and no non-normative option reaches it (proposals/DECISION-PACKAGE.md). R14/R19 timing does not include store mode's commit and fsync (evidence/d7-bound)"
+    "PARTLY ADDRESSED (D-7 and the code-loading audit, ee14458; A13-DERIVATION §2d): the pool's layer follows its 4·GAS_LIMIT bound; a created account keeps every slot it loaded (one per 100 gas, witnessed), so the overlay and layer terms count it; store-mode code read by an execution stays one CODE_CAP set (an account load costs as little as 100 gas). Network model: store mode 7.61 GiB (gate 8.69), whole-state 25.24 GiB; above the 5.25 GiB cap by 2.36 GiB, and no non-normative option reaches it (proposals/DECISION-PACKAGE.md). R14/R19 timing does not include store mode's commit and fsync (evidence/d7-bound)",
+    "IMPLEMENTED (local, D-6's mechanism; 93a40d0 and 22a82c2; found 2026-10-27 at scale, evidence/memory-r14/scale-d30dc71/ckpt-instrumented.log): a checkpoint that dropped the oldest one released, inside its transaction on the consensus thread, every node only the dropped checkpoint held: 10.3-13.7 s at 950,000 accounts, so imports stalled up to 10.6 s every 1,024 records. Now the write owes the dropped checkpoint's nodes in a release table (finishing first what an earlier write left owed), release_step works off 256 owed references per fsynced transaction between events, and open finishes what is owed (release_all). Measured on 22a82c2 at the same size (scale-d30dc71/ckpt-22a82c2.log): the write 0.13-0.24 s; 1,399 steps, 50 ms at most (180 ms at most over the next release); 70 empty-block imports during the release 120 ms median, 155 ms max. Steps not fsynced (93a40d0) made each import's durable commit write their pages (379 ms median, 905 ms max) and let state.redb grow to 4.3-8.6 GB. A13: the file term counts (KEPT + 2) sets of held versions plus a release row per owed node; network store mode 5,581,321,485 B (5.198 GiB), 5.941 GiB required, under the 5.25 GiB cap. Tests: state_store a_dropped_checkpoint_is_released_in_steps_and_ends_as_a_release_in_the_write, consensus e4_checkpoint_release_runs_at_open_and_between_events, network_budget (the file term), crash-test crashes inside release steps 1, 20 and 60 (evidence/memory-r14/deferred-release/). reset_pins at open still costs about 12 s at that size. Independent review of 93a40d0 and 22a82c2 (evidence/memory-r14/review-2026-10-27/D6-REVIEW.md): nothing critical or high; fixed in the commit after dd85cc0: (1, medium) a storage error in a release step no longer marks the store damaged, only a release row that contradicts the counts does (a_release_step_that_fails_on_io_leaves_the_store_whole, a_release_row_that_contradicts_the_counts_marks_the_store_damaged); (2, low) pool slices and release steps alternate while both are pending (e4_release_steps_alternate_with_pool_slices); (3, low) no list of deleted ids is held; (4) the flag is set after the commit, stored_bytes counts the release rows, FORMAT 3 (a format-2 store opens as format 3), rows not references in the docs and stats"
    ],
    "blocked": {
     "environment": [
@@ -1156,5 +1296,35 @@
   "additionalFindings": {
    "CAPS-01": "BLOCKED BY DECISION"
   }
+ },
+ "round4": {
+  "date": "2026-10-28",
+  "commits": [
+   "3adc356",
+   "16838eb",
+   "118afd7",
+   "e028068",
+   "1074b47",
+   "a136f27",
+   "748b16d",
+   "eed8309",
+   "eb85bed",
+   "b4f13f3",
+   "719da04",
+   "87d2392",
+   "051dfaa",
+   "5cd7d43"
+  ],
+  "evidence": "evidence/r4/README.md",
+  "items": {
+   "1 seeded faults RV10-RV12": "KILLED by tests with deterministic I/O fault injection (evidence/r4/mutants-r4.log); none classed as equivalent. A defect found on the way: a state.redb I/O failure was taken as an invalid block; fixed (3adc356).",
+   "2 reorganization at a heal": "DONE: two deterministic tests (one per direction) and e2e_heal; controls K1-K3 (lighter branch, no reorg, no sync) each fail them.",
+   "3 failure evidence": "DONE: the harnesses keep node logs, inputs, seeds and Playwright traces on failure. The kept trace of the e2e_browser failure on 051dfaa shows the BR18 click timeout is the test's (the navigation completed in a new frame while Playwright's click on the torn-down frame never returned); the click on ad301e7 had the same signature but no trace. Still open without a shown cause: the e028068 admission refusal with debug assertions, reconnect_churn under heavy load (fails on 719da04 too), the Windows R14/R19 refusal on 1074b47. Found and fixed: the checkpoint refusal at reopen at large heights (the snapshot decoder's count guard took 134 bytes a record where 126 are written).",
+   "4 memory and storage": "PARTIAL: computed 5.198 GiB (store mode, network) against measured peaks of 455-486 MB on the workloads run (open at the state caps, pool at its gas bound, a full-write block, a reorg of 24, H_END of empty blocks). The model's largest terms (execution, code set, batch) were not driven to their worst; RPC and peers not at the caps; no R_keep-deep reorg at the caps. Journal: measured 2,011 B per empty record (260.6 MB at H_END); canonical bound about 11.3 GiB; side-block re-journal unbounded (decision row 5). An import that grew with H was fixed (eb85bed, 87d2392). On 5cd7d43 the grow to H_END took 2,184 s with a flat median import of 10-12 ms; VmHWM 601 MB at H_END. Its reopen was refused by the checkpoint decode guard (REC_MIN, fixed in 50f9207); on b375d4c the reopen at H_END resumed from checkpoint 129,024 in 13.3 s (evidence/r4/hend/hend-b375d4c-grow-and-reopen.log).",
+   "5 checkpoint open": "DONE for the profiled parts: 245/243 s -> 207/215 s on the same input (retain 74 s -> 14-16 s); the durable block commits (about 150 s) remain; an unsynced-commit attempt filled the disk and was reverted.",
+   "6 performance and boot": "DONE as measurements: R21, R22, A13 with actual values (BOOT-BLOCKERS-2026-10-28.md); R14/R19 phases 7-11 ms against 3,000 ms (not a bound); the slowest measured MODEXP block 0.40 s. The network profile does not boot. No limit raised, no consensus rule changed.",
+   "7 decision table": "DONE: proposals/DECISION-TABLE-2026-10-28.md (EN, AR). No open decision is taken by this round."
+  },
+  "notAccepted": "The PR stays a draft; nothing here is full acceptance."
  }
 }

@@ -4,12 +4,12 @@
 // identical canonical roots/receipts/content, resource measurements.
 import { spawn, spawnSync } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, statSync, existsSync, openSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { build } from '../build.mjs';
-import { EXT, BIN, sleep, wait, checker, devnet, rpc, portFree, png2x2, writeSite, publish, openBrowser, siteFrame, openSite } from './harness.mjs';
+import { EXT, BIN, sleep, wait, checker, devnet, rpc, portFree, png2x2, writeSite, publish, openBrowser, siteFrame, openSite, keepOnFailure } from './harness.mjs';
 
 const { ok, results, failed } = checker();
 const work = mkdtempSync(join(tmpdir(), 'pocol-lp10-'));
@@ -36,7 +36,12 @@ function fetchCli(i, s) {
   return { version: m.version, digest: sha(Buffer.concat(m.files.map((f) => Buffer.concat([Buffer.from(f.path), readFileSync(join(out, f.path.slice(1)))])))) };
 }
 let isolated = null;
-const startIsolatedC = () => { isolated = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', 'c'), '--name', 'c', '--miner', 'c', '--rpc', '127.0.0.1:8542', '--log'], { stdio: 'ignore', detached: true }); };
+// The nodes this test starts itself log to WORK/<name>.log, as devnet.py's do, after a line naming the phase (kept
+// with the inputs if the run fails: keepOnFailure).
+const logTo = (name, what) => { const f = join(work, `${name}.log`); appendFileSync(f, `\n=== ${new Date().toISOString()} ${what}\n`); const fd = openSync(f, 'a'); return ['ignore', fd, fd]; };
+// The partition's a and b, started outside devnet's pids.json: stopped in `main`'s finally if a wait fails first.
+const partition = [];
+const startIsolatedC = (miner = true) => { isolated = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', 'c'), '--name', 'c', ...(miner ? ['--miner', 'c'] : []), '--rpc', '127.0.0.1:8542', '--log'], { stdio: logTo('c', miner ? 'partition: c alone' : 'partition: c alone, no miner'), detached: true }); };
 const stopIsolatedC = async () => { if (isolated) { process.kill(-isolated.pid, 'SIGTERM'); await new Promise((r) => isolated.once('exit', r)); isolated = null; } };
 const pids = () => JSON.parse(readFileSync(join(work, 'pids.json'), 'utf8'));
 const rssKiB = (pid) => { try { return Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, 'utf8'))[1]); } catch { return null; } };
@@ -79,25 +84,69 @@ async function main() {
 
     // ---- partition: c isolated, v2 published on the minority branch through c ----
     devnet(['stop', work]); await sleep(1500); // stop all, then restart a+b meshed and c alone
-    const ab = (l, i) => spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--miner', l, '--listen', `127.0.0.1:${30300 + i}`, '--rpc', `127.0.0.1:${8540 + i}`, '--peer', `127.0.0.1:${30300 + (1 - i)}`, '--log'], { stdio: 'ignore', detached: true });
-    const pa = ab('a', 0), pb = ab('b', 1); startIsolatedC();
+    const ab = (l, i) => spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--miner', l, '--listen', `127.0.0.1:${30300 + i}`, '--rpc', `127.0.0.1:${8540 + i}`, '--peer', `127.0.0.1:${30300 + (1 - i)}`, '--log'], { stdio: logTo(l, `partition: ${l} with ${l === 'a' ? 'b' : 'a'}`), detached: true });
+    const pa = ab('a', 0), pb = ab('b', 1); partition.push(pa, pb); startIsolatedC();
     const base = Math.min(...await wait(async () => { try { return await heights(); } catch { return null; } }, 60000, 'partitioned nodes up'));
     const d2 = join(work, 's2'); writeSite(d2, site(2)); publish(d2, 8542, cid, S);
     await wait(async () => (await currentVersion(2, S)) === 1, 240000, 'v2 on isolated c');
     const vC = await chromeView(b, 'node-c', S), vA = await chromeView(b, 'node-a', S);
     ok('partition: Chrome via isolated c shows v2 (minority branch) while a shows v1', vC.h1 === 'LP10 site v2' && vA.h1 === 'LP10 site v1', `${vC.h1} / ${vA.h1}`);
-    await wait(async () => { const [ha, , hc] = await heights(); return ha > hc + 4; }, 240000, 'majority branch heavier');
+    // Fork choice (D133) compares total work, not height. The taller branch can be the lighter one: in
+    // accept-int-073923f store run 2, ab was at 60 with work 0x245033 and c at 55 with 0x27aa15 (c's uninterrupted
+    // blocks had raised its difficulty, ab's early fallback blocks had eased its own), so a and b adopted c's branch.
+    const totalWork = async (i) => BigInt((await rpc(8540 + i, 'pocol_status')).head.totalWork);
+    // 2026-10-28: c then runs on without its miner, so the a/b branch becomes the heavier one by construction. Mining
+    // alone, c can outgrow the pair (acceptance on b4f13f3, whole-state run 2: c 217 blocks after the partition
+    // against a/b's 203, and the wait expired; evidence/r4/accept-b4f13f3/). The test needs v2 on the lighter branch.
+    await stopIsolatedC(); startIsolatedC(false);
+    await wait(async () => { try { const [ha, , hc] = await heights(); return ha > hc + 4 && (await totalWork(0)) > (await totalWork(2)); } catch { return false; } }, 240000, 'majority branch heavier');
     const cTip = (await rpc(8542, 'pocol_status')).head, aTip = (await rpc(8540, 'pocol_status')).head;
     ok('partition: branches diverged', cTip.hash !== aTip.hash, `c=${cTip.height} ab=${aTip.height} base=${base}`);
     // ---- heal ----
-    await stopIsolatedC(); for (const p of [pa, pb]) process.kill(-p.pid, 'SIGTERM'); await sleep(1500);
-    devnet(['start', work, '--log']);
-    await wait(async () => { const s = await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); return s[2].head.height >= s[0].head.height - 1 && s[2].stats.reorgs >= 1; }, 240000, 'c reorganized');
-    const stC = await rpc(8542, 'pocol_status');
-    ok('heal: c reorganized onto the heavier branch (D133)', stC.stats.reorgs >= 1, JSON.stringify(stC.stats));
+    // 2026-10-28: each head is measured with no node mining and no peer, and the heal runs with no miner, so the
+    // work each side measured is the work it has when they meet. Before, all three mined on while they
+    // reconnected, so either side could win (accept-e453851 whole-state run 1: a and b reorganized onto c's
+    // branch). Now the measured heavier tip must win, and only the other side reorganizes (D133).
+    const solo = (what, miner, peers) => [0, 1, 2].map((i) => { const l = 'abc'[i]; const p = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--rpc', `127.0.0.1:${8540 + i}`, '--log',
+      ...(miner ? ['--miner', l] : []), ...(peers ? ['--listen', `127.0.0.1:${30300 + i}`, ...[0, 1, 2].filter((j) => j < i).flatMap((j) => ['--peer', `127.0.0.1:${30300 + j}`])] : [])], { stdio: logTo(l, what), detached: true }); partition.push(p); return p; });
+    const stopSolo = async () => { const ps = partition.splice(0); for (const p of ps) { try { process.kill(-p.pid, 'SIGTERM'); } catch {} } await Promise.all(ps.map((p) => (p.exitCode === null && p.signalCode === null ? new Promise((r) => p.once('exit', r)) : null))); };
+    const statuses = () => wait(async () => { try { return await Promise.all([0, 1, 2].map((i) => rpc(8540 + i, 'pocol_status'))); } catch { return null; } }, 60000, 'nodes up');
+    await stopIsolatedC(); await stopSolo();
+    // a and b catch up with each other first (review F8, 2026-10-28): a block one of them made just before it stopped
+    // would otherwise be measured on one side only. Only a mines while they mesh: both may have mined a sibling of
+    // equal work at the same height, which D133 leaves to local import order, so with no miner they could stay
+    // apart (acceptance on 719da04, whole-state run 1: a and b at h=52 on 0x06af… and 0x205b…, both proposer
+    // blocks of one template; evidence/r4/accept-719da04/). Once b is on a's tip, everything b holds came from a or
+    // is abandoned; then both restart with no miner and b takes whatever a made last.
+    const catchUp = async (aMines, what) => { [0, 1].forEach((i) => { const l = 'ab'[i]; partition.push(spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l, '--rpc', `127.0.0.1:${8540 + i}`, '--log',
+        ...(aMines && i === 0 ? ['--miner', 'a'] : []), '--listen', `127.0.0.1:${30300 + i}`, ...(i === 1 ? ['--peer', '127.0.0.1:30300'] : [])], { stdio: logTo(l, what), detached: true })); });
+      const h0 = aMines ? (await wait(async () => { try { return await rpc(8540, 'pocol_status'); } catch { return null; } }, 60000, 'a up')).head.height : 0;
+      await wait(async () => { try { const [x, y] = await Promise.all([0, 1].map((i) => rpc(8540 + i, 'pocol_status'))); return x.head.height > h0 && x.head.hash === y.head.hash; } catch { return false; } }, 120000, `a and b on one tip (${what})`);
+      await stopSolo(); };
+    await catchUp(true, 'catch up: a and b meshed, only a mines');
+    await catchUp(false, 'catch up: a and b meshed, no miner');
+    solo('measure: alone, no miner', false, false); const m = (await statuses()).map((x) => x.head); await stopSolo();
+    const abWins = BigInt(m[0].totalWork) > BigInt(m[2].totalWork), win = abWins ? m[0] : m[2];
+    ok('heal: positive control: measured with no miner, a and b share one tip and c another, of different work', m[0].hash === m[1].hash && m[0].hash !== m[2].hash && m[0].totalWork !== m[2].totalWork, `ab ${m[0].height}/${m[0].totalWork}, c ${m[2].height}/${m[2].totalWork}`);
+    solo('heal: meshed, no miner', false, true);
+    let st = [];
+    await wait(async () => { st = await statuses(); return st.every((x) => x.head.hash === win.hash); }, 240000, 'the measured heavier tip on all three');
+    const lost = abWins ? [2] : [0, 1];
+    ok('heal: with no miner the three nodes end on the heavier tip measured before the heal, and only the lighter side reorganized (D133)', [0, 1, 2].every((i) => (lost.includes(i) ? st[i].stats.reorgs >= 1 : st[i].stats.reorgs === 0)),
+      `winner ${abWins ? 'a/b' : 'c'} ${win.height}/${win.totalWork}; reorgs a=${st[0].stats.reorgs} b=${st[1].stats.reorgs} c=${st[2].stats.reorgs}`);
+    await stopSolo(); devnet(['start', work, '--log']);
     await wait(async () => { const v = await Promise.all([0, 1, 2].map((i) => currentVersion(i, S))); return v.every((x) => x === v[0]) && v; }, 120000, 'site state agrees');
-    const afterHeal = await Promise.all(['a', 'b', 'c'].map((l) => chromeView(b, 'node-' + l, S)));
-    const canon = await currentVersion(0, S);
+    // The transactions c returns include its v2 publication, which the healed network can include a block or two
+    // later, so the canonical version can move between two reads (accept-8d80354: v2 included at heights 76-77,
+    // after the Chrome reads and before the version was read). The views count only when every node's version is
+    // the same before and after them.
+    const versions = () => Promise.all([0, 1, 2].map((i) => currentVersion(i, S)));
+    let afterHeal = [], after = [];
+    await wait(async () => {
+      const before = await versions(); afterHeal = await Promise.all(['a', 'b', 'c'].map((l) => chromeView(b, 'node-' + l, S))); after = await versions();
+      return [...before, ...after].every((x) => x === before[0]);
+    }, 120000, 'one canonical version on every node across the Chrome reads');
+    const canon = after[0];
     ok('reorg recovery: Chrome via c now shows the canonical version, identical on all nodes', afterHeal.every((x) => x.h1 === afterHeal[0].h1 && x.ver === afterHeal[0].ver) && afterHeal[0].h1 === `LP10 site v${canon + 1}`, `${afterHeal.map((x) => x.h1).join(' | ')} (canonical index ${canon})`);
     // c returns the transactions of its abandoned branch to its pool (consensus.md: excluded transactions return
     // after they are checked again); they carry the publisher's next nonces. v3 is published once every pool has
@@ -137,7 +186,7 @@ async function main() {
     devnet(['stop', work]); await sleep(1500);
     let refDigest = null; // content digest from the first replayed node (only one replay process runs at a time)
     for (const [i, l] of ['a', 'b', 'c'].entries()) {
-      const p = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l + '-replay', '--rpc', `127.0.0.1:${8540 + i}`], { stdio: 'ignore', detached: true });
+      const p = spawn(BIN('pocold'), ['run', '--network', join(work, 'net'), '--data', join(work, 'data', l), '--name', l + '-replay', '--rpc', `127.0.0.1:${8540 + i}`, '--log'], { stdio: logTo(l + '-replay', 'replay, peerless'), detached: true });
       try {
         await wait(async () => { try { return await rpc(8540 + i, 'pocol_status'); } catch { return null; } }, 60000, 'replay ' + l);
         let bad = 0; for (const x of live) { const y = await rpc(8540 + i, 'eth_getBlockByNumber', [x.number, false]); if (y.hash !== x.hash || y.stateRoot !== x.stateRoot || y.receiptsRoot !== x.receiptsRoot) bad++; }
@@ -148,11 +197,13 @@ async function main() {
     writeFileSync(join(work, 'resources.json'), JSON.stringify(res, null, 1));
   } finally {
     await stopIsolatedC().catch(() => {}); try { devnet(['stop', work]); } catch {}
+    for (const p of partition.splice(0)) { try { process.kill(-p.pid, 'SIGTERM'); } catch {} }
   }
 }
 
 try { await main(); } catch (e) { ok('LP10 driver completed', false, e.stack || e.message); }
 const summary = { result: failed() ? 'FAIL' : 'PASS', checks: results.length, failed: failed(), work };
+if (failed()) { await sleep(2000); summary.kept = keepOnFailure('e2e_integrated', work, { results }); } // the nodes stop first
 writeFileSync(join(EXT, 'tests', 'e2e_integrated.last.json'), JSON.stringify({ ...summary, results }, null, 1) + '\n');
 console.log(JSON.stringify(summary));
 process.exit(failed() ? 1 : 0);

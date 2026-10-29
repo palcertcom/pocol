@@ -912,9 +912,32 @@ normative changes.
 - Not kept: the invalid-block cache and the protect set. Replay recomputes the protect set from the
   journal.
 - It is written in one durable `state.redb` transaction: the snapshot, its roots record, one pin per
-  root, and the release of checkpoints beyond `KEPT` = 2. redb commits atomically, so a crash leaves the
+  root, and the drop of checkpoints beyond `KEPT` = 2. redb commits atomically, so a crash leaves the
   checkpoints from before or after the write, never part of one. This replaces the temporary file and
   rename of the frozen text.
+- **Deferred release** (2026-10-27, implementation; no rule changes). At the network's state caps,
+  releasing a dropped checkpoint's nodes inside that transaction took 8–11 s on the consensus thread,
+  plus 2.1–2.5 s to commit (evidence/memory-r14/scale-d30dc71).
+  - The write now takes the dropped checkpoint's pins off and owes each root's node one reference, in the
+    `release` table.
+  - `StateStore::release_step` works the debt off: `RELEASE_SLICE` references per transaction, between the
+    node's events, as the pool's revalidation slices run. A node left with no reference is deleted, and
+    owes one reference to each of its children.
+  - A node's stored count is the stored nodes naming it, plus its pins, plus what it owes.
+  - The next checkpoint's write first finishes what is still owed, so at most one dropped checkpoint is
+    owed at a time. A13's file term counts that set (`state_file_parts`).
+  - A release step is fsynced: a crash loses the step, never part of it, and the work stays owed.
+  - A step that fails on a storage error (an I/O error, say) loses only the step: the steps stop, the
+    store stays whole, and the next checkpoint's write or open finishes what is owed. Only a row that
+    contradicts the counts (a node owed but not stored, more owed than counted) marks the store damaged.
+    Independent review, 2026-10-27, finding 1 (evidence/memory-r14/review-2026-10-27/D6-REVIEW.md).
+  - With both pending, the event loop's background steps alternate between pool slices and release steps,
+    so a pool backlog cannot hold the release back to the next write (finding 2).
+  - A deleted node leaves the cache as it is deleted; no list of the deleted ids is held (finding 3).
+  - The store's format is 3: a node's count includes what it owes. A format-2 store opens as format 3. Unsynced
+    steps were measured too: each block's durable commit then wrote their pages, and imports during a release
+    took up to 905 ms, against 155–209 ms with fsynced steps (two runs), and state.redb grew to 4.3–8.6 GB, since
+    pages freed by unsynced transactions are not reused before a durable commit.
 - When it is written: every `checkpoint_every` = 1024 journal records (`Limits`, local), by a running
   node and by replay. Replay first makes its history.redb writes durable.
 
@@ -930,16 +953,21 @@ history window, slim depth). It is used only under the same ones.
 1. redb's full integrity check, as before.
 2. Every checkpoint's seal, and its roots record against its snapshot. A failure here means the store is
    not sound: it is rebuilt.
-3. The pins become exactly the checkpoints' (`reset_pins`). This releases a running node's entry pins,
-   and the version of a block whose journal record a crash cut off.
+3. What a checkpoint's write left owed is worked off (`release_all`, 2026-10-27). Then the pins become
+   exactly the checkpoints' (`reset_pins`). This releases a running node's entry pins, and the version of
+   a block whose journal record a crash cut off.
 4. The newest checkpoint is tried, then the one before it. `checkpoint::restore` checks:
    - the binding against the journal;
    - every entry's journal record: the header hashes to the entry, its parent is restored, its total
      work follows from the parent;
    - every stored version's state root, computed from its stored root node, against the block's
      committed stateRoot;
-   - every stored version read whole: each node checked against its id, a missing node marks the store
-     damaged, and its summary recomputed and compared with the sealed one.
+   - every node of every stored version read: each node checked against its id, a missing node marks the
+     store damaged, and each version's summary recomputed and compared with the sealed one. (2026-10-27,
+     implementation, no rule change: a version whose parent's version was read is read through what differs
+     from it, `NodeTrie::diff`, and its summary moved through those accounts and slots, as an import moves it;
+     the oldest is read whole. Reading each whole took about 17 s a version at the network's state caps,
+     evidence/memory-r14/scale-d30dc71.)
    A checkpoint that fails is released. A store found damaged is rebuilt.
 5. Replay continues after the checkpoint's last record, with replay's protect set recomputed from the
    journal events. With no checkpoint usable, the store starts empty and replay begins at genesis, as

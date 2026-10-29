@@ -12,9 +12,11 @@
 //! What open checks before it uses a checkpoint (`restore`): the seal; the journal binding; the retention
 //! parameters it was written with; every entry against its journal record (the header must hash to the
 //! entry's block hash, the parent must be restored, the total work must follow from it); every stored
-//! version's root against the block's committed stateRoot; and every stored version read whole, each node
-//! checked against its id, its summary recomputed and compared with the sealed one. Every state served
-//! afterwards is read through hash-checked nodes from a root the consensus committed.
+//! version's root against the block's committed stateRoot; and every node of every stored version read, each
+//! checked against its id, with each version's summary recomputed and compared with the sealed one. A version
+//! whose parent's version was read is read through what differs from it (`NodeTrie::diff`, about one block's
+//! writes); the others whole. Every state served afterwards is read through hash-checked nodes from a root the
+//! consensus committed.
 use std::collections::HashMap;
 use std::sync::Arc;
 use pocol_lp4_execution::{node_trie::{Id,TrieStore},state_summary::Summary};
@@ -89,7 +91,7 @@ pub fn snapshot_of(c:&Chain,b:&Binding)->Result<Snapshot,String>{
         evicted_total:c.evicted_total,unslimmed:c.unslimmed.clone(),evicted_order:c.evicted_order.iter().copied().collect(),protect:protect_of(c),entries})
 }
 fn protect_of(c:&Chain)->Option<Vec<[u8;32]>>{c.replaying.then(||{let mut v:Vec<[u8;32]>=c.protect.iter().copied().collect();v.sort();v})}
-fn sorted(c:&Chain)->Vec<&Entry>{let mut es:Vec<&Entry>=c.blocks.values().collect();es.sort_by_key(|e|(e.height,e.hash));es}
+fn sorted(c:&Chain)->Vec<&Entry>{let mut es:Vec<&Entry>=c.blocks.values().map(|e|&**e).collect();es.sort_by_key(|e|(e.height,e.hash));es}
 fn rec_of(e:&Entry)->Result<Rec,String>{
     if !e.state.accounts.is_empty()||e.diff.is_some()||e.trie.is_some(){return Err(format!("entry {} holds more than a stored version",B256::from(e.hash)))}
     let mut f=0u16;
@@ -99,7 +101,10 @@ fn rec_of(e:&Entry)->Result<Rec,String>{
         drawn:e.drawn,summary:e.summary.as_deref().copied(),root:e.stored.as_ref().and_then(|s|s.trie.world)})
 }
 /// Most bytes one entry takes in a snapshot (A13: a checkpoint being written holds the snapshot's bytes).
-pub const REC_MAX:usize=32+2+8+8+32+8*3+20+(4+16+8*6+64+1)+32;
+/// The smallest record `put_rec` writes: hash, flags, body offset, import sequence, total work, the three cumulative
+/// counts and the drawn address (no summary, no root).
+pub const REC_MIN:usize=32+2+8+8+32+8*3+20;
+pub const REC_MAX:usize=REC_MIN+(4+16+8*6+64+1)+32;
 fn put_rec(w:&mut W,e:&Rec){
     w.b(&e.hash);w.b(&e.flags.to_be_bytes());w.u(e.body_off.unwrap_or(0));w.u(e.import_seq);w.b(&e.total_work.to_be_bytes::<32>());
     w.u(e.cum_txs);w.u(e.cum_tx_bytes);w.u(e.cum_log_bytes);w.b(e.drawn.as_slice());
@@ -143,7 +148,9 @@ pub fn decode(bytes:&[u8])->Result<Snapshot,String>{
     let (head,next_seq,slim_cursor,history_cursor,evicted_total)=(r.h()?,r.u()?,r.u()?,r.u()?,r.u()?);
     let (unslimmed,evicted_order)=(r.hs()?,r.hs()?);
     let protect=match r.take(1)?[0]{0=>None,1=>Some(r.hs()?),_=>return Err("snapshot option tag".into())};
-    let n=r.n(32+2+8*6+32+20)?;let mut entries=Vec::with_capacity(n);
+    // 2026-10-28: the guard took 134 bytes a record (six u64 fields; put_rec writes five), so a snapshot of mostly
+    // minimal entries (past about 100,000 slimmed ones) was refused and open rebuilt from genesis (evidence/r4/hend/).
+    let n=r.n(REC_MIN)?;let mut entries=Vec::with_capacity(n);
     for _ in 0..n{
         let hash=r.h()?;let flags=u16::from_be_bytes(r.take(2)?.try_into().unwrap());let off=r.u()?;let import_seq=r.u()?;
         let total_work=U256::from_be_bytes::<32>(r.take(32)?.try_into().unwrap());let (cum_txs,cum_tx_bytes,cum_log_bytes)=(r.u()?,r.u()?,r.u()?);
@@ -161,33 +168,45 @@ pub fn roots(s:&Snapshot)->Vec<Id>{s.entries.iter().filter_map(|e|e.root).collec
 
 /// What `restore` reads besides the snapshot: a journal record's payload by its frame offset (only records
 /// of the bound prefix), and history.redb's receipts and nonce ranges.
+/// What marks a restore error that is the node's own storage failing, not the checkpoint (2026-10-28).
+pub const LOCAL:&str="local storage failure: ";
 pub trait Source{
-    fn payload_at(&self,off:u64)->Option<&[u8]>;
+    /// Ok(None): no record of the bound prefix there (a refusal). Err: the journal could not be read, or a record
+    /// open verified no longer verifies (a local failure, never a refusal: `LOCAL`).
+    fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>;
     fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>;
     fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>;
     /// Whether history.redb holds the block's receipts and nonce ranges.
     fn has(&self,hash:&[u8;32])->Result<bool,String>;
 }
 
+/// How `restore` read the stored versions: whole, or through what differs from the parent's version.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct Read{pub whole:u64,pub by_diff:u64}
 /// Restores a snapshot into `c`: a chain that holds only genesis, with its store enabled and the
 /// retention parameters set as open sets them. Every check in the module comment is made; on any failure
 /// `c` is left as it was (the versions pinned on the way are released) and the error says which check
-/// failed.
-pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore>)->Result<(),String>{
+/// failed. Returns how the stored versions were read.
+pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore>)->Result<Read,String>{
     if s.genesis!=c.spec.genesis_hash(){return Err("snapshot of another genesis".into())}
     if s.params!=Params::of(c){return Err(format!("snapshot taken under other retention parameters: {:?}, now {:?}",s.params,Params::of(c)))}
     if c.blocks.len()!=1{return Err("restore into a chain that holds only genesis".into())}
     let cp=c.spec.cp();let (body_max,code_max)=(cp.BODY_MAX as usize,cp.B_code_max);let gh=c.spec.genesis_hash();
-    let mut last=(0u64,[0u8;32]);let mut blocks:HashMap<[u8;32],Entry>=HashMap::new();
+    // The entries are boxed as they are restored, as `Chain::blocks` keeps them: A13 counts each entry as a boxed
+    // slot and one Entry (review 2026-10-27: an inline map here held about 2.5 KB more per entry at open, about
+    // 320 MB at the network profile's H_END).
+    let mut last=(0u64,[0u8;32]);let mut blocks:HashMap<[u8;32],Box<Entry>>=HashMap::new();
+    // Each stored version's summary as read here (a slimmed entry's is not sealed), and how the versions were read.
+    let (mut read_sums,mut read):(HashMap<[u8;32],Summary>,Read)=(HashMap::new(),Read::default());
     // The BLOCKHASH window a child of `p` executed with (`Chain::ancestors`).
-    let ancestors=|blocks:&HashMap<[u8;32],Entry>,p:&Entry|{let mut out=HashMap::new();let mut cur=Some(p);
-        while let Some(e)=cur{if p.height+1-e.height>256{break}out.insert(U256::from(e.height),B256::from(e.hash));cur=e.parent.and_then(|x|blocks.get(&x));}out};
+    let ancestors=|blocks:&HashMap<[u8;32],Box<Entry>>,p:&Entry|{let mut out=HashMap::new();let mut cur=Some(p);
+        while let Some(e)=cur{if p.height+1-e.height>256{break}out.insert(U256::from(e.height),B256::from(e.hash));cur=e.parent.and_then(|x|blocks.get(&x)).map(|b|&**b);}out};
     for (i,r) in s.entries.iter().enumerate(){
         let why=|m:&str|format!("entry {i} ({}): {m}",B256::from(r.hash));
         if r.flags&F_STORED!=0&&r.flags&F_WORLD==0{return Err(why("a stored empty state"))}
         let e=if i==0{
             if r.hash!=gh||r.body_off.is_some(){return Err(why("the first entry is not genesis"))}
-            let mut g=c.blocks[&gh].clone();
+            let mut g=(*c.blocks[&gh]).clone();
             if g.summary.as_deref()!=r.summary.as_ref(){return Err(why("genesis summary"))}
             // Genesis's version is the one `enable_store` just built from the admitted genesis state.
             if r.root!=g.stored.as_ref().and_then(|p|p.trie.world){if r.root.is_some(){return Err(why("genesis root"))}g.stored=None;}
@@ -198,8 +217,8 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
             // I3; replay makes them durable before it checkpoints): one an old entry would read on demand
             // must be there too.
             if !src.has(&r.hash)?{return Err(why("not in history.redb"))}
-            let payload=src.payload_at(off).ok_or_else(||why("its journal offset is not a record of the bound prefix"))?;
-            let (hb,bb,rb)=crate::store::decode_record(payload).map_err(|e|why(&format!("record: {e}")))?;
+            let payload=src.payload_at(off)?.ok_or_else(||why("its journal offset is not a record of the bound prefix"))?;
+            let (hb,bb,rb)=crate::store::decode_record(&payload).map_err(|e|why(&format!("record: {e}")))?;
             let header=decode_header(&hb).map_err(|e|why(&format!("header: {e}")))?;
             if block_hash(&header)!=r.hash{return Err(why("the journal header does not hash to the entry"))}
             let p=blocks.get(&header.parent_hash).ok_or_else(||why("parent not restored"))?;
@@ -229,33 +248,47 @@ pub fn restore(c:&mut Chain,s:&Snapshot,src:&dyn Source,store:&Arc<dyn TrieStore
         };
         if (e.height,e.hash)<=last&&i>0{return Err(why("entries out of order"))}last=(e.height,e.hash);
         let mut e=e;e.pruned=r.flags&F_PRUNED!=0;e.full=r.flags&F_FULL!=0;e.import_seq=r.import_seq;e.cum_txs=r.cum_txs;e.cum_tx_bytes=r.cum_tx_bytes;e.cum_log_bytes=r.cum_log_bytes;e.drawn=r.drawn;e.is_final=r.flags&F_FINAL!=0;
-        // Every stored version is read whole: each node is checked against its id as it is read, a node
-        // that is missing marks the store damaged, and the summary must be the sealed one.
-        // A slimmed entry may still hold its version (a slim depth below K_hist): it keeps no summary, which
-        // execution then computes from the version (`Chain::execute`); the version is still read whole here.
+        // Every node of every stored version is read: each is checked against its id as it is read, a node that
+        // is missing marks the store damaged, and the summary must be the sealed one. A version whose parent's
+        // version was read here is read through what differs from it (2026-10-27: reading each whole took about
+        // 17 s a version at the network's state caps, evidence/memory-r14/scale-d30dc71): the nodes the diff does not
+        // read are the parent's, read already, and `Summary::moved` carries the parent's summary through the
+        // accounts and slots that differ, as an import does. The oldest version, and any whose parent's was not
+        // read, is read whole. A slimmed entry may still hold its version (a slim depth below K_hist): it keeps no
+        // summary, which execution then computes from the version (`Chain::execute`); the version is still read.
         if let Some(pin)=&e.stored{
-            let got=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||Summary::scan_view(&pin.view(),code_max))).map_err(|_|why("the stored version could not be read whole"))?;
+            let base=e.parent.and_then(|h|blocks.get(&h)).and_then(|p|Some((p.stored.clone()?,*read_sums.get(&p.hash)?)));
+            let got=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||match &base{
+                Some((p,sum))=>sum.moved(&p.view(),&pin.view(),&p.trie.diff(&**store,&pin.trie)),
+                None=>Summary::scan_view(&pin.view(),code_max)})).map_err(|_|why("the stored version could not be read"))?;
+            if base.is_some(){read.by_diff+=1}else{read.whole+=1}read_sums.insert(e.hash,got);
             match r.summary{Some(want) if got!=want=>return Err(why("the stored version's summary is not the sealed one")),None if r.flags&F_SLIM==0=>return Err(why("a stored version without its summary")),_=>{}}
         }
-        blocks.insert(e.hash,e);
+        blocks.insert(e.hash,Box::new(e));
     }
     if !blocks.contains_key(&s.head){return Err("the snapshot's head is not one of its entries".into())}
     if blocks.values().any(|e|e.import_seq>=s.next_seq&&e.height>0){return Err("an import sequence at or beyond next_seq".into())}
     let evicted:std::collections::HashSet<[u8;32]>=s.evicted_order.iter().copied().collect();
     if evicted.len()!=s.evicted_order.len(){return Err("evicted hashes repeat".into())}
     if s.unslimmed.iter().chain(&s.evicted_order).any(|h|*h==[0u8;32]){return Err("a zero hash".into())}
-    c.blocks=blocks;c.head=s.head;c.rebuild_canonical();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
+    c.blocks=blocks;c.head=s.head;c.canonical.clear();c.rebuild_canonical();c.retention_reset();c.next_seq=s.next_seq;c.slim_cursor=s.slim_cursor;c.history_cursor=s.history_cursor;c.evicted_total=s.evicted_total;
     c.unslimmed=s.unslimmed.clone();c.evicted_order=s.evicted_order.iter().copied().collect();c.evicted=evicted;
-    Ok(())
+    Ok(read)
 }
 
 /// A journal's records by frame offset (the prefix a snapshot is bound to) over history.redb.
-pub struct JournalSource<'a>{pub by_off:HashMap<u64,usize>,pub payloads:&'a [Vec<u8>],pub records:usize,pub history:&'a crate::history::History}
+pub struct JournalSource<'a>{pub by_off:HashMap<u64,usize>,pub journal:&'a crate::store::Journal,pub records:usize,pub history:&'a crate::history::History}
 impl Source for JournalSource<'_>{
-    fn payload_at(&self,off:u64)->Option<&[u8]>{self.by_off.get(&off).filter(|i|**i<self.records).map(|i|self.payloads[*i].as_slice())}
-    fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|e.0)}
-    fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|e.0)}
-    fn has(&self,hash:&[u8;32])->Result<bool,String>{self.history.has(hash).map_err(|e|e.0)}
+    /// Read back from the journal file and verified again (open no longer holds the payloads).
+    fn payload_at(&self,off:u64)->Result<Option<Vec<u8>>,String>{
+        if self.by_off.get(&off).filter(|i|**i<self.records).is_none(){return Ok(None)}
+        // Every offset here was verified by open's first pass, so a record that no longer verifies is the local file
+        // changing (review 2026-10-28, F-B): a local failure, never a refusal that would drop the checkpoint.
+        match self.journal.payload_at(off){Ok(p)=>Ok(Some(p)),Err(e)=>Err(format!("{LOCAL}the journal at offset {off}: {e:?}"))}}
+    // history.redb that cannot be read is a local failure (review F2), never a refusal of the checkpoint.
+    fn receipts(&self,hash:&[u8;32])->Result<Option<Vec<Vec<u8>>>,String>{self.history.receipts(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
+    fn ranges(&self,hash:&[u8;32])->Result<Option<Vec<(Address,u128,u128)>>,String>{self.history.ranges(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
+    fn has(&self,hash:&[u8;32])->Result<bool,String>{self.history.has(hash).map_err(|e|format!("{LOCAL}history: {}",e.0))}
 }
 /// The chain's persistent fields as a snapshot sees them (tests compare two chains with it).
 pub fn fingerprint(c:&Chain)->Result<Snapshot,String>{snapshot_of(c,&Binding{records:0,end:0,hash:[0;32]})}

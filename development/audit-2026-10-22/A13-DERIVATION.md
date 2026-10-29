@@ -194,6 +194,16 @@ The 320 full side blocks (132.3 MiB) are replaced by offloaded metadata. Devnet 
 commit (`evidence/a13-breakdown-redb.json`, 9ce5a7c):
 - side/offloaded side-block metadata (side_cap + 2·r_keep = 6,144 entries): **140,986,368 B**;
 - side/one full block before offload or during restore: **433,635 B**;
+- 2026-10-28 (after 719da04): each entry also holds a slot in the chain's side set (`Chain::side`, which
+  replaced the per-retain walk over every entry), 48 B more: 22,995 B per entry, +294,912 B for the 6,144
+  entries. The devnet total pinned by `a13_bound_breakdown` is 3,233,892,640 B; network store mode
+  5,581,616,397 B (5.198 GiB).
+- 2026-10-28 (independent review F-C, evidence/r4/review-2/REVIEW.md): the side set is its own term
+  instead, `side/the chain's side set`, (side entries + r_keep) × 76 B: a hash table of 32-byte keys can
+  take up to about 76 B an element after it grows and does not shrink, and a reorg moves up to r_keep
+  hashes in before retain trims. Devnet total 3,234,220,320 B; network store mode 5,581,944,077 B
+  (5.199 GiB), 6,379,364,660 B required against 6,442,450,944 B. The protect-set slot and the evicted FIFO
+  keep the 48 B convention: not re-derived, open.
 - side/evicted-hash FIFO (EVICTED_MAX): **98,304 B**;
 - side total **141,518,307 B = 134.96 MiB** (was 320 × 433,563 = 138,740,160 B = 132.31 MiB at 687ac38).
 Model total **5,627,687,516 B** (was 5,623,469,297 B): +4,218,219 B = +2,778,147 (side) + 1,440,072, the
@@ -304,7 +314,7 @@ evidence/c1-e4/a13-final.log (commit fc24969).
 | store/node cache | `NODE_CACHE` (256 MiB) | resident bytes: `CACHE_ENTRY` + `Node::resident_bytes` per node, enforced by `Cache::put` | 0.25 GiB |
 | store/redb page cache | `STATE_PAGE_CACHE` (64 MiB) | set on the builder | 0.06 GiB |
 | store/redb allocator | `redb_allocator_bytes(state_file_max)` | redb 2.6.4 keeps, for every 4 GiB region of the file, a buddy allocator sized for the whole region; `redb_region_allocator` mirrors buddy_allocator.rs and bitmap.rs | 1.81 GiB |
-| store/stored-version handles | `stored_versions` × `pinned_bytes` | genesis, the K_hist window, side_max, a rolling rebuild, and an abandoned window until `settle` | 0.005 GiB |
+| store/stored-version handles | `stored_versions` × `pinned_bytes` | every version `held_runs` lists (2·K_hist + side_max + 4): genesis, the K_hist window with the block being imported, side_max, a rolling rebuild with the version it commits next, and an abandoned window until `settle`. Review 2026-10-27: this count once listed 2·K_hist + side_max + 2, apart from the versions' bytes; both now read `held_runs` (`a13_counts_a_handle_for_every_held_version`) | 0.005 GiB |
 | store/a checkpoint being written | `checkpoint_bytes` | its bytes (`REC_MAX` per entry), the entry index, and redb's copy | 0.08 GiB |
 | code/read by the execution | one code set | each loaded account's code is read from the store; bounded by CODE_CAP | 1.13 GiB |
 | code/the pool's state | one code set | the pool's own creates | 1.13 GiB |
@@ -551,6 +561,150 @@ the layer (finding 4).
 The options, with their numbers and effects, are in DECISION-PACKAGE.md ("After D-7 and the code-loading
 audit"). No bound was lowered to reach the budget.
 
+### 2e. The network store-mode bound recounted: four provable reductions (2026-10-27, `892dca6`)
+
+The 7.61 GiB bound of §2d was itemized term by term. A term was cut only where the code was changed so that
+it holds less, or where a tighter count was proven and tested against a real store. No consensus rule,
+validity rule, local limit or acceptance criterion changed. No term was lowered without that proof.
+
+**1. The pool's layer keeps no code copies** (lp4 `view::Layer::drop_code_copies`, `Layer::info`;
+pocold `node::admit_tx`).
+- In store mode an account is read with a copy of its code (`TrieState::info`). Each entry of the pool's
+  pending layer kept that copy for as long as the layer lived. The term was min(touched accounts ×
+  B_code_max, CODE_CAP) plus the creations.
+- After each admission the touched entries now keep the code hash only. Reads give the code back, from
+  the layer's own code or from the base:
+  - `account`, `each_account` and `merge` do so;
+  - `contract_of` puts every code a commit or `insert_info` writes in the layer unless the base has it;
+  - a base never loses code (a store keeps code for good; a whole state is not changed under the layer).
+- So the layer holds its creations only, as in whole-state mode. The copies a transaction reads while it
+  is admitted belong to the execution's set, which is unchanged.
+- Tests:
+  - `view::tests::a_layer_without_its_code_copies_reads_and_merges_as_before`: 2,000 random layers;
+    reads, code checks, `each_account` and `merge` are identical with and without the copies.
+  - `consensus::d7_the_store_mode_pool_layer_keeps_no_code_copies`: on a store-mode node, after pool
+    transactions call a contract of the head and create one, no entry holds code. "pending" still answers
+    both codes, and later pool transactions run both.
+- 0.618 → 0.0003 GiB.
+
+**2. state.redb's file counts a shared node once** (pocold `resources::chain_versions_bytes`,
+`held_versions_bytes`; lp4 `node_trie::version_bytes`, `block_bytes`).
+- The old count took each held version separately and counted every node at the largest encoding (a
+  16-child branch, 1,162 bytes with its row). At the network profile every version saturated: about 108
+  whole versions, a 14.3 TiB file and 3,653 redb regions.
+- Two facts, both in the code:
+  - **Nodes are stored once.** They are content-addressed: `state_store::commit` adds a reference to a
+    node that is already stored, and `release` deletes a node when its last reference goes. So n versions
+    at consecutive heights of one chain keep the oldest version's nodes plus what each later block's
+    version added. They also keep at most n whole versions.
+  - **Nodes are counted by kind.** A version of A accounts and S slots has:
+    - one leaf per key (≤ 191 bytes for an account, which includes its storage trie's top; ≤ 98 for a slot);
+    - at most one branch per leaf, since `build` and `finish` make no branch with fewer than two children
+      (70 bytes without its children);
+    - at most one child reference per node (66 bytes each), since each node hangs from one branch.
+
+    A block adds its batch's branches and changed leaves. The displaced leaf is the parent's, unchanged.
+- **The held versions** (`held_runs`, which `stored_versions` also sums for the handles), counted as runs:
+  - genesis;
+  - the K_hist window with the block being imported (K_hist + 1 consecutive);
+  - the abandoned window until `settle` (K_hist consecutive);
+  - side_max side states, one each;
+  - a rolling re-execution and the version it commits next (2 consecutive).
+
+  The entries hold these once, and each of the KEPT checkpoints holds them once more.
+- **Finding.** The old formula did not count the abandoned window or the rolling entry, which
+  `stored_versions` lists. Its saturation hid that undercount. The new formula counts both.
+- Tests (lp4 `node_trie::tests`):
+  - `a_store_keeps_at_most_what_a13_counts_for_its_versions`: random states of accounts with storage,
+    with accounts created, removed and cleared. Each version, each block's addition and a window of four
+    pinned versions stay within the bounds. A positive control checks that a block reaches a sizeable
+    share of its bound.
+  - `deep_shared_prefixes_stay_within_what_a13_counts`: raw keys sharing up to 64 nibbles, with branches
+    beyond nibble 60.
+  - `a13_store_file_and_batch_terms_follow_the_node_trie_bounds` (network_budget): re-derives the file
+    parts from the node_trie bounds.
+- File 14.27 → 2.20 TiB (563 regions). Allocator 1.809 → 0.279 GiB.
+
+**3. A block's batch by node kind** (lp4 `node_trie::batch_nodes`).
+- Every node an update puts in its batch is a node of the child version. It holds at most:
+  - 64 branches per changed key, and no more than the child's leaves;
+  - two leaves per changed key: the new one and the leaf it displaces;
+  - 16 children per branch, and no more than one per node of the child.
+- **Finding.** The 65-node count per key missed the displaced leaf, which `update` puts in the batch again
+  (unchanged). In the old bound the leaves were charged at branch size, which covered it.
+- `a_path_of_64_branches_and_a_displaced_leaf_reach_the_batch_bounds` builds both worst cases exactly. It
+  checks a path of 64 branches rebuilt whole, and two leaves for one changed key.
+- 1.024 → 0.916 GiB. The children term (0.63 GiB) now binds at the child's node count, not at 16 per branch.
+
+**4. The chain's entries are boxed** (pocold `Chain::blocks: HashMap<[u8;32], Box<Entry>>`).
+- A hash table keeps spare buckets. While it grows it holds its old buckets and twice as many new ones:
+  up to 24/7 buckets per entry.
+- Inline, each bucket was a whole 1,088-byte `Entry`, and the old ×3 count was short of 24/7.
+- Boxed, a bucket is the 40-byte key and pointer. The term counts it at ×4, plus the Entry once and its
+  allocation header.
+- Slimmed, offloaded and side metadata: 0.786 → 0.524 GiB.
+
+**Result** (tests/network_budget.rs; the computed bound, not measured RAM;
+evidence/memory-r14/a13-models.log):
+
+| profile | whole-state mode | store mode |
+|---|---:|---:|
+| network | 25.24 → **24.98 GiB** (gate 28.55) | 7.605 → **5.086 GiB** (gate **5.81**, budget 6) |
+| devnet | 3.04 → 2.99 GiB (gate 3.41) | 3.48 → 2.44 GiB (gate 2.79) |
+
+| item (network, store mode) | §2d | now |
+|---|---:|---:|
+| code read by the execution in progress (CODE_CAP) | 1.125 | 1.125 |
+| EVM execution memory and operation classes | 0.979 | 0.979 |
+| a block's batch | 1.024 | 0.916 |
+| state.redb allocator | 1.809 | 0.279 |
+| node cache (NODE_CACHE) | 0.250 | 0.250 |
+| canonical metadata, offloaded and slimmed | 0.593 | 0.342 |
+| side metadata | 0.193 | 0.181 |
+| the pool's layer: writes / code | 0.127 / 0.618 | 0.127 / 0.0003 |
+| everything else | 0.887 | 0.887 |
+| **total** | **7.605** | **5.086** |
+
+**Updated 2026-10-27 (R3).** Two changes raise this total.
+- `5abbaf3` adds two stored-version handles.
+- The deferred checkpoint release counts one owed checkpoint's versions, and a release row for at most each of
+  their nodes (§3c).
+
+Network store mode is now **5,581,321,485 B (5.198 GiB), gate 5.94 GiB**, budget 6 GiB, model cap 5.25 GiB.
+- The state.redb allocator term rises from 0.279 to 0.391 GiB; its largest file is 3.08 TiB.
+- Devnet store mode is 2.449 GiB.
+
+**Mutation controls** (evidence/memory-r14/mutants.log): 25 mutants of the new code, 24 killed, one
+equivalent.
+- P6 drops the `min(n·whole, …)` of `chain_versions_bytes`. It is equivalent for every input the types allow:
+  - every term of `block_bytes` is at most the same term of `version_bytes`, so the `min` never picks
+    its first argument;
+  - `n·whole` cannot overflow, since it is below 2^107 for u64 caps and a u32 K_hist, so the original never
+    returns `None` where the mutant would not.
+  - The proof is in evidence/memory-r14/README.md. `node_trie::tests::a_blocks_addition_is_at_most_a_whole_version`
+    pins its premise.
+- N11 (`ROW` 36 → 32 bytes) survived the node_trie tests: their bounds have slack for a row 4 bytes short.
+  It is killed by `state_store::a13_row_is_what_state_redb_keeps_per_node` (`8d80354`), which checks `ROW`
+  plus each node's encoding against the rows state.redb keeps, exactly.
+- P8 (the map slot of a block entry at ×3) survived `network_budget` and is killed by
+  `a13_bound_breakdown`, which pins the devnet total.
+
+**What this does and does not establish:**
+- The store-mode model of the network profile is now under the 5.25 GiB model cap. Its gate (5.81 GiB) is
+  under the 6 GiB budget.
+- This is the computed bound. It is not measured RSS and it is not acceptance:
+  - the network profile is still refused at boot for its other gates (A13 is one of them);
+  - store mode stays opt-in;
+  - nothing here was measured on a near-cap network-scale state.
+- **It still rests on:**
+  - the inventories by inspection (`BATCHES`, `EXECUTIONS`, `stored_versions`; conditions `store-inventory`
+    and `transient-snapshot-inventory`);
+  - the measured file factor (STATE_FILE_FACTOR = 12, not established for files above a few hundred MB:
+    condition `store-file-factor`; each unit is now about 0.023 GiB of the bound);
+  - revm 19.7's loading behaviour (`revm-loading`).
+- **The key-path assumption** (at most 21 nodes per path) is still not used. With it, the batch would be
+  about 0.33 GiB and the allocator about 0.15 GiB (estimated from the same formulas): about 0.7 GiB less.
+
 ## 3. System gas (R18) and timing (R14/R19)
 
 - Gas: per-call maxima measured by `resources::tests::sys_gas_envelope_fixture` (worst case plus a
@@ -583,6 +737,166 @@ audit"). No bound was lowered to reach the budget.
     state: max 1,068.5 ms whole-state and 1,045.1 ms store; small store: one outlier at 4,841.8 ms).
     Whether the calibration should include a state-heavy workload is a decision. If it did, this host
     would refuse both modes at t_exec = 1 s.
+
+### 3b. The calibration workload against the slowest blocks (2026-10-27)
+
+`journal_measure::jm_r14_workload_gap` (ignored; evidence/memory-r14/r14-gap-*.log) runs in one
+process:
+- the boot calibration, in memory and through a scratch store;
+- for a whole-state node and a store-mode node, the validate time (median of 3) and the import time of one
+  full-gas block of each kind;
+- each kind first on the devnet genesis state, then after the state is grown to 18,787 accounts and 47,704
+  slots, near the devnet caps (ACCT_CAP 20,000, SLOT_CAP 50,000).
+
+Each kind block is followed by an empty block. It is a measurement on this host (4 vCPU KVM, ext4 on
+virtio), not a bound, and it gates nothing.
+
+**A correction first: the test-only root checks.**
+- pocold's tests build lp4 with the `root-check` feature, and `POCOL_ROOT_CHECK` defaults to on.
+- Under it, every block is also run on the full reference path:
+  - a whole-state copy, with the state root recomputed from every key;
+  - in store mode, whole-state scans of the views.
+- The node binary does not have the feature.
+- The first run left the checks on. Building the grown state took 499 s with them and 8.5 s without.
+- On the grown state, the calibration's own compute block validated in:
+  - 1,475 ms with the checks against 17 ms without (whole-state mode);
+  - 330 ms against 38 ms (store mode).
+- The figures below are with `POCOL_ROOT_CHECK=0`, as C-1 E1 prescribes for timing runs.
+- **The state-heavy times cited in DECISION-PACKAGE.md and §3 above came from journal_measure runs that do
+  not show the setting** (evidence/c1-e4/disk-impact-final.md: up to 1,068.5 / 1,045.1 / 4,841.8 ms). So they
+  likely include this work. They are kept as recorded, and this run supersedes them for the decision.
+
+**Times with the checks off** (ms, validate median / import; store-mode imports before the fix below):
+
+| kind (one full-gas block) | whole-state, genesis | whole-state, grown | store, genesis | store, grown |
+|---|---:|---:|---:|---:|
+| GAS_LIMIT compute loop (the calibration's workload) | 12 / 12 | 17 / 25 | 11 / 28 | 38 / 72 |
+| 380 transfers | 68 / 95 | 76 / 78 | 71 / 132 | 94 / 255 |
+| **MODEXP, 8-byte even modulus, 1,024-byte exponent** | **1,572 / 1,625** | **1,285 / 1,182** | **1,230 / 2,432** | **1,441 / 2,609** |
+| **MODEXP, 8-byte even modulus, 4,096-byte exponent** | **1,417 / 1,535** | **1,261 / 1,397** | **1,381 / 2,569** | **1,315 / 2,535** |
+| BN pairing, one pair | 411 / 279 | 315 / 303 | 277 / 666 | 367 / 621 |
+| keccak over 32 KiB | 240 / 232 | 178 / 188 | 191 / 437 | 192 / 404 |
+| ecrecover | 135 / 192 | 149 / 178 | 159 / 336 | 151 / 304 |
+| cold CALLs | 22 / 25 | 43 / 56 | 68 / 136 | 300 / 465 |
+| CREATE2 loop | 11 / 13 | 18 / 25 | 47 / 112 | 215 / 246 |
+| fresh accounts (value CALLs) | 7 / 8 | 15 / 22 | 20 / 51 | 130 / 202 |
+| fresh SSTOREs, LOG0, memory growth | ≤ 7 / ≤ 14 | ≤ 13 / ≤ 20 | ≤ 18 / ≤ 44 | ≤ 30 / ≤ 72 |
+
+Calibration on the same run: 8–10 ms per phase in memory and 15–19 ms through the store; t_exec is 1,000 ms.
+Repeated runs on this host vary by up to about 2× (the MODEXP block took 2.5 s in the first run).
+
+**The difference between the calibration and the blocks that exceed t_exec.**
+- **The calibration's workload is the cheapest per gas there is:** about 1.5–2.5 ns per gas.
+  - It is one transaction looping JUMPDEST/PUSH/JUMP, so it measures the interpreter's dispatch only.
+  - It reads no state, writes almost none, calls no precompile and verifies one signature.
+- **The only blocks over t_exec are MODEXP with an even modulus:** 160–200 ns per gas, about 100× the
+  calibration.
+  - EIP-2565 prices MODEXP from the input lengths and the exponent's bits.
+  - revm 19.7 takes a slower path for an even modulus, which that pricing does not reflect.
+  - This is D-2: per-gas pricing, not state.
+- **Next per gas:** BN pairing (≈ 40), keccak over large inputs (≈ 22–24), ecrecover (≈ 19), and many
+  transfers (≈ 10–12: a signature per transaction).
+  - All of them are under t_exec here, in both modes and on both states.
+- **State size adds little when the checks are off:**
+  - the compute block goes from 12 to 17 ms in whole-state mode and from 11 to 38 ms in store mode;
+  - state-heavy kinds read accounts from state.redb in store mode, so cold CALLs, CREATE2 and fresh
+    accounts are slower there (130–300 ms on the grown state), but well under t_exec.
+- **So the gap is in what the workload costs per gas, not in the state:** a calibration on the compute loop
+  measures the fastest block and calls it the slowest.
+
+**A store-mode import defect found by this measurement, and fixed.**
+- Store-mode imports took about twice their validation (MODEXP: 2.6 s against 1.4 s).
+- The cause: `Chain::restore_canonical` re-executes every canonical block above the K_hist cut that has no
+  S3a diff, so that the diff links the head to a retained state.
+- A store-mode entry has no diff. Its state is a stored version, and a re-executed one is only rolled and
+  released.
+- So every import that moved the head executed the old head and the new one once more, and committed and
+  released a rolling version.
+- The fix limits that condition to whole-state mode: the diffs are whole-state mode's. Offloaded blocks are
+  still restored in both modes.
+- Test `consensus::store_mode_imports_on_the_head_execute_each_block_once`:
+  - store mode: 9 re-executions in 6 imports before the fix, 0 after;
+  - whole-state mode: 0 before and after.
+- The times after the fix are in evidence/memory-r14/r14-gap-after-fix.log.
+
+### 3b-2. MODEXP: two exact fast paths, the shape sweep, and the slowest blocks after them (2026-10-27)
+
+The precompile pocol's EVM runs at address 5 is now `lp4-execution/src/modexp.rs` (`native.rs` `build_engine`
+puts it in place of revm's entry; the other addresses are revm's Cancun set). For every input and gas limit
+it returns what revm 19.7's `berlin_run` returns: the same gas, bytes and errors. It computes two classes
+itself and hands every other input to revm unchanged. No gas, rule or result changes.
+
+**The two fast paths.**
+- **A modulus value below 2^64** (`b46658a`): Montgomery multiplication on one word for the odd part q; the
+  power of two 2^t directly (an even base to an exponent of at least t is 0; an odd base's exponent counts
+  mod 2^64); joined by the Chinese remainder theorem (CRT).
+- **An even modulus q·2^t of more than one word with t > 64 and q > 1** (`0c2ad75`): x1 = base^exp mod q by
+  revm's own MODEXP (or the one-word path when q fits a word), and x2 = base^exp mod 2^t by revm's own (its
+  power-of-two path). q^-1 mod 2^t comes from Newton's iteration, and CRT joins them.
+  - Why this class: aurora-engine-modexp 1.3.0 inverts q mod 2^t one bit at a time (Koç's algorithm,
+    `mpnat.rs` `koc_2017_inverse`). That is t steps on t/64 words.
+  - EIP-2565 prices the call at c/3 with c = (m/8)^2 for a small exponent. The inverse grows as t² ∝ m², so
+    the cost per gas stays at about 190 ns however large the modulus.
+  - Newton needs about log2(t/64) multiplications.
+
+**The sweep that found the second class** (`journal_measure::jm_modexp_sweep`, ignored).
+- 17 modulus sizes (1 to 1,024 bytes) × 5 kinds (odd; even; a power of two; the low half zero; 3·2^(8m-2))
+  × 5 exponents (all ones, from the 200-gas floor up to 32,768 bits), with the base as long as the modulus.
+- 384 shapes within a block's gas. Each is checked equal to revm.
+- Each is timed per call, for pocol and for revm. A full-gas block's time is projected as the calls a block
+  makes (131 gas of loop per call) times the time per call. The slowest projections are then built as real
+  blocks and validated.
+
+| shape (base = modulus length) | gas per call | revm per call | pocol per call | full block, before → after |
+|---|---:|---:|---:|---:|
+| 3·2^8190, exponent 3 (1,024 bytes) | 5,461 | 1,062 µs | 156 µs | 1,554 ms → 227–267 ms |
+| 3·2^4094, exponent 3 (512 bytes) | 1,365 | 273 µs | 47 µs | 1,563 ms → (not built) |
+| 3·2^2046, exponent 3 (256 bytes) | 341 | 79 µs | 17 µs | 1,457 ms → 291–348 ms |
+| 2^4096 · odd, exponent 3 (1,024 bytes) | 5,461 | 425 µs | 135 µs | |
+| one word, even, 1,024-byte exponent | 2,730 | 512 µs | 86 µs | 957–1,023 ms → 238–272 ms |
+
+The before and after per-call figures are from sweep-evenmax-before-wide.log and sweep-0c2ad75.log. The
+one-word row is from exec-cost-per-gas.log. The blocks are from those logs and from r14-gap-d30dc71.log
+(both modes, genesis and grown state).
+
+**The slowest blocks now** (`r14-gap-d30dc71.log`, POCOL_ROOT_CHECK=0, ms, validate median / import; whole-state
+genesis, whole-state grown, store genesis, store grown):
+
+| kind | ws genesis | ws grown | store genesis | store grown |
+|---|---:|---:|---:|---:|
+| MODEXP 16-byte modulus, low half zero, 2,048-bit exponent (revm's path) | 464 / 421 | 409 / 456 | 474 / 454 | 449 / 476 |
+| MODEXP 16-byte even modulus, 1,024-byte exponent (revm's path) | 425 / 419 | 427 / 490 | 403 / 450 | 434 / 510 |
+| MODEXP 1,024-byte even modulus (t = 1), exponent 3 (revm's path) | 425 / 401 | 420 / 448 | 444 / 458 | 429 / 433 |
+| MODEXP 3·2^2046, exponent 3 (wide path) | 308 / 309 | 348 / 320 | 291 / 304 | 330 / 302 |
+| MODEXP 9-byte odd modulus, 2,048-bit exponent (revm's path) | 294 / 318 | 298 / 315 | 338 / 308 | 321 / 315 |
+| BN pairing, one pair | 282 / 310 | 295 / 294 | 305 / 285 | 347 / 303 |
+| BN mul | 271 / 254 | 281 / 275 | 271 / 258 | 285 / 295 |
+| MODEXP one word, even, 1,024-byte exponent (one-word path) | 238 / 253 | 256 / 266 | 251 / 249 | 272 / 278 |
+| MODEXP 3·2^8190, exponent 3 (wide path) | 227 / 281 | 243 / 277 | 257 / 241 | 267 / 268 |
+| the calibration's compute loop | 12 / 19 | 15 / 23 | 19 / 21 | 30 / 37 |
+
+- **Every kind measured is now under the devnet t_exec of 1 s,** in both modes and on both states.
+  - The slowest is about 0.47 s to validate and 0.51 s to import, up to about 60 ns per gas.
+  - These are MODEXP moduli of 9–16 bytes on revm's own path. BN pairing and BN mul are next, at 0.27–0.35 s.
+- **The margin is about 2×,** and repeated runs on this host vary by up to 2×. So a host somewhat slower than
+  this one could exceed t_exec on these blocks. That is what decision row 2 (ii) would detect at boot.
+- **The sweep is a grid of measured shapes, not a proof of the maximum.** It found the second class only
+  because a kind was added for it.
+
+**Correctness evidence.**
+- `modexp::tests`: 60,000 random and edge inputs (gas limits around the cost, inputs cut short) and 20,000
+  one-word moduli against revm.
+- 20,000 random wide moduli: q of 1 to 160 bytes, t around 64 and at its largest, leading zero bytes. The
+  wide path ran in more than a third of the cases.
+- The Newton inverse is checked directly. The swept shapes are checked one by one.
+- Seeded faults (mutants.log, mutants-wide.log): 22 mutants of the arithmetic, the parsing, the gas check and
+  the wiring, all caught. WX11 moves the threshold t > 64 to t > 1. That changes only which path runs, not the
+  results, and the routing assertion catches it.
+- **A defect of the new code, caught before commit:** `mul_trunc` dropped a row's carry when the second operand
+  was shorter than the remaining words. The differential tests and the inverse test failed on it; it was fixed.
+- One-shot per-call timings in the sweep are noisy on this host, up to about 2×. Interleaved
+  (`modexp::tests::wrapper_overhead_interleaved`, wrapper-overhead.log), pocol's time on inputs it hands to
+  revm equals revm's within noise. Its own checks cost 0.07–0.56 µs per call.
 
 ### 3a. EVM execution memory (`resources::memory::execution`, round 2, corrected)
 
@@ -657,6 +971,45 @@ Validation:
   large code, each against its own term rather than the total, are kept out of this public repository.
   They are delivered to the owner in the private review package (`evidence/PRIVATE-REVIEW-PACKAGE.md`
   lists the files and hashes). The public tests do not replace them.
+
+### 3c. A store-mode node at the network's state caps, measured against this bound (2026-10-27)
+
+Evidence: evidence/memory-r14/scale-d30dc71/README.md (`jm_store_scale`, release, ignored). It is a measurement
+on one host under one synthetic workload, not a bound.
+
+- **Profile:** the devnet profile with the network's state caps (ACCT_CAP 10^6, SLOT_CAP 4·10^6, CODE_CAP 1 GiB,
+  TXBYTES_CAP 8 GiB, H_END 129,600), in store mode. **This section's bound** for it: 5,255,359,885 B (4.894 GiB);
+  5,255,514,985 B after `5abbaf3`.
+- **Grown** to 950,000 accounts and 3,800,300 slots:
+  - VmHWM 474 MiB; after an open from a checkpoint 539 MB, and 477 MB after `5abbaf3`;
+  - state.redb 2,056 MiB, with 638 MiB allocated;
+  - the stored versions and checkpoints 0.20 of one version's `version_bytes` at the same counts;
+  - the node cache at NODE_CACHE.
+- **The terms this workload exercises behave as counted:** the stored versions, the node cache, the entries.
+  The largest terms are worst cases it does not reach: the pool at its gas bound, CODE_CAP code sets, a
+  maximal batch, RPC, peers, a deep reorg's abandoned window. So the measurement does not close the bound.
+- **Open time (D-6):**
+  - an open from a checkpoint read each of 33 stored versions whole, 16–17 s each, 783–801 s in all;
+  - `b6d57e8` reads a version whose parent's was read through `NodeTrie::diff` (§ condition
+    `open-replay-transient`), and the open took 262 s;
+  - the touched set it holds is one block's writes at most, as an import's write set, so it adds no term.
+- **Checkpoint stalls:**
+  - a checkpoint that dropped the oldest one spent 8–11 s releasing what only the dropped one held, and 2.1–2.5 s
+    committing, inside its transaction on the consensus thread.
+  - **Deferred release** (D-6's mechanism, no rule change; C1-STORAGE-DESIGN.md, E4.4): the write owes the
+    dropped checkpoint's nodes in a `release` table, and `release_step` works them off between events. The next
+    write finishes what is still owed first, so at most one dropped checkpoint is owed.
+  - **The file term** (`state_file_parts`) now counts (KEPT + 2) sets of held versions instead of (KEPT + 1),
+    plus a `release` row (ROW bytes) for at most each node of the owed set. Every node it counts is at least
+    ROW + BRANCH_ENC bytes, so a set has at most bytes / (ROW + BRANCH_ENC) nodes.
+  - Computed for the network profile in store mode, with (KEPT + 2) sets before the release rows (scratch
+    build):
+    - the largest file from 2.20 to 2.86 TiB;
+    - the redb allocator term from 0.2789 to 0.3626 GiB;
+    - the total from 5.086 to 5.170 GiB.
+  - **Committed, with the release rows** (`a13_store_model_at_the_network_profile`): **5,581,321,485 B (5.198
+    GiB)**, 5.941 GiB required. The allocator term is 0.3908 GiB, and the largest file 3.08 TiB.
+  - The rows' bound is loose: every node counted at ROW + BRANCH_ENC bytes, where most are larger.
 
 ## 4. Assumptions, one by one (round 2)
 

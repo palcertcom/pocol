@@ -365,3 +365,65 @@ copied references.
 | 26 https://github.com/raedrasheed/Proof-of-Collaboration/actions/runs/40092151252 | 43e7e0f | evidence for 462fffc (the prototypes/ tree is 462fffc's): the A11 reorg walk (pocold/src/node.rs) and the R14/R19 calibration (lp4-execution/src/admission.rs) | **the last code commit has run on Windows**. The new calibration test runs there. The new deep-reorg test is `#[ignore]` (release only) and does not |
 
 Their artifacts are not copied.
+
+### palcertcom/pocol, PR #2 (claude/memory-r14-followup), 2026-10-27
+
+| run | commit | result |
+|---|---|---|
+| 40507248611 | f65b44a (node code as 892dca6) | PASS on every step; evidence/windows-f65b44a/ |
+| 40510911424 | 2839f2a | PASS on every step; evidence/windows-2839f2a/ |
+| 40512470697 | c0a0e66 (evidence only) | PASS |
+| 40516277272, 40516762578 | 8d80354, 799e809 | cancelled: replaced by newer pushes (one pending run per PR) |
+| 40518244446 | 69d5794 | PASS on every step (lp4 201/0, pocold 237/0); evidence/windows-69d5794/ |
+| 40522024488 | 182d73a (evidence only) | **FAIL, 1 test**: `send_pacer_closes_a_slow_reader_after_grace`, no close within the test's 5 s wait; evidence/windows-182d73a/ |
+| 40525606586 | 2c40a9f (tests only) | PASS on every step (lp4 201/0, pocold 237/0); the pacer test as before 6a1e480; evidence/windows-2c40a9f/ |
+| 40530131878 | 7624419 (contains 6a1e480) | PASS on every step (lp4 201/0, pocold 237/0); the first run of the pacer test with its PACER line; evidence/windows-7624419/ |
+| 40533664638, 40537362826 | 1babbc7, b46658a | cancelled: replaced by newer pushes |
+| 40535963171 | 563a0c3 | PASS on every step (lp4 201/0, pocold 238/0); evidence/windows-563a0c3/ |
+| 40538722157 | b66ba65 | PASS on every step (lp4 205/0 with the four MODEXP tests, pocold 238/0): the first Windows run of the MODEXP precompile (`b46658a`'s one-word path); evidence/windows-b66ba65/ |
+| 40546902481 | d45dfe2 | PASS on every step (lp4 208/0 with the seven MODEXP tests, pocold 238/0): the first Windows run of the wide even path (`0c2ad75`); PACER close 2 ms after s_v; evidence/windows-d45dfe2/ |
+| 40550009922 | b8fb7ab | PASS on every step (lp4 209/0 with the eight MODEXP tests, pocold 238/0): the trivial powers handed to revm; PACER close 1 ms after s_v; evidence/windows-b8fb7ab/ |
+| 40550825203 | beed0d2 (evidence only; node code as b8fb7ab) | PASS on every step (artifact id 12757853501, sha256 b7d8e186…fc3b; not copied) |
+| 40557534874 | 7e565b7 (contains 3705559) | PASS on every step (lp4 209/0, pocold 238/0): the first Windows run of the strengthened pacer test; the client saw 0.508 s from its first byte to the close, its first byte 517 ms after the request against an honest reader's 504 ms; evidence/windows-7e565b7/ |
+| 40558373933 | d104891 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.509 s, first byte 732 ms against an honest reader's 783 ms, pacer lateness 10 ms; evidence/windows-d104891/ |
+| 40561773086 | b47fb85 (evidence only; node code as b8fb7ab, tests as 3705559) | PASS on every step (lp4 209/0, pocold 238/0); client window 0.506 s, first byte 741 ms against an honest reader's 746 ms, pacer lateness 3 ms; evidence/windows-b47fb85/ |
+| 40572992585 | bc38d41 (node code as b6d57e8: review fixes 1 and 4, stored versions read by diff at open; e6d07b2's D-7 test) | PASS on every step (lp4 211/0, pocold 239/0), the new diff, checkpoint, A13 and D-7 tests included; client window 0.504 s, first byte 583 ms against an honest reader's 562 ms, pacer lateness 3 ms; evidence/windows-bc38d41/ |
+| 40575426466 | fbe6062 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 721 ms against an honest reader's 721 ms, pacer lateness 1 ms; evidence/windows-fbe6062/ |
+| 40578404549 | 71eb650 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 737 ms against an honest reader's 795 ms, pacer lateness 1 ms; evidence/windows-71eb650/ |
+| 40583789163 | 206eaa4 (evidence only; node code as b6d57e8) | PASS on every step (lp4 211/0, pocold 239/0); client window 0.504 s, first byte 751 ms against an honest reader's 784 ms, pacer lateness 3 ms; evidence/windows-206eaa4/ |
+| 40585164582 | 93a40d0 (node code: the deferred checkpoint release) | PASS on every step (lp4 211/0, pocold 240/0); client window 0.506 s, pacer lateness 3 ms; evidence/windows-93a40d0/ |
+| 40589342452 | 22a82c2 (node code: release steps fsynced) | **FAIL, one test:** pocold 239/1, `e4_checkpoint_damage_falls_back_to_a_verified_state`. Open panicked on a store the release at open had marked damaged: a defect of `93a40d0`, reproduced on Linux and fixed after `ad301e7` (evidence/windows-22a82c2/RUN.md). lp4 211/0, extension 234/0 |
+| 40592643692 | dd85cc0 (the release at open and in the event loop tested; node code as 22a82c2) | PASS on every step (lp4 211/0, pocold 241/0); client window 0.514 s, pacer lateness 10 ms; evidence/windows-dd85cc0/ |
+| 40595988585 | ad301e7 (node code: the independent review's fixes) | PASS on every step (lp4 211/0, pocold 244/0); client window 0.505 s, pacer lateness 2 ms; evidence/windows-ad301e7/ |
+| 40600109673 | e453851 (node code: open sets aside a store it finds damaged) | PASS on every step (lp4 211/0, pocold 245/0), the damage test and the new release tests included; client window 0.503 s, pacer lateness 2 ms; evidence/windows-e453851/ |
+| 40608577150 | 260d021 (evidence only; node code as e453851) | PASS (conclusion success; artifact not copied) |
+| 40662875687 | 22543cf (round 4; node code as 3adc356: Reject::Local, streamed journal open) | PASS on every step (lp4 211/0, pocold 250/0, **pocold-io-fault 106/0**, the new step with the deterministic I/O fault tests); client window 0.509 s, pacer lateness 4 ms; evidence/windows-22543cf/ |
+| 40680583220 | 1074b47 (round 4: checkpoint open, the review's fixes) | **FAIL, one test:** pocold 252/1, `a_store_mode_boot_is_timed_through_a_scratch_state_store_in_its_data_directory`: the whole-state boot timing gate refused (R14, R19) with no times recorded; pocold-io-fault 110/0. Cause not established; the test now prints the times with a refusal. evidence/windows-1074b47/ |
+| 40683933211 | eed8309 (documents and logs) | **PASS**; the 1074b47 failure did not recur, which does not explain it |
+| 40688067254 | 748b16d (a refused admission prints a calibration run's times) | **PASS** |
+| 40697654215 | a136f27 (JM_HEND_LOG) | **PASS** |
+| 40706925600 | b4f13f3 (eb85bed: canonical path from the fork point) | **PASS** |
+| 40711254355 | 719da04 (e2e_integrated test) | **PASS** |
+| 40725594174 | 051dfaa | cancelled (replaced by the next push) |
+| 40728995184 | 5cd7d43 (87d2392 + 5cd7d43: the side set, tries cleared where given) | **PASS**: the side set's node code on Windows |
+| 40737560413 | b375d4c (50f9207: REC_MIN, e2e_browser harness) | **PASS** |
+| 40744711022 | 1bba829 (the second review's F-A, F-B, F-C) | **PASS** (conclusion success; artifact not copied) |
+
+The 182d73a failure:
+- It is not the absorption defect of Runs 5 and 7. ABSORB reads `kernelTookWholeAnswer:false`, as in the
+  passing runs.
+- The test's wait counted from the request, so it included executing the batch before any byte was sent.
+  That takes 0.67–0.91 s on Linux and can take longer on a busy Windows runner.
+- The test now waits up to 20 s and bounds the send time (from the first byte) by s_v + 1 s, with
+  s_v = max(GRACE, A/R). Lateness ≤ ENFORCE_SLACK and CloseOK are unchanged.
+- It prints a PACER line on every platform. Details in evidence/windows-182d73a/RUN.md.
+- Run 40530131878 on 7624419 printed it: `sendTimeS` 0.502009 s, `acceptedBytes` 32,940, s_v = GRACE = 0.5 s,
+  `pacerLateMaxMs` 2 (ENFORCE_SLACK 200), 10 pacer waits (bounds 5 to 30), the connection closed. The close came
+  1,092 ms after the request: 0.59 s of execution before the first byte, then 0.502 s of sending. Every bound of
+  network.md:237-256 holds on Windows. The longer wait is not what makes it pass: the 5 s wait would have held
+  in this run too.
+- Two later runs printed it too: 563a0c3, the close 1 ms after s_v (send time 0.501655 s); b66ba65, 10 ms after
+  (0.510413 s). On all three Windows runs the kernel took 32,940 B and every bound held.
+- This shows the mechanism on Windows. It does not show what delayed the 182d73a run, which recorded no send
+  time. That cause stays likely, not established. Details in evidence/windows-7624419/RUN.md.
+

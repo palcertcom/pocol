@@ -113,6 +113,7 @@ pub mod native;
 pub mod state_view;
 
 pub mod collision;
+pub mod modexp;
 pub mod wire;
 pub mod receipts;
 pub mod fees;

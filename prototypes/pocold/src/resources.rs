@@ -158,25 +158,25 @@ pub fn trie_paths(cp:&ConsensusParams)->Option<u128>{
 /// rolling re-execution in `rolled` before the next block runs; production keeps no execution output
 /// (`node::Production`). An inventory by inspection (CONDITIONS, `transient-snapshot-inventory`).
 pub const BATCHES:u128=1;
-/// The heap one decoded node holds at most (`Node::resident_bytes` of a branch with 16 children).
-pub fn node_resident_max()->u128{use pocol_lp4_execution::{node_trie::{Id,Node},state_trie::Ref};(2*size_of::<usize>()+size_of::<Node>()+16*size_of::<(Id,Ref)>()) as u128}
-/// The largest node serialization (`Node::encode`): a branch of 16 children, each an id and a 33-byte
-/// reference, with its key and its own reference.
-pub const NODE_ENC_MAX:u128=1+1+2+32+1+33+16*(32+1+33);
-/// C-1 E4: one batch at most: the nodes on the copied path of every changed slot and account (as
-/// `trie_paths` counts them), each decoded behind an `Arc` with its map slot (a leaf holds its key's
-/// preimage, C-1 E5), and the block's write set (`state_trie::Touched`). Its code is shared with the
-/// execution's.
+/// C-1 E4: one batch at most (`node_trie::batch_nodes` for the block's changed accounts and slots, in a
+/// child of at most `state_keys`): its branches and leaves, each decoded behind an `Arc` with its map slot
+/// (a leaf holds its key's preimage, C-1 E5), every branch's children (`Node::resident_bytes`), and the
+/// block's write set (`state_trie::Touched`). Its code is shared with the execution's.
 pub fn batch_max(cp:&ConsensusParams)->Option<u128>{
-    use pocol_lp4_execution::node_trie::{Id,Node};use revm::primitives::{Address,U256};let (accounts,slots)=block_writes(cp)?;
-    let nodes=mul(accounts+slots,TRIE_PATH_NODES)?;let slot=|n:usize|memory::entry_bytes(n as u128);
-    add(&[mul(nodes,node_resident_max()+slot(size_of::<(Id,std::sync::Arc<Node>)>()))?,
+    use pocol_lp4_execution::{node_trie::{batch_nodes,Id,Node},state_trie::Ref};use revm::primitives::{Address,U256};
+    let (accounts,slots)=block_writes(cp)?;let (ka,ks)=state_keys(cp)?;let (branches,leaves,kids)=batch_nodes(accounts,slots,ka,ks)?;
+    let slot=|n:usize|memory::entry_bytes(n as u128);let node=(2*size_of::<usize>()+size_of::<Node>()) as u128+slot(size_of::<(Id,std::sync::Arc<Node>)>());
+    add(&[mul(branches+leaves,node)?,mul(kids,size_of::<(Id,Ref)>() as u128)?,
         mul(accounts,slot(size_of::<(Address,Option<Vec<U256>>)>()))?,mul(slots,memory::VEC*size_of::<U256>() as u128)?])
 }
-/// C-1 E4: entries that hold a stored version at once: genesis, the K_hist canonical window, side_max side
-/// states, a rolling re-execution's entry, and during an adopting import, until `settle`, the abandoned
-/// window (K_hist more). The pool's base and production share an entry's handle.
-pub fn stored_versions(k_hist:u32,side_max:u32)->u128{2*u128::from(k_hist)+u128::from(side_max)+2}
+/// The keys of a state within the caps: (accounts, slots). Accounts: ACCT_CAP user accounts and the 5
+/// programs; slots: SLOT_CAP and SYS_SLOT_MAX (as `derive`'s snapshot).
+pub fn state_keys(cp:&ConsensusParams)->Option<(u128,u128)>{Some((u128::from(cp.ACCT_CAP).checked_add(5)?,u128::from(cp.SLOT_CAP).checked_add(u128::from(cp.SYS_SLOT_MAX))?))}
+/// C-1 E4: the stored versions with a handle at once: every version `held_runs` lists, each with its own handle.
+/// The pool's base and production share an entry's handle. (Review 2026-10-27: this count once listed the runs
+/// apart from `held_versions_bytes` and left out the block being imported and the rolling re-execution's next
+/// version; both now read `held_runs`.)
+pub fn stored_versions(k_hist:u32,side_max:u32)->u128{held_runs(k_hist,side_max).iter().sum()}
 /// One stored version's handle (`chain::Pinned` behind its `Arc`) and its BLOCKHASH window (257 entries).
 pub fn pinned_bytes()->u128{size_of::<chain::Pinned>() as u128+16+257*memory::entry_bytes(64)+memory::table_bytes(64)}
 /// C-1 E4.4: a checkpoint being written: its bytes (every entry at most `checkpoint::REC_MAX`, the
@@ -209,28 +209,51 @@ pub fn redb_region_allocator(pages:u128)->Option<u128>{
 /// region too), with its region-tracker entry (counted at 64 bytes).
 pub fn redb_allocator_bytes(bytes:u128)->Option<u128>{mul(bytes.div_ceil(REDB_REGION_BYTES).max(1),redb_region_allocator(REDB_REGION_PAGES)?.checked_add(64)?)}
 /// C-1 E4.5: the largest state.redb file, for its allocator term (A13 counts the file's allocator state
-/// at one byte per 4 KiB page, as for history.redb; the file itself is disk, not memory). Nodes: the
-/// head's and genesis's versions whole, and every other version that a stored entry or a checkpoint pins
-/// differing from the head's by the paths of the blocks between them (a window state: K_hist blocks; a
-/// side state: 2·R_keep; a checkpoint's versions: KEPT·checkpoint_every + 2·R_keep), at most a whole
-/// state. Code is kept for good (storage.md): the code every block to H_END can deploy. (C-1 E5: a leaf
-/// keeps its key's preimage, released with it; no preimage is kept for good.) The checkpoints' snapshots.
-/// All at STATE_FILE_FACTOR times their bytes.
+/// at one byte per 4 KiB page, as for history.redb; the file itself is disk, not memory). Nodes: the versions
+/// the entries hold and those each kept checkpoint pins (`held_versions_bytes`). Code is kept for good
+/// (storage.md): the code every block to H_END can deploy. (C-1 E5: a leaf keeps its key's preimage,
+/// released with it; no preimage is kept for good.) The checkpoints' snapshots. All at STATE_FILE_FACTOR
+/// times their bytes.
 pub fn state_file_max(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits)->Option<u128>{let p=state_file_parts(cp,k_hist,side_max,limits)?;add(&p)}
+/// `state_file_parts`' versions: the bytes state.redb keeps for `n` versions at consecutive heights of one
+/// chain. A node is stored once however many versions name it (`state_store::commit` counts one more
+/// reference to a stored node), so they keep the oldest version's nodes and what each later block's version
+/// added (`node_trie::block_bytes`); and at most n whole versions (`node_trie::version_bytes`).
+pub fn chain_versions_bytes(cp:&ConsensusParams,n:u128)->Option<u128>{
+    use pocol_lp4_execution::node_trie::{block_bytes,version_bytes};
+    if n==0{return Some(0)}
+    let (ka,ks)=state_keys(cp)?;let (wa,ws)=block_writes(cp)?;let whole=version_bytes(ka,ks)?;
+    Some(mul(n,whole)?.min(add(&[whole,mul(n-1,block_bytes(wa,ws,ka,ks)?)?])?))
+}
+/// The versions held at once (C-1 E4, the `stored_versions` inventory), as runs of consecutive versions:
+/// genesis; the K_hist canonical window with the block being imported (K_hist + 1); during an adopting import,
+/// until `settle`, the abandoned window (K_hist, on the old branch); side_max side states (one each); a rolling
+/// re-execution's version with the next one it commits (2).
+pub fn held_runs(k_hist:u32,side_max:u32)->Vec<u128>{
+    let k=u128::from(k_hist);let mut v=vec![1,k+1,k];v.extend(std::iter::repeat_n(1,side_max as usize));v.push(2);v
+}
+/// The bytes of the versions `held_runs` lists, each run `chain_versions_bytes`. A kept checkpoint pins
+/// versions its entries held, at most as many again.
+pub fn held_versions_bytes(cp:&ConsensusParams,k_hist:u32,side_max:u32)->Option<u128>{
+    held_runs(k_hist,side_max).into_iter().try_fold(0u128,|t,n|add(&[t,chain_versions_bytes(cp,n)?]))
+}
 /// `state_file_max`'s parts: (versions' nodes, key preimages, code, checkpoint snapshots), each at
-/// STATE_FILE_FACTOR times its bytes.
+/// STATE_FILE_FACTOR times its bytes. The entries' versions and the KEPT checkpoints' are counted apart,
+/// and so is one dropped checkpoint whose nodes are still owed (D-6, 2026-10-27: `StateStore::release_step`
+/// works them off between events; a checkpoint's write finishes what is left first, so at most one is owed),
+/// with a `release` row (ROW bytes) for at most each of its nodes. Each node counted here is at least ROW +
+/// BRANCH_ENC bytes (a branch without its children, the smallest node), so a held set has at most
+/// bytes / (ROW + BRANCH_ENC) nodes.
 pub fn state_file_parts(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits)->Option<[u128;4]>{
-    let full=mul(2,add(&[u128::from(cp.ACCT_CAP),5,u128::from(cp.SLOT_CAP),u128::from(cp.SYS_SLOT_MAX)])?)?;
-    let (wa,ws)=block_writes(cp)?;let per_block=mul(wa+ws,TRIE_PATH_NODES)?;
-    let span=|blocks:u128|mul(blocks,per_block).map(|n|n.min(full));
-    let (k,sm,kept)=(u128::from(k_hist),u128::from(side_max),crate::checkpoint::KEPT as u128);
-    let ck_span=add(&[mul(kept,u128::from(limits.checkpoint_every.max(1)))?,mul(2,u128::from(limits.r_keep))?])?;
-    let nodes=add(&[mul(2,full)?,mul(k,span(k)?)?,mul(sm,span(mul(2,u128::from(limits.r_keep))?)?)?,mul(mul(kept,k+sm+2)?,span(ck_span)?)?])?;
+    use pocol_lp4_execution::node_trie::{BRANCH_ENC,ROW};
+    let kept=crate::checkpoint::KEPT as u128;let held=held_versions_bytes(cp,k_hist,side_max)?;
+    let owed_rows=mul(ROW,(held/(ROW+BRANCH_ENC)).checked_add(1)?)?;
+    let nodes=add(&[mul(kept+2,held)?,owed_rows])?;
     let blocks=u128::from(cp.H_END)+1;
     let preimages=0;
     let code=mul(blocks,memory::execution_gas(cp.GAS_LIMIT)/CODE_DEPOSIT)?;
     let ckpts=mul(kept,checkpoint_bytes(cp,limits)?/2)?;
-    Some([mul(STATE_FILE_FACTOR,mul(nodes,NODE_ENC_MAX+4+32)?)?,mul(STATE_FILE_FACTOR,preimages)?,mul(STATE_FILE_FACTOR,code)?,mul(STATE_FILE_FACTOR,ckpts)?])
+    Some([mul(STATE_FILE_FACTOR,nodes)?,mul(STATE_FILE_FACTOR,preimages)?,mul(STATE_FILE_FACTOR,code)?,mul(STATE_FILE_FACTOR,ckpts)?])
 }
 /// C-1 E5: state.redb's file size over the bytes it stores (every key and value), for its allocator term.
 /// Measured (journal_measure::jm_store_mode_disk_impact, evidence/c1-e4) after live import, an open that
@@ -263,7 +286,7 @@ pub const CONDITIONS:&[(&str,&str)]=&[
     ("cpu-and-timing","CPU costs (world-root rebuild, chain scans, pool re-execution, deep-fork rebuild) are not memory terms; worst-case timing is not bounded"),
     ("s3a-removal","a diff keeps no storage for a removed account: under Cancun (revm 19.7, EIP-6780) only an account created in the same transaction is destroyed, and an account without code, nonce and balance holds no storage; by inspection, not enforced by a counter"),
     ("redb-representation","the history.redb terms rely on redb 2.6.4 behaviour checked by source inspection (cache split and write-buffer flush, allocator bitmaps) and on a measured file-size factor (HISTORY_FILE_FACTOR)"),
-    ("open-replay-transient","Node::open holds the whole journal's payloads (store::open, pre-existing) and a replay index of two entries per record while replaying; this open-time transient grows with the journal and is not part of the steady-state bound. C-1 E4.4 adds to it, at open only: every record's offset and rolling hash, a decoded checkpoint snapshot and the stored versions read whole for their summaries (streamed: a node at a time, the DFS stack of node ids)"),
+    ("open-replay-transient","Node::open holds the whole journal's payloads (store::open, pre-existing) and a replay index of two entries per record while replaying; this open-time transient grows with the journal and is not part of the steady-state bound. C-1 E4.4 adds to it, at open only: every record's offset and rolling hash, a decoded checkpoint snapshot and the stored versions read for their summaries (streamed: the oldest whole, a node at a time with the DFS stack of node ids; each other through its diff from its parent's version, which holds the accounts and slots that differ, one block's writes at most, as an import's write set, the recursion's path through the two world tries and through the two storage tries of one account, and the storage walk's DFS stack of node ids)"),
     ("store-inventory","store mode (C-1 E4): BATCHES (1) and stored_versions are inventories by code inspection, not enforced by a counter; the node cache is bounded by its resident-byte count (state_store::CACHE_ENTRY, Node::resident_bytes), checked by a test"),
     ("revm-loading","the pool layer, overlay and store-mode code terms rely on revm 19.7 behaviour checked by source inspection (A13-DERIVATION §2d): a touch needs paid gas or a warm address, a touch or write in a reverted frame is undone, a loaded account or slot stays until its transaction ends; that a created account keeps the slots it loaded in out-of-gas frames is also tested"),
     ("store-file-factor","the state.redb allocator term takes the largest file as STATE_FILE_FACTOR times the stored bytes: a factor measured on stores of 1.5 to 15 MB (evidence/c1-e4 disk measurements), not established for the terabyte files of the adversarial case (every version a whole state on disk)"),
@@ -298,11 +321,12 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
     // memory is the caches, the work in progress and the handles.
     let code_set=memory::code_bytes(u128::from(cp.CODE_CAP),0)?;
     let exec_code=memory::code_bytes(memory::execution_gas(cp.GAS_LIMIT)/CODE_DEPOSIT,0)?;
-    // D-7: the pool's layer holds what its gas bound can write (no whole state is held in store mode). Each
-    // account it touched keeps its code, read from the store (a copy each, TrieState::info), at most the
-    // logical code of every existing account (CODE_CAP); and its creations (CODE_DEPOSIT, CREATE_GAS).
+    // D-7: the pool's layer holds what its gas bound can write (no whole state is held in store mode). An
+    // entry keeps its account's code hash, not the copy of its code the account was read with
+    // (`Layer::drop_code_copies`, node::admit_tx); its own code is its creations (CODE_DEPOSIT, CREATE_GAS).
+    // The copies a transaction reads while it is admitted are the execution's (the set below).
     let pg=pool_gas(cp,limits)?;let (pa,ps)=layer_writes(pg)?;
-    let pool_code=memory::code_bytes(add(&[mul(pa,u128::from(cp.B_code_max))?.min(u128::from(cp.CODE_CAP)),pg/CODE_DEPOSIT])?,add(&[pa,pg/CREATE_GAS])?)?;
+    let pool_code=memory::code_bytes(pg/CODE_DEPOSIT,pg/CREATE_GAS)?;
     let snapshots=0;
     let items:Vec<(&'static str,u128)>=vec![
         ("diffs/the pool's pending layer (D-7: what its gas bound can write)",layer_bytes(pa,ps)?),
@@ -323,7 +347,7 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
         // the logical code of every existing account (code_caps, CODE_CAP) with its analysis. One execution
         // and one overlay at a time (EXECUTIONS).
         ("code/read from the store by the execution in progress and its overlay (a set)",mul(EXECUTIONS,code_set)?),
-        ("code/the pool's pending layer (D-7: its touched accounts' code and its creations)",pool_code),
+        ("code/the pool's pending layer (D-7: its creations)",pool_code),
         ("code/new runtime of the execution in progress",mul(EXECUTIONS,exec_code)?)];
     (snapshots,items)}else{
     let snapshots=add(&[1,1,u128::from(side_max),MATERIALIZED,TRANSIENT_SNAPSHOTS])?;
@@ -363,12 +387,14 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
         ("code/a rebuild or restore in progress (a set)",code_set),("code/the pool's pending layer (D-7: its creations)",pool_code),
         ("code/containers in every snapshot",mul(snapshots,code_entries)?),("code/new runtime of the execution in progress",mul(EXECUTIONS,exec_code)?)];
     (snapshots,items)};
-    // Per block kept in memory: the map slot (Entry inline), the canonical index, header heap
-    // (encoded, ut_raw, bloom, proposer, sig, share nonces), ParentResult shares, nonce ranges
-    // (members <= M_max) and evidence (E_max items <= EVID_BYTES_MAX); an empty state is shared (C-1 E5).
-    let entry=size_of::<([u8;32],Entry)>() as u128;
+    // Per block kept in memory: the map slot (its key and the boxed Entry, with its control byte; a table
+    // that grows holds its old buckets and twice as many new ones, 24/7 buckets per entry, counted at 4), the
+    // Entry and its allocation header (counted at 32), the canonical index, header heap (encoded, ut_raw,
+    // bloom, proposer, sig, share nonces), ParentResult shares, nonce ranges (members <= M_max) and evidence
+    // (E_max items <= EVID_BYTES_MAX); an empty state is shared (C-1 E5).
+    let entry=add(&[mul(size_of::<([u8;32],Box<Entry>)>() as u128+1,4)?,size_of::<Entry>() as u128,32])?;
     // C-1 E2: and its state summary (boxed; a slimmed entry drops it).
-    let per_block=add(&[mul(entry+1,3)?,64,size_of::<pocol_lp4_execution::state_summary::Summary>() as u128,mul(hdr,2)?,256+20+65+64,mul(8,s)?,mul(32,s+1)?,mul(64,m)?,
+    let per_block=add(&[entry,64,size_of::<pocol_lp4_execution::state_summary::Summary>() as u128,mul(hdr,2)?,256+20+65+64,mul(8,s)?,mul(32,s+1)?,mul(64,m)?,
         mul(u128::from(cp.E_max),24)?])?;
     // A block's transactions are bounded by its body and by its gas.
     let side_txs=(u128::from(cp.BODY_MAX)/MIN_TX_BYTES).min(u128::from(cp.GAS_LIMIT)/TX_GAS_MIN);
@@ -403,7 +429,7 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
     // ParentResult and the nonce ranges are restored from the journal and history.redb on demand.
     let depth=u128::from(limits.slim_depth.unwrap_or(2*limits.r_keep+u64::from(cp.E_win)+257)).min(blocks);
     // C-1 E5: an entry without a state shares one empty state (chain::empty_state), counted once below.
-    let slim_entry=add(&[mul(entry+1,3)?,64])?;
+    let slim_entry=add(&[entry,64])?;
     let (full_old,slim_old)=(depth.saturating_sub(window),blocks-depth.max(window));
     let redb_alloc=mul(payload,HISTORY_FILE_FACTOR)?/4096;
     let hist=[("history/offloaded canonical block metadata (slim_depth − window entries)",mul(full_old,offloaded_entry)?),
@@ -424,8 +450,13 @@ pub fn derive(cp:&ConsensusParams,k_hist:u32,side_max:u32,limits:&Limits,dials:u
     let side_entry=per_block.checked_sub(hdr)?.checked_sub(mul(u128::from(cp.E_max),24)?)?.checked_add(32+16)?;
     let side_meta=mul(side_entries,side_entry)?;let side_full=side_block;
     let evicted=mul(chain::EVICTED_MAX as u128,2*(32+16))?;
-    let side_blocks=add(&[side_meta,side_full,evicted])?;
-    items.extend([("side/offloaded side-block metadata (side_cap + 2·r_keep entries)",side_meta),("side/one full block before offload or during restore",side_full),("side/evicted-hash FIFO (EVICTED_MAX)",evicted)]);
+    // The chain's side set (`Chain::side`, 2026-10-28; independent review F-C): a hash table of [u8;32] keys, one
+    // control byte each, sized to a power of two at 8/7 of its elements, so up to 2·33·8/7 < 76 B an element just
+    // after it grows; and it never shrinks. Its elements: the side entries, plus the old canonical suffix a reorg
+    // moves in before retain trims it (at most r_keep: a deeper fork is refused).
+    let side_set=mul(add(&[side_entries,u128::from(limits.r_keep)])?,76)?;
+    let side_blocks=add(&[side_meta,side_full,evicted,side_set])?;
+    items.extend([("side/offloaded side-block metadata (side_cap + 2·r_keep entries)",side_meta),("side/one full block before offload or during restore",side_full),("side/evicted-hash FIFO (EVICTED_MAX)",evicted),("side/the chain's side set (side entries + r_keep, 76 B each)",side_set)]);
     // Queues and caches (node.rs, net.rs constants).
     let frame=net::MAX_FRAME as u128;let block=size_of::<Block>() as u128;let l=&limits.net;
     let pool=add(&[node::POOL_MAX_BYTES as u128,mul(node::POOL_MAX_BYTES as u128/MIN_TX_BYTES,32+24+24)?])?;

@@ -536,13 +536,16 @@ def main():
         print(json.dumps({"result": "PASS", "checks": len(checks), "elapsed_s": round(time.time() - t_start), "work": work}))
         return 0
     except Exception as e:
-        print(json.dumps({"result": "FAIL", "error": str(e), "checks": [c[0] for c in checks if c[1]], "elapsed_s": round(time.time() - t_start), "work": work}))
-        return 1
+        error = e
     finally:
         dn.stop(work)
         for p in procs.values():
             try: os.killpg(p.pid, signal.SIGTERM); p.wait(30)
             except Exception: pass
+    # The nodes have stopped: their logs and journals are whole when they are kept.
+    kept = dn.keep_on_failure("e2e_devnet", work, {"error": str(error), "checks": [{"name": c[0], "pass": c[1], "detail": str(c[2])[:300]} for c in checks]})
+    print(json.dumps({"result": "FAIL", "error": str(error), "checks": [c[0] for c in checks if c[1]], "elapsed_s": round(time.time() - t_start), "work": work, "kept": kept}))
+    return 1
 
 if __name__ == "__main__":
     sys.exit(main())
