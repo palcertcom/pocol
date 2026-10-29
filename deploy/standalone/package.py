@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Explicit allowlists only: no network keys, private state or Android signing keys."""
-import argparse, hashlib, json, shutil, subprocess
+import argparse, hashlib, json, shutil, subprocess, tarfile
 from pathlib import Path
 p=argparse.ArgumentParser(); p.add_argument('--platform',choices=['Linux','Windows','Android'],required=True); p.add_argument('--out',type=Path,required=True); args=p.parse_args()
 root=Path(__file__).resolve().parents[2]; args.out.mkdir()
@@ -21,3 +21,15 @@ shutil.copy2(root/'deploy/standalone/README.md',args.out/'README.md')
 (args.out/'source-commit.txt').write_text(subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()+'\n')
 sums=''.join(f'{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n' for f in sorted(args.out.iterdir()) if f.is_file())
 (args.out/'SHA256SUMS').write_text(sums)
+
+if args.platform=='Linux':
+    # Artifact ZIPs discard executable bits. Keep the runnable distribution inside a tarball.
+    packaged=sorted(args.out.iterdir())
+    archive=args.out/'PoCol-linux-x86_64.tar.gz'
+    with tarfile.open(archive, 'w:gz') as tar:
+        for file in packaged:
+            info=tar.gettarinfo(str(file), arcname=file.name)
+            info.uid=info.gid=0; info.uname=info.gname=''
+            with file.open('rb') as stream: tar.addfile(info, stream)
+    for file in packaged: file.unlink()
+    (args.out/'SHA256SUMS').write_text(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n')

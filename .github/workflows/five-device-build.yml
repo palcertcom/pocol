@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: five-device-${{ github.ref }}
+  group: five-device-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   native:

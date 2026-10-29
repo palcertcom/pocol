@@ -16,7 +16,8 @@ claimed to have passed a real five-device network test.
 
 ## Once per device
 
-- Linux: extract the checked release and run `sudo ./install-linux.sh`. It creates
+- Linux: extract the artifact ZIP, then its `PoCol-linux-x86_64.tar.gz`
+  (which preserves executable permissions), and run `sudo ./install-linux.sh`. It creates
   a dedicated account, a private local identity and a service, and prints only the
   public address. The service waits for the shared network file. It is enabled
   across reboots and restarts after failure. Only a fresh installation is accepted.
