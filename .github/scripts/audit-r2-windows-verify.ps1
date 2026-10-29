@@ -156,7 +156,7 @@ foreach ($c in @(@('lp1-node', $RustLp1), @('lp4-execution', $RustMain), @('poco
 [void](Test-Cargo 'lp4-execution' 'lp4-execution' $RustMain @('test', '--release', '--locked', '--no-fail-fast') 90)
 [void](Test-Cargo 'pocold' 'pocold' $RustMain @('test', '--release', '--locked', '--no-fail-fast') 90)
 # Deterministic storage faults (--features io-fault, absent from the release): the I/O fault tests of state_store and consensus.
-[void](Test-Cargo 'pocold-io-fault' 'pocold' $RustMain @('test', '--release', '--locked', '--no-fail-fast', '--features', 'io-fault', '--test', 'state_store', '--test', 'consensus') 90)
+[void](Test-Cargo 'pocold-io-fault' 'pocold' $RustMain @('test', '--release', '--locked', '--no-fail-fast', '--features', 'io-fault', '--test', 'state_store', '--test', 'consensus', '--test', 'checkpoint_source', '--test', 'eviction_memory') 90)
 $npm = $(if ($NodeDir) { Join-Path $NodeDir 'npm.cmd' } else { 'npm' }); $node = $(if ($NodeDir) { Join-Path $NodeDir 'node.exe' } else { 'node' })
 [void](Test-Program 'extension-npm-ci' 'pocol-extension' $npm @('ci', '--ignore-scripts', '--no-audit', '--no-fund') $NodeEnv)
 [void](Test-Program 'extension-build' 'pocol-extension' $node @('build.mjs') $NodeEnv)
