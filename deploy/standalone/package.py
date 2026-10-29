@@ -13,7 +13,7 @@ if args.platform=='Android':
 else:
     suffix='.exe' if args.platform=='Windows' else ''
     files={n+suffix:root/'prototypes/pocold/target/release'/(n+suffix) for n in ['pocol','pocold','pocol-key','pocol-sign','pocol-site']}
-    for name in (['Start-PoCol.cmd'] if suffix else ['install-linux.sh']): files[name]=root/'deploy/standalone'/name
+    for name in (['Start-PoCol.cmd','Initialize-PoColNetwork.ps1'] if suffix else ['install-linux.sh']): files[name]=root/'deploy/standalone'/name
     info=subprocess.check_output([str(files['pocol'+suffix]),'build-info'])
     (args.out/'build-info.json').write_bytes(info)
 for name,source in files.items(): shutil.copy2(source,args.out/name)

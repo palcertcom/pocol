@@ -27,6 +27,13 @@ jobs:
         with:
           ref: ${{ env.EXPECTED_COMMIT }}
           persist-credentials: false
+      - name: Validate Windows setup script syntax without accessing any server
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/deploy/standalone/Initialize-PoColNetwork.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; throw 'PowerShell syntax errors' }
       - name: Build native binaries
         shell: bash
         run: |

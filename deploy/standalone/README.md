@@ -40,6 +40,39 @@ port is open or that PoCol is running there. Only SSH was previously verified.
 Do not open native RPC on the Internet. Windows and Android use outgoing P2P;
 no home-router port forwarding is required for them to validate blocks.
 
+## Optional one-time bootstrap from Windows
+
+For the owner's already prepared hosts only, `Initialize-PoColNetwork.ps1`
+performs the initial server installation, collects public addresses through SSH,
+generates one admitted genesis, distributes the invitation, opens only P2P TCP
+30300 and starts the three services and the native Windows node. It uses the
+existing `pocol-admin` account and local `id_ed25519_pocol` SSH key with `-F none`.
+It never forwards or copies that private key. SSH host-key verification remains
+on. Enter SSH passphrases and sudo passwords only into their terminal prompts.
+
+Extract the Windows package and the Linux artifact ZIP on the PC, then run from
+PowerShell in the Windows package directory:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Initialize-PoColNetwork.ps1 -LinuxArchive "C:\path\PoCol-linux-x86_64.tar.gz"
+```
+
+Inspect the downloaded script before this process-scoped execution-policy
+exception. The script validates package checksums and equal engine compatibility
+before uploading. It is restricted to 108.165.128.89/.90/.91; it never contacts
+108.165.128.31. This is a fresh-install operation. If a step fails, it stops and
+keeps its public setup directory; it never erases existing state, rotates keys or
+tries to replace a partly deployed genesis. The real SSH deployment path still
+needs operator acceptance on the actual servers; CI checks syntax, not remote
+installation.
+
+The wizard selects the three server identities as genesis miners and funds them
+and the Windows identity with valueless test currency. Windows and the phone
+join as independently validating nodes. It prints the shared `network.pocol.json`
+path: transfer that public file to the phone and import it in PoCol Testnet, then
+press Start. No public addresses or secrets need to be sent back to an assistant.
+The explicit manual genesis path below also supports different initial membership.
+
 ## One shared genesis, then ordinary operation
 
 The first network needs public identity addresses before its genesis can be
