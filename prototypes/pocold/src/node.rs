@@ -46,6 +46,8 @@ pub struct Config{
 pub struct Limits{pub net:net::Limits,pub rpc:crate::rpc::Limits,
     /// Node memory budget for the A13 resident bound (resources::check at open).
     pub mem_budget:u64,
+    /// Observed journal records for the continuous resource projection, never a consensus limit.
+    pub continuous_history:Option<u64>,
     /// Local retention (consensus.md:29, governance.md:15; never validity): R_keep and the cap on
     /// unprotected non-canonical metadata (chain::R_KEEP, chain::SIDE_BLOCKS_MAX). Live import and
     /// replay must use the same values; tests lower them to reach the boundaries quickly.
@@ -68,7 +70,7 @@ pub struct Limits{pub net:net::Limits,pub rpc:crate::rpc::Limits,
     pub state_store:bool,
     /// C-1 E4.4 (D-6): journal records between two local checkpoints of a store-mode node (0: none).
     pub checkpoint_every:u64}
-impl Default for Limits{fn default()->Self{Self{net:Default::default(),rpc:Default::default(),mem_budget:MEM_BUDGET,r_keep:chain::R_KEEP,side_cap:chain::SIDE_BLOCKS_MAX,pool_slice:POOL_SLICE,pool_gas_max:None,history_window:None,full_states:false,slim_depth:None,state_store:false,checkpoint_every:crate::checkpoint::EVERY}}}
+impl Default for Limits{fn default()->Self{Self{net:Default::default(),rpc:Default::default(),mem_budget:MEM_BUDGET,continuous_history:None,r_keep:chain::R_KEEP,side_cap:chain::SIDE_BLOCKS_MAX,pool_slice:POOL_SLICE,pool_gas_max:None,history_window:None,full_states:false,slim_depth:None,state_store:false,checkpoint_every:crate::checkpoint::EVERY}}}
 /// C-1 S1: replay refills history.redb with non-durable commits and makes them durable every this many blocks.
 const HISTORY_SYNC:u64=256;
 /// D-7: one slice of pool revalidation. The consensus thread is held for at most this, plus the
@@ -321,12 +323,13 @@ fn retention_rkeep(dir:&std::path::Path,configured:u64)->std::io::Result<u64>{
 impl Drop for Node{fn drop(&mut self){if let Some(s)=&self.state_store{s.close();}}}
 impl Node{
     /// Opens the journal, replays and re-executes every committed block.
-    pub fn open(cfg:Config,spec:Spec)->Result<Self,String>{
+    pub fn open(mut cfg:Config,spec:Spec)->Result<Self,String>{
         if cfg.name.is_empty()||cfg.name.len()>net::NODE_NAME_MAX||!cfg.name.bytes().all(|b|b.is_ascii_graphic()){return Err("node name must be 1..64 printable ASCII bytes without spaces".into())}
         // A13: the resident bound of this profile with these limits must fit the budget (the pool counted at
         // its gas bound, which must itself be valid).
         let t_open=Instant::now();let mut timing=OpenTiming::default();
         let pool_gas_max=pool_gas_bound(spec.cp(),&cfg.limits)?;
+        if spec.cp().H_END==0{cfg.limits.continuous_history=Some(0);}
         crate::resources::check(spec.cp(),spec.local().k_hist,spec.local().side_max,&cfg.limits,cfg.peers.len())?;
         let binding=spec.genesis_hash();
         // One pass over the journal (2026-10-28: its payloads are not held, condition `open-replay-transient`):
@@ -342,6 +345,7 @@ impl Node{
             let h=crate::checkpoint::roll(rolls.last().unwrap(),payload);offs.push(offs.last().unwrap()+(payload.len()+store::OVERHEAD) as u64);rolls.push(h);
         }).map_err(|e|format!("store: {e:?}"))?;timing.journal_ms=ms(t);
         if let Some(e)=bad{return Err(e)}
+        if spec.cp().H_END==0{cfg.limits.continuous_history=Some(rec.journal.records);crate::resources::check(spec.cp(),spec.local().k_hist,spec.local().side_max,&cfg.limits,cfg.peers.len())?;}
         // Replay must not use a smaller R_keep than live used for any record (it would drop a parent live
         // kept); a larger one only keeps blocks that were below the head when imported. The largest value
         // this data directory has used is kept durably beside the journal and replay uses it.
@@ -567,9 +571,12 @@ impl Node{
         Ok(())
     }
     /// Runs until stop_at or channel closure.
-    pub fn run(&mut self){
+    pub fn run(&mut self){self.run_controlled(|_| false)}
+    /// The host can stop at event boundaries and publish local status. The process must exit
+    /// after return: existing transport workers are process-scoped. No consensus rules change.
+    pub fn run_controlled(&mut self, mut stop:impl FnMut(&mut Self)->bool){
         self.restart_production();
-        while !self.stopped{
+        while !self.stopped && !stop(self){
             // D-7: while the pool has a backlog, one event (if any is waiting) and one slice alternate. D-6: so do
             // one event and one release step while a dropped checkpoint's nodes are owed (the pool first).
             let ev=match self.deferred.pop_front(){Some(e)=>e,None=>if self.background_pending(){match self.rx.try_recv(){Ok(e)=>e,Err(mpsc::TryRecvError::Empty)=>{self.drain_light();self.background_step();continue}Err(_)=>break}}
@@ -579,6 +586,14 @@ impl Node{
             if self.background_pending(){self.background_step();}
         }
         if let Some(p)=&self.prod{if let Some(m)=&p.miner{m.stop();}}
+    }
+    /// Local UI control, never exposed through public RPC. Validation and P2P continue.
+    pub fn set_mining_key(&mut self,key:Option<Key>){
+        if self.cfg.miner.as_ref().map(Key::address)==key.as_ref().map(Key::address){return}
+        // Join the old worker before dropping its key; queued results no longer match production.
+        if let Some(p)=self.prod.take(){if let Some(m)=p.miner{m.stop();drop(m);}}
+        self.cfg.miner=key;
+        self.restart_production();
     }
     /// Runs up to LIGHT_TURN waiting light requests, never nested inside a light request. A
     /// full turn may leave requests behind: the node wakes itself for them.
@@ -642,6 +657,12 @@ impl Node{
     /// blocks' bytes). For tests and measurements that build blocks on an arbitrary parent.
     pub fn ensure_state(&mut self,h:&[u8;32])->Result<(),Reject>{let src=Src{journal:&self.journal,history:&self.history};self.chain.ensure_state_with(h,Some(&src))}
     pub fn import_with(&mut self,b:Block,from:Option<PeerId>,solicited:bool)->Result<bool,Reject>{
+        if self.chain.spec.cp().H_END==0 && self.journal.records/256>self.cfg.limits.continuous_history.unwrap_or(0)/256{
+            self.cfg.limits.continuous_history=Some(self.journal.records);
+            if let Err(e)=crate::resources::check(self.chain.spec.cp(),self.chain.spec.local().k_hist,self.chain.spec.local().side_max,&self.cfg.limits,self.cfg.peers.len()){
+                self.log(&format!("LOCAL CAPACITY: {e}; increase local resources and memory budget to resume"));self.stopped=true;return Err(Reject::Local(e));
+            }
+        }
         let hash=b.hash();
         let was_evicted=self.chain.was_evicted(&hash);
         if was_evicted&&!solicited{return Err(Reject::Evicted)}
@@ -1120,6 +1141,7 @@ impl Node{
         }
     }
     fn on_miner(&mut self,m:MinerEvent){
+        if self.cfg.miner.is_none(){return}
         let Some(pr)=&mut self.prod else{return};
         let Mode::Locked(l)=&pr.mode else{return};
         match m{
@@ -1313,7 +1335,9 @@ impl Node{
         status["protocolVersion"]=serde_json::json!(crate::identity::PROTOCOL_VERSION);
         status["compatibilitySha256"]=serde_json::json!(crate::identity::COMPATIBILITY_HEX);
         status["compatiblePeers"]=serde_json::json!(self.peer_status.len());
-        status["lifetime"]=serde_json::json!({"closingHeight":self.chain.spec.cp().H_CLOSE,"finalHeight":self.chain.spec.cp().H_END});
+        status["lifetime"]=if self.chain.spec.cp().H_END==0{serde_json::json!({"continuous":true,"closingHeight":null,"finalHeight":null,"closingTime":null,"finalTime":null})}else{serde_json::json!({"continuous":false,"closingHeight":self.chain.spec.cp().H_CLOSE,"finalHeight":self.chain.spec.cp().H_END})};
+        status["resourceProjectionRecords"]=serde_json::json!(self.cfg.limits.continuous_history);
+        status["unlimitedResourceProof"]=serde_json::json!(false);
         status
     }
     pub fn template_json(&self)->serde_json::Value{

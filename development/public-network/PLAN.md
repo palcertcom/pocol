@@ -68,3 +68,37 @@ their public addresses. Never put secret keys in chat, Git or uploaded test arti
 - [Independent key operations](KEYS.md)
 - [Service, gateway, monitoring and recovery runbook](../../deploy/public-testnet/README.md)
 - [Compatibility and operations evidence](OPERATIONS.md)
+
+## Five-device standalone increment (29 October 2026)
+
+The owner requested ordinary independent operation on three prepared Linux VPS,
+one Windows PC and one Android phone. `deploy/standalone/` adds a common native
+launcher, fixed local identities, a bounded shared-genesis invitation and native
+release builds. The Android app hosts the Rust node itself, not a remote RPC-only
+wallet. Windows uses user-bound DPAPI key protection. These additions do not
+change any consensus/admission/lifetime/resource launch gate above.
+
+One-time genesis publication still requires public addresses generated on the
+devices. New identities can join P2P without an operator allowlist; mining still
+requires the existing bonded on-chain enrollment. No automatic funding authority
+or approval service is embedded. Public network deployment, cross-platform
+physical-device acceptance, mobile capacity/lifecycle testing and a stable private
+APK signing identity remain outstanding. The standalone README records the
+precise scope and commands.
+
+
+## Wallet and continuous-genesis increment (2026-10-29)
+
+The owner requested native Android/Windows wallet interfaces (#1aa9e4), actual
+local mining controls and no scheduled network expiry. The new bootstrap creates
+a separate continuous genesis: all four lifetime fields zero, separate compiled
+registry programs, per-block transaction/log allowances, and explicit growing
+local resource projections. Existing finite networks are not migrated or erased.
+Both wallets sign locally after a one-use expiring review; bonded registration
+is explicit and mining is off by default. See deploy/standalone/README.md.
+
+This removes the earlier 19000/20000 shutdown from **new continuous profiles**;
+it does not close the existing memory, RpcGuard, calibration, external review,
+physical Android or real multi-host qualification gates. Long-term metadata,
+replay and disk growth require capacity work; infinite fixed-resource operation
+is not established. No live servers were changed by this increment.

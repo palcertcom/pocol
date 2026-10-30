@@ -13,6 +13,10 @@
 #[path="../../lp1-node/src/timing.rs"] #[allow(dead_code)] pub mod timing;
 pub mod site;
 pub mod keyfile;
+pub mod launcher;
+pub mod wallet;
+#[cfg(target_os = "android")]
+mod mobile;
 pub mod testnet;
 pub mod identity;
 pub mod secp_backend;

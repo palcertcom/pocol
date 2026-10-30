@@ -3270,3 +3270,23 @@ fn e4_checkpoint_kill_child(){
     let (fits,d1)=gas_node("fits",Limits{pool_gas_max:Some(16*8_000_000),..Default::default()});assert!(fits.is_ok(),"16 × GAS_LIMIT fits the devnet budget");
     drop(fits);for d in [d0,d1]{let _=std::fs::remove_dir_all(&d);}
 }
+
+
+#[test]
+fn continuous_admission_caps_and_finality_are_not_a_large_finite_ceiling(){
+    let mut c=cfg(&["a","b","c"]);c.h_end=0;c.h_close=0;c.tx_cap=1;c.txbytes_cap=1024;
+    let mut n=net_with(&c);
+    assert_eq!(n.chain.spec.cp().H_END,0);assert_eq!(n.chain.spec.cp().T_END,0);
+    let a=devnet::account_key("alice");let to=devnet::account_key("bob").address();
+    for nonce in 0..4{
+        let raw=Tx{chain_id:c.chain_id,nonce,max_priority:U256::ZERO,max_fee:U256::from(100_000_000_000u64),gas:21000,to:Some(to),value:U256::from(1),data:Default::default()}.sign_1559(&a);
+        assert!(n.chain.within_caps(n.chain.head(),&[raw.clone()]));
+        assert!(!n.chain.within_caps(n.chain.head(),&[raw.clone(),raw.clone()]),"per-block cap retained");
+        let b=signed(&n,n.chain.head,Body{txs:vec![raw],evidence:vec![]},0);import(&mut n,&b);
+    }
+    assert_eq!(n.chain.head().state.accounts[&to].info.balance,U256::from(10u128.pow(24))+U256::from(4));
+    let cp=n.chain.spec.cp();let mut limits=pocold::node::Limits::default();limits.state_store=true;
+    assert!(pocold::resources::derive(cp,32,2,&limits,3).is_none(),"unknown continuous history must not be treated as zero");
+    limits.continuous_history=Some(0);let small=pocold::resources::derive(cp,32,2,&limits,3).unwrap();
+    limits.continuous_history=Some(50_000);let larger=pocold::resources::derive(cp,32,2,&limits,3).unwrap();assert!(larger.total>small.total);
+}

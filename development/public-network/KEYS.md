@@ -2,8 +2,10 @@
 
 These commands remove the dependence on public label-derived signing secrets.
 They do not close the [public launch gates](PLAN.md). Run the integration on loopback
-until network acceptance is complete. Linux/Unix key files are supported in this
-increment; Windows ACL handling is explicitly unsupported rather than silently skipped.
+until network acceptance is complete. Linux/Unix key files retain strict ownership and mode checks. The later
+[standalone launcher](../../deploy/standalone/README.md) also supports Windows
+through user-bound DPAPI ciphertext; it never treats a raw Unix key as a safe
+Windows file. Android uses its app-private Unix storage with the same key checks.
 
 ## Generate keys at their owner
 
@@ -18,7 +20,7 @@ prototypes/pocold/target/release/pocol-key generate \
   --out /absolute/private/key-directory/reward.pocol-key
 ```
 
-Each command prints **only the public address**. The secret is 32 binary bytes,
+On Unix, each command prints **only the public address**. The secret is 32 binary bytes,
 generated through OS randomness, created exclusively with mode 0600 and fsynced.
 Existing paths are never overwritten. Read the address again with:
 
