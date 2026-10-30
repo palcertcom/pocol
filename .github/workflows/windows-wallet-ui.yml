@@ -36,6 +36,7 @@ jobs:
           Copy-Item deploy/standalone/README-WINDOWS-UPDATE.md dist/
           Copy-Item wallet-ui-tests/*.log dist/
           Copy-Item wallet-ui-tests/activity-fixture.png dist/
+          Copy-Item wallet-preview.png dist/PoCol-Wallet-preview.png
           $env:EXPECTED_COMMIT | Set-Content dist/UI-SOURCE-COMMIT.txt
           $hash=(Get-FileHash dist/PoCol-Wallet.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  PoCol-Wallet.exe" | Set-Content dist/WALLET-UPDATE-SHA256SUMS
