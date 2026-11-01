@@ -1,6 +1,7 @@
 # Earn-in membership with a 20 PCOL bond (proposal)
 
-Status: **proposal only, for the owner's decision.** Nothing here is implemented or activated. It
+Status: **approved by the owner on 2026-11-01 with the proposed values (E1–E8; E3 = 60,480 blocks).
+`H3` (E9) is open.** Nothing here is implemented or activated yet. It
 changes consensus (the system contracts, execution and membership), so it needs a coordinated network
 upgrade like H15000 and an explicit approval of each decision in section 8.
 
