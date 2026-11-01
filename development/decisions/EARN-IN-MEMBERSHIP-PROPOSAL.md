@@ -1,116 +1,155 @@
-# Earn-in membership with a 20 PCOL bond (proposal)
+# New PoCol network with earn-in membership and a 20 PCOL bond
 
-Status: **approved by the owner on 2026-11-01 with the proposed values (E1–E8; E3 = 60,480 blocks).
-`H3` (E9) is open.** Nothing here is implemented or activated yet. It
-changes consensus (the system contracts, execution and membership), so it needs a coordinated network
-upgrade like H15000 and an explicit approval of each decision in section 8.
+Status: **approved by the owner on 2026-11-01.** Nothing is implemented or launched yet. The live
+network keeps running until the new one is built, tested and rehearsed (N4).
 
 Request (owner, 2026-11-01): let a miner without PCOL join, through probationary membership funded by
-its own rewards (option 5 of the alternatives), and lower the bond to **20 PCOL**.
+its own rewards, with the bond lowered to **20 PCOL**. Then the owner chose to launch these rules as
+a **new network from a new genesis** and to stop the current live network, rather than upgrade it in
+place.
+
+## 0. Approved decisions
+
+| ID | Decision |
+|---|---|
+| E1 | Bond `B_reg` = 20 PCOL |
+| E2 | Probation seats `P_max` = 8 |
+| E3 | Probation deadline `T_prob` = 60,480 blocks (7 days at `T_blk` = 10 s) |
+| E4 | At the deadline, the accrued bond is refunded to the miner |
+| E5 | Probationers are left out of the proposer draw |
+| E6 | `topUp()` allowed, by the identity itself |
+| E7 | Old bonds of 100 PCOL return to their owners (section 4) |
+| E8 | `reward == msg.sender` is durable for `register` |
+| N1 | Balances move to the new network (section 4) |
+| N2 | New chain ID |
+| N3 | Genesis miners: the three current server identities, each with a 20 PCOL bond |
+| N4 | The live network stops only after the new one is ready; the owner or operator stops it |
+| A1 | Work goes in phases, each in its own pull request; PR #16 and #17 are reviewed first |
+| A2 | A small fee faucet; an operator rehearsal before launch |
+| A3 | Old Android installations cannot follow the new network (Android stays deferred) |
+| A4 | Server, wallet and extension deployments are done by the owner, one approval each |
+
+E9 (an activation height `H3`) no longer applies: the rules hold from block 0. The code-replacement
+mechanism the in-place upgrade needed is also dropped.
 
 ## 1. Problem
 
-Today a new identity must lock `B_reg` = 100 PCOL when it calls `register(address)`
-(`MinerRegistry` fallback in `prototypes/lp4-execution/contracts/system/PoColSystemV1.sol`:
-`msg.value` must equal `cfg(16)`, which genesis fixed and `ChainCaps` keeps immutable). Without a
-record, an identity is not in `A_h`, gets no nonce range, and earns nothing. A miner who holds no
-PCOL therefore has no way in.
+On the current network a new identity must lock `B_reg` = 100 PCOL when it calls
+`register(address)` (`MinerRegistry` fallback in
+`prototypes/lp4-execution/contracts/system/PoColSystemV1.sol`). Without a record an identity is not
+in `A_h`, gets no nonce range, and earns nothing. A miner who holds no PCOL has no way in.
 
-The bond does three things today (threat model assumption A6, `development/m1/reference/threat.md`):
-- it prices each identity, so seats in the active set (at most `M_max` = 64) and registry capacity
-  cannot be filled for free;
-- `punish` burns it on evidence, so misbehaviour costs the miner;
+The bond does three things (threat model A6, `development/m1/reference/threat.md`):
+- it prices each identity, so the active seats (`M_max` = 64) and registry capacity cannot be filled
+  for free;
+- `punish` burns it on evidence;
 - with `R_max` = 1 registration or reactivation per block, it slows registration churn.
 
-Any replacement must keep a cost for these three.
+The rules below keep a cost for all three.
 
-## 2. What stays unchanged
+## 2. What stays as on the current network
 
-- Genesis, chain ID, balances, keys, the history before activation, and the fork schedule entries
-  `[1,0]` and `[2,15000]`.
-- The reward formula and issuance: subsidy 2 PCOL per block; winner `alpha` = 10%; proposer
-  `gamma` = 5%; shares `p_i = R·c_i/Q` with `Q = max(C, κ·m)` = max(C, 64); the uncovered part is
-  burned. Earn-in redirects where a probationer's payment goes. It creates no new coins.
-- Nonce assignment, share and block targets, `W_act`, `Theta_inact`, `U` and the inactivity rules.
-- Existing records. They keep their recorded bond of 100 PCOL, and exit refunds exactly that amount,
-  because refunds already use the per-record bond word `w2`, not the current `B_reg`.
+- The reward formula and issuance:
+  - subsidy 2 PCOL per block;
+  - winner `alpha` = 10%;
+  - proposer `gamma` = 5%;
+  - shares `p_i = R·c_i/Q` with `Q = max(C, κ·m)` = max(C, 64);
+  - the uncovered part is burned.
+- Nonce assignment and the full 64-bit nonce domain. The new genesis sets `nonceMode` = 1 with the
+  fork schedule `[[1,0]]`, so the domain is full from block 1.
+- Share and block targets, `W_act`, `Theta_inact`, `U`, `R_max`, `M_max`, and the inactivity, exit
+  and reactivation rules (including the wallet's rejoin flow from PR #17).
+- Every other consensus parameter of the current genesis, unless section 3 says otherwise.
 
-## 3. Proposed rules (protocol version 3, from height `H3`)
+## 3. Rules of the new network (from genesis)
 
-Fork schedule: `[[1,0],[2,15000],[3,H3]]`. Every rule below applies to blocks at height `≥ H3`.
-
-**R1. Bond amount.** `B3` = 20 PCOL (`20·10^18` wei) for registrations from `H3`. It is a version-3
-constant, because genesis CP field 16 (`B_reg`) cannot change.
+**R1. Bond.** Genesis CP field 16 `B_reg` = 20 PCOL (`20·10^18` wei).
 
 **R2. Registration with a partial bond.** `register(address reward)` accepts any `msg.value` `v`
-with `0 ≤ v ≤ B3`:
-- `v = B3`: the record is full (`bondState` HELD), exactly as today.
-- `v < B3`: the record is probationary. It has a new `bondState` ACCRUING (value 4), and `bond = v`.
+with `0 ≤ v ≤ B_reg`:
+- `v = B_reg`: the record is full (`bondState` HELD = 1), as today.
+- `v < B_reg`: the record is on probation, with a new `bondState` ACCRUING (4) and `bond = v`.
 
-Both cases share the `R_max` slot and the `M_max` capacity check.
+Both share the `R_max` slot and the `M_max` capacity check. `registeredAt` (the registration height)
+is stored in a new record field (section 7).
 
-**R3. Probation seats.** At most `P_max` records may be ACCRUING at once. Above that, `register`
-with `v < B3` reverts `Capacity`. The count lives in a new Registry storage slot (slot 8 is unused;
-slot 3 has only 5 reserved bits left).
+**R3. Probation seats.** At most `P_max` = 8 records may be ACCRUING at once. Beyond that,
+`register` with `v < B_reg` reverts `Capacity`.
 
-**R4. Earning into the bond.** While a record is ACCRUING, every payment owed to it is added to its
-bond instead of being paid to its reward address. That covers the winner share, the proposer share
-(if R7 allows proposing) and its share payments. Once the bond reaches `B3`:
+**R4. Earning into the bond.** While a record is ACCRUING, every payment owed to it goes into its
+bond instead of to its reward address: the winner share, and its share payments (R7 removes the
+proposer share). When the bond reaches `B_reg`:
 - the record becomes HELD in the same settlement;
-- anything above `B3` is paid to the reward address as usual.
+- the excess is paid to the reward address.
 
-The funds never leave Escrow. `heldTotal` grows by the redirected amount, and the escrow invariant
-`balance ≥ pending + heldTotal + burned` (`check_escrow_invariant`) keeps holding: settled pending
-value moves into `heldTotal` instead of leaving.
+The funds stay in Escrow and `heldTotal` grows by the same amount, so the escrow invariant
+`balance ≥ pending + heldTotal + burned` keeps holding.
 
-**R5. Top-up.** A new `topUp()` call, made by the identity itself, adds `msg.value ≤ B3 − bond` to
-an ACCRUING bond and promotes the record when the bond reaches `B3`. A miner who has PCOL, or who
-receives some, can skip the wait.
+**R5. Top-up.** `topUp()`, called by the identity itself with `0 < msg.value ≤ B_reg − bond`, adds
+to an ACCRUING bond. The record is promoted when the bond reaches `B_reg`.
 
-**R6. Probation deadline.** A record still ACCRUING `T_prob` blocks after registration becomes
-exited, with `exit = h` and `due = h + U`. At `due`, the existing sweep refunds the accrued bond to
-the reward address and erases the record, which frees the seat. The accrued amount is the miner's own
-earned reward, so it is refunded, not burned.
+**R6. Probation deadline.** An ACCRUING record still ACCRUING at
+`registeredAt + T_prob` (`T_prob` = 60,480) is exited by the sweep, with `exit = h` and
+`due = h + U`. At `due` the accrued bond is refunded to the reward address and the record is erased,
+which frees the seat.
 
-**R7. Proposer draw.** ACCRUING members keep a nonce range and earn shares and wins, but are left
-out of the proposer draw. An absent proposer delays a block by `D_att` plus the fallback wait (about
-67 s). Excluding probationers stops cheap identities from slowing the chain that way. This changes
-`DrawWeights` in the node (`lp1-node/src/assignment.rs`) for version 3.
+**R7. Proposer draw.** ACCRUING members keep a nonce range and earn wins and shares, but get
+weight 0 in the proposer draw. If every member is ACCRUING, the draw falls back to all members.
 
-**R8. Exit, inactivity and punishment** follow the existing rules, applied to ACCRUING records:
-- `deregister` and `removeInactive` work as for HELD records, and the accrued bond is refunded at
-  `due`.
-- `reactivate` keeps the original `T_prob` deadline.
+**R8. Exit, inactivity, punishment.**
+- `deregister`, `removeInactive` and `reactivate` work for ACCRUING records as for HELD ones; the
+  accrued bond is refunded at `due`.
+- `reactivate` does not reset `registeredAt`.
 - `punish` burns the accrued bond and tombs the record.
-- `setRewardAddress` stays allowed. It changes nothing while payments accrue.
 
-**R9. Durable reward for a self-registration.** PAY-02 judges a reward address on the
-pre-transaction state and requires nonce > 0, so today a first-transaction registration reverts.
-From `H3`, `register` treats `reward == msg.sender` as durable: the sender's nonce is at least 1
-once the transaction runs. This removes the extra transfer a new miner must pay for.
+**R9. Durable self-reward.** `register` accepts `reward == msg.sender` without the PAY-02 durability
+probe, because the sender's nonce is at least 1 once the transaction runs. Other reward addresses
+still need PAY-02.
 
-## 4. A new miner still needs a little PCOL for fees
+**Constants.** `P_max` and `T_prob` are constants of the system contract code, which genesis binds
+through `sysCodeHash`. They are not new CP fields, so the 52-field GenesisSpec schema stays as it is.
 
-Earn-in removes the bond, but not the transaction fee. Gas fees are never zero, and an account with
-0 PCOL cannot send `register`.
-- **Amount needed:** with R9, one transaction is enough. The wallet's fee cap for a registry
-  transaction is about 0.001 PCOL at the current base fee plus its 1 gwei tip. The fee actually
-  charged is lower.
-- **Options:**
-  - a fee faucet that sends a few thousandths of a PCOL per identity. The value at risk is
-    negligible, unlike a 100 or 20 PCOL sponsorship;
-  - any existing user sends that dust.
-- **Not proposed:** a fee-free registration transaction type. It would be a larger consensus
-  change, with its own spam risk.
+## 4. Moving balances to the new network (N1)
 
-## 5. Time to earn the 20 PCOL bond
+The old chain is stopped at an agreed final height `S`, and the new genesis allocation is built from
+its canonical state at `S`. The construction is deterministic and reproducible by anyone holding the
+old chain.
 
-Paid value per block ≈ 2 PCOL × (0.10 winner + 0.85 × C/64 shares). With about C ≈ 33 shares per
-block (`m` = 32 plus the winner), that is ≈ 1.08 PCOL, leaving out the proposer share per R7. A
-probationer with a fraction `f` of the network's hash rate earns about `f × 1.08` PCOL per block, so
-it needs about `18.6 / f` blocks (`T_blk` = 10 s):
+1. **Every user account moves unchanged:** nonce, balance, code and storage. This covers contracts
+   users deployed, for example Studio sites. With a new chain ID, old signed transactions cannot
+   replay.
+2. **Not copied:** the five system program addresses (Caps, Ledger, Escrow, Registry, factory).
+   Their state is rebuilt by the new genesis.
+3. **Held bonds of old records go to their reward addresses' balances:** 100 PCOL for every registered
+   identity (7 of them on 2026-11-01).
+4. **The three genesis miners fund their 20 PCOL bonds from their own moved balances.** The new
+   supply then equals the old supply.
+5. **Unsettled reward pots** of the last `D` = 4 blocks before `S` (at most 8 PCOL) are not
+   reproduced. Their value is not issued on the new network. Each one is listed in the cutover report.
+6. **The cutover report:**
+   - lists every moved account and the sums before and after;
+   - publishes the old final block hash at `S`;
+   - publishes the new genesis hash, so anyone can check the result.
 
-| Hash share `f` | Blocks | Time |
+This reads "balances move" as the whole user state moving, so no user loses coins or contracts. If
+only plain balances should move (no contract code or storage), that is a one-line change to the
+construction and has to be decided before launch.
+
+## 5. A new miner still needs a little PCOL for fees
+
+The bond can be earned, but a transaction fee cannot: gas is never free.
+- With R9, one transaction is enough. The wallet's fee cap for a registry transaction is about
+  0.001 PCOL; the fee actually charged is lower.
+- The fee faucet (A2) sends about 0.002 PCOL per address, once per address, within a daily limit.
+- The faucet is funded from an operator account's moved balance. No coins are created for it.
+
+## 6. Time to earn the 20 PCOL bond
+
+Paid value per block ≈ 2 PCOL × (0.10 + 0.85 × C/64), with about C ≈ 33 shares per block, which gives
+about 1.08 PCOL (the proposer share is excluded, per R7). A probationer with hash share `f` needs
+about `18.6 / f` blocks:
+
+| `f` | Blocks | Time |
 |---|---:|---:|
 | 1/2 | 37 | about 6 min |
 | 1/8 | 149 | about 25 min |
@@ -118,66 +157,41 @@ it needs about `18.6 / f` blocks (`T_blk` = 10 s):
 | 1/100 | 1,857 | about 5.2 h |
 | 1/1000 | 18,570 | about 52 h |
 
-These are expected values. Luck, fees and the burned uncovered part move them. `T_prob` sets the
-smallest hash share that can finish probation: 7 days (60,480 blocks) needs `f` ≥ about 0.03%;
-24 hours (8,640 blocks) needs `f` ≥ about 0.22%.
+With `T_prob` = 7 days, a miner needs `f` ≥ about 0.03% to finish probation.
 
-## 6. Security analysis
+## 7. Storage layout additions (MinerRegistry)
 
-| Concern | Today (100 PCOL) | With this proposal |
+Everything below is additive. Existing words keep their meaning.
+
+| Where | New content |
+|---|---|
+| `w0.bondState` | value 4 = ACCRUING |
+| `w0` bits 152..215 | `registeredAt` (u64), previously reserved zero |
+| slot 8 | ACCRUING count (u32) |
+
+The Escrow gains an `accrue` path that only Escrow uses internally: `payTo` and `distribute` call
+Registry `accrue(id, amount)`, which is callable only by Escrow. The Registry gains `topUp()`.
+
+## 8. Security analysis
+
+| Concern | Old network (100 PCOL) | New network |
 |---|---|---|
 | Filling the 64 full seats | 6,400 PCOL locked | 1,280 PCOL locked, or the hash work to earn it (about 1,190 blocks of the whole network's paid reward) |
-| Filling probation seats | not applicable | `P_max` identities that keep sharing. Cheap in hash, but it only delays newcomers (onboarding denial), never block production (R7). Bounded by `P_max`, `T_prob` and `R_max` |
-| Penalty for misbehaviour | burns 100 PCOL | burns 20 PCOL, or the accrued part of it: 5 times less deterrence |
-| Taking a sponsor's money and leaving | possible with plain sponsorship | not applicable: a probationer's bond is its own earned reward |
-| Slowing blocks with absent proposers | full members only | still full members only (R7) |
-| Supply | unchanged | unchanged: redirected rewards are existing issuance, and burns are unchanged |
+| Filling probation seats | not applicable | 8 identities that keep sharing: cheap, but it only delays newcomers by up to 7 days, never block production (R7) |
+| Penalty for misbehaviour | burns 100 PCOL | burns up to 20 PCOL |
+| Taking a sponsor's money | possible with plain sponsorship | not applicable: a probationer's bond is its own reward |
+| Slowing blocks with absent proposers | full members only | full members only (R7) |
+| Supply | not applicable | moved supply = old supply minus at most 8 PCOL of unsettled pots |
 
-**Residual risks the owner accepts with this proposal:**
-- An attacker with modest hash rate can keep the `P_max` probation seats occupied, delaying honest
-  newcomers by up to `T_prob`. They can still join at once with a full 20 PCOL bond or a top-up.
-- The lower bond makes full seats 5 times cheaper to occupy, and evidence penalties 5 times smaller.
+## 9. Implementation phases
 
-## 7. Implementation and rollout (after approval)
+Each phase is its own pull request and needs no network action. The owner reviews each one.
 
-This is consensus-critical. A node without these rules forks off at `H3`.
-
-1. **Specification:** normative text for R1–R9, with independent vectors for registration,
-   accrual, promotion, deadline, punishment and the escrow invariant.
-2. **System contracts v3:** `MinerRegistry` (partial bond, ACCRUING state, seat count, `topUp`,
-   deadline in the sweep, `accrue` callable only by Escrow, R9) and `RewardEscrow` (redirect in
-   `payTo` and `distribute`). The storage layout stays compatible; only new values and slots are added.
-3. **Execution:** today `apply` has no protocol version (H15000 changed only the node's nonce
-   domain). Version 3 needs the execution to learn the version, and to install the v3 Registry and
-   Escrow code at `H3` while keeping their storage. This is a new code-replacement mechanism. It must
-   be deterministic, journaled and replayable, and it must account for the state summary's code
-   inventory.
-4. **Node:** the fork schedule with version 3; the R7 proposer draw; the handshake schedule check;
-   status and RPC fields.
-5. **Clients:**
-   - the wallet engine and Windows wallet: registering with 0 to 20 PCOL, probation progress and
-     top-up;
-   - the extension, Explorer and gateway reward accounting (`deploy/rewards`): show and account
-     ACCRUING records;
-   - Android: deferred, as now.
-6. **Tests:** unit tests and vectors; devnet tests across activation, in both directions of a reorg
-   around `H3`; replay from genesis; mutation checks; a multi-process upgrade rehearsal.
-7. **Rollout:** like H15000. Agree on a future `H3`, upgrade and verify every server, the Windows
-   wallets and the extension's trusted schedule before `H3`, and keep backups. Choosing and
-   deploying `H3` is the owner's call.
-
-## 8. Decisions for the owner
-
-| ID | Decision | Proposed value |
-|---|---|---|
-| E1 | New bond `B3` | 20 PCOL (as requested) |
-| E2 | Probation seats `P_max` | 8 |
-| E3 | Probation deadline `T_prob` | 60,480 blocks (7 days), so weak devices can finish; or 8,640 (24 h) to turn seats over faster |
-| E4 | At the deadline, refund or burn the accrued bond | refund: it is the miner's own reward |
-| E5 | Leave probationers out of the proposer draw (R7) | yes |
-| E6 | Allow `topUp` (R5) | yes, by the identity itself |
-| E7 | Existing 100 PCOL bonds | keep them until exit; no forced migration |
-| E8 | Accept `reward == msg.sender` as durable from `H3` (R9) | yes |
-| E9 | Activation height `H3` | chosen later, when the release is ready |
-
-Not proposed here: changing `M_max`, `R_max`, rewards or issuance, or a fee-free transaction type.
+| Phase | Content |
+|---|---|
+| P1 | Normative text for R1–R9 and section 4. An independent reference model, and test vectors from it |
+| P2 | System contracts: MinerRegistry and RewardEscrow with R2–R9, against the P1 vectors |
+| P3 | Node: R7 in the proposer draw. Genesis tooling for the new chain ID, `B_reg` = 20 and `nonceMode` = 1. The cutover tool (section 4) with its report |
+| P4 | Clients: wallet engine and Windows wallet (register with 0–20 PCOL, probation progress, top-up); extension, Explorer, gateway reward accounting, websites; fee faucet |
+| P5 | Tests: full suites, multi-process devnets, a cutover rehearsal from a copy of the old chain, mutation checks, Windows CI |
+| P6 | Release, and a rollout runbook for the owner: freeze `S`, stop the old services, build genesis, start the three servers, publish clients |
