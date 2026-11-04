@@ -1,0 +1,24 @@
+name: PoCol dependency vulnerability scan
+
+on:
+  schedule:
+    # Daily at 01:17 UTC; off the top of the hour to reduce scheduling delays.
+    - cron: '17 1 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Scan all dependency lockfiles
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.0
+    with:
+      scan-args: |-
+        --recursive
+        ./
+      fail-on-vuln: true
