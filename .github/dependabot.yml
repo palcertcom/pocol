@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: cargo
+    directories:
+      - "/prototypes/lp1-node"
+      - "/prototypes/lp4-execution"
+      - "/prototypes/pocold"
+      - "/development/audit-2026-10-22/tools/secp-equiv"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directories:
+      - "/prototypes/lp3-model"
+      - "/prototypes/pocol-extension"
+      - "/prototypes/pocol-studio"
+      - "/development/m1/m1-draft-0.33/coordinator/files"
+      - "/prototypes/lp4-execution/tools"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
