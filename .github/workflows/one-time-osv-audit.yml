@@ -1,0 +1,22 @@
+name: One-time PoCol dependency security audit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-time-osv-audit.yml'
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+jobs:
+  full-audit:
+    name: Full recursive dependency vulnerability audit
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.0
+    with:
+      scan-args: |-
+        --recursive
+        ./
+      fail-on-vuln: true
